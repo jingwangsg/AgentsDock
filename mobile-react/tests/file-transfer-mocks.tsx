@@ -83,7 +83,8 @@ export async function notificationAsync() {}
 export function FlashList({ data: items = [], renderItem, ListEmptyComponent }: any) { return createElement('List', {}, items.length ? items.map((item: any, index: number) => createElement('Row', { key: index }, renderItem({ item, index }))) : ListEmptyComponent) }
 // Preview engines and native pixels are outside this transfer test. Keep their
 // public fallback Download callback so that production viewer routing runs.
-export function FilePreview({ onDownload }: any) { return createElement('Pressable', { testID: 'preview-fallback-download', onPress: onDownload }) }
+export const previewProps: { loadText?: (limit: number) => Promise<{ content: string; truncated: boolean }> } = {}
+export function FilePreview({ onDownload, loadText }: any) { previewProps.loadText = loadText; return createElement('Pressable', { testID: 'preview-fallback-download', onPress: onDownload }) }
 export function ArtifactVideoPlayer({ onDownload }: any) { return createElement('Pressable', { testID: 'video-fallback-download', onPress: onDownload }) }
 export function VideoThumbnailLoader() { return null }
 export function useTextPrompt() { return { promptText: async () => null, textPromptDialog: null } }

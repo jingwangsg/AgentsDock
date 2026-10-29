@@ -1,5 +1,6 @@
 import type { AgentFile, WorkspaceEntry } from '../types'
 import type { AgentServerClient } from '../api/AgentServerClient'
+import { readFileWithRetry } from './file-read-retry'
 import { inferredMobileFileContentType } from './file-viewer'
 
 export type FileTransferAction = 'download' | 'share'
@@ -62,15 +63,20 @@ export function createFileTransferRunner<Folder, File extends TransferFile>(depe
       // Resolve credentials only after the picker returns and this chat is
       // still current. Server file paths are never treated as device paths.
       const source = request.source()
-      temporary = await dependencies.createTemporaryFile(filename)
+      const target = await dependencies.createTemporaryFile(filename)
+      temporary = target
       checkCurrent()
       report('downloading', { bytesWritten: 0, totalBytes: validByteCount(request.expectedBytes) })
-      const downloaded = await dependencies.download(source, temporary, signal, progress => {
+      // A retry writes the whole file again over what a dropped attempt left in it.
+      const downloaded = await readFileWithRetry(() => dependencies.download(source, target, signal, progress => {
         if (!signal.aborted && request.isCurrent()) {
           const totalBytes = validByteCount(progress.totalBytes) ?? validByteCount(request.expectedBytes)
           const bytesWritten = Math.max(0, validByteCount(progress.bytesWritten) ?? 0)
           update({ phase: 'downloading', filename, bytesWritten, totalBytes })
         }
+      }), {
+        signal,
+        onRetry: () => report('downloading', { bytesWritten: 0, totalBytes: validByteCount(request.expectedBytes), message: 'The connection to the server dropped. Retrying…' }),
       })
       checkCurrent()
       if (!downloaded.exists || downloaded.size == null) throw new Error('The downloaded file is unavailable. Please try again.')

@@ -3,7 +3,7 @@ import { app, BrowserWindow, clipboard, dialog, nativeImage, Notification, sessi
 import { bannerDedupeKey, notificationBannerContent, type NotificationPopupController } from './notification-popup'
 import { rememberedFolderOrder } from '../shared/folders'
 import { applyOpenCodeSessionEvent } from '../shared/opencode'
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, createWriteStream, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { open, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import { Readable } from 'node:stream'
@@ -182,6 +182,7 @@ import { BrowserProxy } from './browser-proxy'
 import { FileUploadGrantRegistry } from './file-upload-grants'
 import { SettingsStore, type ServerProfileRuntimeState } from './settings'
 import { appLog } from './logger'
+import { readFileWithRetry } from './file-read-retry'
 import { hubRemoteId, hubRemoteProfileOrder, hubRemotesKey, isHubRemoteUrl, localHubConfigDirs, planHubRemoteProfiles, readLocalHubToken, startLocalServerAgent } from './local-hub'
 import { hubSshAliasHost, removeSshHost, writeSshHost } from './ssh-hosts'
 import { openInZed as launchZed, readZedWorkspaceFolders } from './open-in-zed'
@@ -5256,19 +5257,24 @@ export class AppService {
         this.assertCurrentScope(scope)
       } else {
         await abortable(this.ensureValidatedScope(scope), signal)
-        const response = await scope.client.fileRequest(sessionId, file.id, undefined, signal)
-        this.assertCurrentScope(scope)
-        if (!response.ok) {
-          await response.body?.cancel().catch(() => undefined)
-          const status = `${response.status}${response.statusText ? ` ${response.statusText}` : ''}`
-          throw new Error(`Artifact download failed (${status}).`)
-        }
-        preview = await readArtifactTextPreviewFromResponse(
-          response,
-          MAX_AGENT_TEXT_PREVIEW_BYTES,
-          file.size ?? undefined,
-          signal
-        )
+        preview = await readFileWithRetry(async () => {
+          this.assertCurrentScope(scope)
+          const response = await scope.client.fileRequest(sessionId, file.id, undefined, signal)
+          this.assertCurrentScope(scope)
+          return response
+        }, async response => {
+          if (!response.ok) {
+            await response.body?.cancel().catch(() => undefined)
+            const status = `${response.status}${response.statusText ? ` ${response.statusText}` : ''}`
+            throw new Error(`Artifact download failed (${status}).`)
+          }
+          return readArtifactTextPreviewFromResponse(
+            response,
+            MAX_AGENT_TEXT_PREVIEW_BYTES,
+            file.size ?? undefined,
+            signal
+          )
+        }, signal)
         this.assertCurrentScope(scope)
         downloaded = true
       }
@@ -5633,10 +5639,12 @@ export class AppService {
     const scope = this.captureScope()
     if (scope.profileId !== profileId || scope.generation !== profileGeneration) throw staleProfileError()
     await this.ensureValidatedScope(scope)
-    this.assertCurrentScope(scope)
-    const response = await scope.client.fileRequest(sessionId, fileId, request)
-    this.assertCurrentScope(scope)
-    return response
+    return readFileWithRetry(async () => {
+      this.assertCurrentScope(scope)
+      const response = await scope.client.fileRequest(sessionId, fileId, request)
+      this.assertCurrentScope(scope)
+      return response
+    }, response => response, request.signal)
   }
 
   async workspaceMediaResponse(
@@ -5649,10 +5657,12 @@ export class AppService {
     const scope = this.captureScope()
     if (scope.profileId !== profileId || scope.generation !== profileGeneration) throw staleProfileError()
     await this.ensureValidatedScope(scope)
-    this.assertCurrentScope(scope)
-    const response = await scope.client.workspacePreviewRequest(sessionId, path, request)
-    this.assertCurrentScope(scope)
-    return response
+    return readFileWithRetry(async () => {
+      this.assertCurrentScope(scope)
+      const response = await scope.client.workspacePreviewRequest(sessionId, path, request)
+      this.assertCurrentScope(scope)
+      return response
+    }, response => response, request.signal)
   }
 
   async absoluteMediaResponse(
@@ -5665,10 +5675,12 @@ export class AppService {
     const scope = this.captureScope()
     if (scope.profileId !== profileId || scope.generation !== profileGeneration) throw staleProfileError()
     await this.ensureValidatedScope(scope)
-    this.assertCurrentScope(scope)
-    const response = await scope.client.absolutePreviewRequest(sessionId, absolutePath, request)
-    this.assertCurrentScope(scope)
-    return response
+    return readFileWithRetry(async () => {
+      this.assertCurrentScope(scope)
+      const response = await scope.client.absolutePreviewRequest(sessionId, absolutePath, request)
+      this.assertCurrentScope(scope)
+      return response
+    }, response => response, request.signal)
   }
 
   async notify(payload: ProfileNotificationPayload): Promise<void> {
@@ -8056,15 +8068,46 @@ export class AppService {
   private async downloadFile(scope: ConnectionScope, sessionId: string, file: AgentFile, path: string): Promise<void> {
     requireSessionFile(sessionId, file)
     await this.ensureValidatedScope(scope)
-    const response = await scope.client.fileRequest(sessionId, file.id)
-    this.assertCurrentScope(scope)
-    if (!response.ok) {
-      const detail = (await response.text().catch(() => '')).trim().slice(0, 500)
-      const status = `${response.status}${response.statusText ? ` ${response.statusText}` : ''}`
-      throw new Error(`Download failed (${status})${detail ? `: ${detail}` : ''}`)
+    mkdirSync(dirname(path), { recursive: true })
+    const partial = `${path}.part-${randomUUID()}`
+    // Only clean up a file this download created; another save may target the
+    // same destination concurrently, including within the same millisecond.
+    await writeFile(partial, '', { flag: 'wx', mode: 0o600 })
+    // A body cut off mid-way continues after the bytes already written when the server
+    // confirms the file is unchanged (If-Range with the ETag it sent); otherwise it starts over.
+    let written = 0
+    let etag: string | null = null
+    try {
+      await readFileWithRetry(async () => {
+        this.assertCurrentScope(scope)
+        const resume = written > 0 && etag ? { headers: { Range: `bytes=${written}-`, 'If-Range': etag } } : undefined
+        const response = await scope.client.fileRequest(sessionId, file.id, resume)
+        this.assertCurrentScope(scope)
+        return response
+      }, async response => {
+        if (!response.ok) {
+          const detail = (await response.text().catch(() => '')).trim().slice(0, 500)
+          const status = `${response.status}${response.statusText ? ` ${response.statusText}` : ''}`
+          throw new Error(`Download failed (${status})${detail ? `: ${detail}` : ''}`)
+        }
+        if (!response.body) throw new Error('Download failed: server returned an empty response')
+        if (response.status !== 206) written = 0
+        else if (!response.headers.get('content-range')?.startsWith(`bytes ${written}-`)) {
+          throw new Error('Download failed: the server resumed the file at another byte')
+        }
+        etag = response.headers.get('etag')
+        try {
+          await pipeline(Readable.fromWeb(response.body as never), createWriteStream(partial, { flags: written ? 'r+' : 'w', start: written }))
+        } finally {
+          // Count what reached the disk, also when the body stopped mid-way; pipeline settles only after the file is closed.
+          written = (await stat(partial)).size
+        }
+      })
+      await rename(partial, path)
+    } catch (error) {
+      await rm(partial, { force: true }).catch(() => undefined)
+      throw error
     }
-    if (!response.body) throw new Error('Download failed: server returned an empty response')
-    await this.downloadResponse(response, path)
   }
 
   private async downloadResponse(response: Response, path: string): Promise<void> {

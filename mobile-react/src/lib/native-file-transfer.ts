@@ -25,7 +25,8 @@ export const runNativeFileTransfer = createFileTransferRunner<Directory, File>({
     directory.create()
     return new File(directory, filename)
   },
-  download: async (source, file, signal, onProgress) => File.downloadFileAsync(source.url, file, { headers: source.headers, signal, onProgress }),
+  // idempotent: a retry overwrites the part a dropped attempt wrote (the directory is this transfer's own).
+  download: async (source, file, signal, onProgress) => File.downloadFileAsync(source.url, file, { headers: source.headers, signal, onProgress, idempotent: true }),
   save: async (file, directory, filename) => {
     // Copy to the picked Directory itself. Constructing a child by appending
     // a filename is invalid for Android's opaque SAF content:// tree URIs.

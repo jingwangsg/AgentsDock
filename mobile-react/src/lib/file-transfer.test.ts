@@ -92,6 +92,44 @@ test('download cancellation aborts the transport and cleans only its staged file
   assert.ok(!f.order.includes('save'))
 })
 
+test('a dropped download restarts into the same staged file and shows "Retrying…" while it waits', async t => {
+  const waits: number[] = []
+  t.mock.method(globalThis, 'setTimeout', (callback: () => void, delay: number) => { waits.push(delay); queueMicrotask(callback); return 0 })
+  let attempts = 0
+  const f = fixture({ download: async (_source, target, _signal, progress) => {
+    attempts += 1
+    f.order.push('download')
+    if (attempts === 1) {
+      progress({ bytesWritten: 4, totalBytes: 10 })
+      throw new Error('unexpected end of stream on http://127.0.0.1:7850/...')
+    }
+    progress({ bytesWritten: 10, totalBytes: 10 })
+    return target
+  } })
+  await f.run()
+  assert.deepEqual(f.order, ['pick', 'source', 'temporary:report.txt', 'download', 'download', 'save', 'cleanup'])
+  assert.deepEqual(waits, [2_000])
+  assert.deepEqual(f.states.map(state => [state.phase, state.bytesWritten, state.message]), [
+    ['choosing', undefined, undefined],
+    ['downloading', 0, undefined],
+    ['downloading', 4, undefined],
+    ['downloading', 0, 'The connection to the server dropped. Retrying…'],
+    ['downloading', 10, undefined],
+    ['saving', undefined, undefined],
+    ['done', undefined, 'Saved report.txt to the selected folder.'],
+  ])
+})
+
+test('Cancel during the retry wait cancels the download', async t => {
+  const f = fixture({ download: async () => { f.order.push('download'); throw new Error('Connection reset') } })
+  // The user taps Cancel as the wait starts.
+  t.mock.method(globalThis, 'setTimeout', () => { f.controller.abort(); return 0 })
+  await f.run()
+  assert.ok(f.states.some(state => state.message === 'The connection to the server dropped. Retrying…'))
+  assert.equal(f.states.at(-1)!.phase, 'cancelled')
+  assert.deepEqual(f.order, ['pick', 'source', 'temporary:report.txt', 'download', 'cleanup'])
+})
+
 test('one native picker owns all concurrent transfers and the lock releases after cancellation', async () => {
   const picker = deferred<string>()
   const f = fixture({ pickDirectory: () => picker.promise })
