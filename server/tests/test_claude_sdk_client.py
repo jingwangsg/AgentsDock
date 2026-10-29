@@ -3818,6 +3818,18 @@ class ClaudeSDKBackgroundTrackingHookTests(unittest.IsolatedAsyncioTestCase):
             {"signal": None},
         ), {})
 
+    async def test_hook_keeps_foreground_bash_at_ten_minutes_but_not_background(self) -> None:
+        async def decision(tool_input: dict) -> str | None:
+            result = await reject_untracked_background_hook(
+                {"tool_name": "Bash", "tool_input": tool_input}, "tool-1", {"signal": None},
+            )
+            return result.get("hookSpecificOutput", {}).get("permissionDecision")
+
+        self.assertEqual(await decision({"command": "python train.py", "timeout": 36_000_000}), "deny")
+        self.assertIsNone(await decision({"command": "python train.py", "timeout": 600_000}))
+        self.assertIsNone(await decision({"command": "python train.py"}))
+        self.assertIsNone(await decision({"command": "./dashboard", "run_in_background": True, "timeout": 2_147_483_647}))
+
     def test_scheduler_policy_matches_only_exact_nondurable_tool_names(self) -> None:
         self.assertEqual(
             CLAUDE_NON_DURABLE_SCHEDULER_TOOLS,

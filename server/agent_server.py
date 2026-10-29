@@ -63251,7 +63251,7 @@ def claude_sdk_configuration_key(
         "system_prompt": system_prompt,
         "permission_mode": effective_claude_permission_mode(sess),
         "setting_sources": ["user", "project", "local"],
-        "background_tracking_hooks": 2,
+        "background_tracking_hooks": 3,
         "allow_dangerously_skip_permissions": True,
         "replay_user_messages": True,
         "disallowed_tools": list(CLAUDE_NON_DURABLE_SCHEDULER_TOOLS),
@@ -63295,11 +63295,12 @@ def build_claude_sdk_options(
         ):
             env[inherited_name] = ""
     env["AGENTSDOCK_CHAT_ID"] = session_id
-    # Claude stops a run_in_background command once BASH_MAX_TIMEOUT_MS, at least 2 h, runs out,
-    # so a service the user asked to keep up (a dashboard, a policy server) died after 2 h. This
-    # process keeps such shells across turns, and Stop still ends them. 2147483647 ms (about 24.8
-    # days) is the CLI's own ceiling; a value the server inherits wins.
-    env["BASH_MAX_TIMEOUT_MS"] = os.environ.get("BASH_MAX_TIMEOUT_MS") or "2147483647"
+    # Claude caps a run_in_background command's timeout at BASH_MAX_TIMEOUT_MS,
+    # or at 2 h when that is lower or unset, so a service the user asked to keep
+    # running could not outlast 2 h. 2147483647 ms is the largest value the CLI
+    # accepts. It lifts the foreground maximum too, which the PreToolUse Bash
+    # hook keeps at 10 min. A value set in the server's environment wins.
+    env.setdefault("BASH_MAX_TIMEOUT_MS", "2147483647")
     subagent_limit = sess.get("subagent_limit")
     subagent_settings: dict[str, Any] = {}
     if type(subagent_limit) is int and subagent_limit > 0:

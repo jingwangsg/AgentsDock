@@ -815,6 +815,14 @@ _UNTRACKED_BACKGROUND_REASON = (
     "foreground. If the user explicitly requested a durable service, use an "
     "observable service manager."
 )
+# The SDK process gets a large BASH_MAX_TIMEOUT_MS so a background service can outlast 2 h, and
+# the CLI applies the same maximum to foreground calls. A long foreground call blocks the turn
+# and trips the server's no-activity limit, so foreground calls keep the CLI's 10-minute default.
+_FOREGROUND_TIMEOUT_MAX_MS = 600_000
+_LONG_FOREGROUND_REASON = (
+    "A foreground Bash command may run at most 10 minutes here. For a longer command use "
+    "Bash with run_in_background and a timeout long enough for it."
+)
 _NON_DURABLE_SCHEDULER_REASON = (
     "Claude's {tool_name} is not an AgentsDock durable job and cannot be relied on "
     "to survive this turn or deliver a later chat update. If the user explicitly "
@@ -1030,12 +1038,17 @@ async def reject_untracked_background_hook(
 ) -> dict[str, Any]:
     """Keep Claude background work attached to the SDK's task lifecycle."""
 
-    reason = claude_untracked_background_reason(
-        str(hook_input.get("tool_name") or ""),
-        hook_input.get("tool_input")
-        if isinstance(hook_input.get("tool_input"), dict)
-        else {},
-    )
+    tool_name = str(hook_input.get("tool_name") or "")
+    tool_input = hook_input.get("tool_input") if isinstance(hook_input.get("tool_input"), dict) else {}
+    reason = claude_untracked_background_reason(tool_name, tool_input)
+    if (
+        reason is None
+        and tool_name.strip().lower() == "bash"
+        and not tool_input.get("run_in_background")
+        and isinstance(tool_input.get("timeout"), (int, float))
+        and tool_input["timeout"] > _FOREGROUND_TIMEOUT_MAX_MS
+    ):
+        reason = _LONG_FOREGROUND_REASON
     if reason is None:
         return {}
     return {
