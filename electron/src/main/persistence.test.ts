@@ -937,6 +937,18 @@ describe('multi-server cache foundations', () => {
     ])
   })
 
+  it('leaves unarchived job run chats out of the unread count, as the sidebar does not list them', () => {
+    const value = cache()
+    const run = { job_id: 'job-1', session_id: 'parent' }
+    value.putSessions('server-a', [
+      { ...session('parent'), manual_unread: true },
+      { ...session('run-live'), latest_agent_event_seq: 3, last_read_agent_event_seq: 1, scheduled_job_run: run },
+      { ...session('run-done', true), manual_unread: true, scheduled_job_run: run }
+    ])
+
+    expect(value.serverSummary('server-a')).toEqual(expect.objectContaining({ sessionCount: 3, activeSessionCount: 2, archivedSessionCount: 1, unreadCount: 1 }))
+  })
+
   it('searches titles and cached content across explicit server namespaces with compound identity', () => {
     const value = cache()
     value.putSession('server-a', { ...session('same-id'), title: 'Needle Alpha' })

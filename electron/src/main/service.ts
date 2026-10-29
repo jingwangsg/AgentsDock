@@ -7874,8 +7874,14 @@ export class AppService {
     const onScreen = this.timelineSubscriptions.has(sessionId) && this.anyWindowFocused()
     const session = this.sessions.find(candidate => candidate.id === sessionId)
     const profile = this.settings.getProfile(scope.profileId)
-    appLog('notify', 'turn end', { sessionId, seq, source, onScreen, known: Boolean(session) })
-    if (onScreen || !session || !profile) return
+    // Same rule as notifyOnce in mobile-react: a job run chat other than the open one, archived or not,
+    // ends a turn without a banner. The job card in the chat that scheduled it reports the run, and a job
+    // that runs every minute would raise one banner per run. An active emergency alert means the run needs
+    // the user, so its turn end notifies like any chat's. Its questions and approvals still notify from
+    // the renderer store (needs_user_action).
+    const skipRunChatBanner = Boolean(session?.scheduled_job_run) && sessionId !== this.focusedSessionId && session?.emergency_alert?.status !== 'active'
+    appLog('notify', 'turn end', { sessionId, seq, source, onScreen, known: Boolean(session), skipRunChatBanner })
+    if (onScreen || !session || !profile || skipRunChatBanner) return
     this.showProfileNotification({
       title: session.title,
       body: t('notifications.turnFinished'),

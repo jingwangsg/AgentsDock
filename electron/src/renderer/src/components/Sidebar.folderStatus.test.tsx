@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentsDockAPI } from '@shared/ipc'
 import type { PublicServerProfile, Session } from '@shared/types'
@@ -73,5 +73,24 @@ describe('folder header status dots', () => {
     expect([...other.querySelectorAll('.status-dot')].map(dot => dot.className)).toEqual(['status-dot attention'])
     const archived = screen.getByText('Archived').closest('button')!
     expect([...archived.querySelectorAll('.status-dot')].map(dot => dot.className)).toEqual(['status-dot emergency'])
+  })
+
+  it('leaves an unread job run chat out of the list, the chat count and the folder dots unless it is the open chat', () => {
+    const runChat = { id: 'chat-run', title: 'Nightly sweep', folder: 'Survey', backend: 'codex', manual_unread: true, scheduled_job_run: { job_id: 'job-1', session_id: quiet.id } } as Session
+    useAppStore.setState({ sessions: [quiet, runChat], collapsedFolders: new Set() })
+    render(<Sidebar />)
+
+    expect(screen.queryByText('Nightly sweep')).toBeNull()
+    expect(screen.getByText('1 chat')).toBeInTheDocument()
+    const survey = screen.getByText('Survey').closest('button')!
+    expect(survey.querySelectorAll('.status-dot')).toHaveLength(0)
+    expect(survey.querySelector('small')).toHaveTextContent('1')
+
+    act(() => useAppStore.setState({ selectedSessionId: runChat.id }))
+    expect(screen.getByText('Nightly sweep').querySelector('.session-run-mark')).not.toBeNull()
+    expect(screen.getByText('2 chats')).toBeInTheDocument()
+    // A terminal tab in front of the open run chat keeps its row.
+    act(() => useAppStore.setState({ selectedSurfaceId: 'terminal-1' }))
+    expect(screen.getByText('Nightly sweep')).toBeInTheDocument()
   })
 })

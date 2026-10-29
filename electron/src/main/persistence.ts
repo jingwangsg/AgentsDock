@@ -6,6 +6,7 @@ import { compactTimelineEvent, compactTimelineEvents } from '../shared/event-com
 import { incompleteLeadingRunId } from '../shared/semantic-timeline'
 import { agentFileBelongsToSession, isolateSessionEvent } from '../shared/session-files'
 import { chatMailAttachments } from '../shared/chat-inbox'
+import { unreadCount } from '../shared/chat-visibility'
 import { isImportedCodexRuntimeNotification, isImportedSourceProvenAssistantReplay, isImportedSourceProvenNativeReplay, isImportedSourceProvenRepair, mergeProviderInterruptionEvent } from '../shared/provider-origin'
 import { isSearchableEvent, searchEventRole, searchableEventText, searchFtsQuery, searchSnippet, searchTokens } from './search'
 import { reportStartupStorageError, reportStorageError } from './storage-health'
@@ -434,40 +435,41 @@ export class LocalCache {
   }
 
   serverSummary(serverId: string): CachedServerSummary {
-    const row = this.statement(`
-      SELECT
-        COUNT(*) AS session_count,
-        SUM(CASE WHEN COALESCE(json_extract(json, '$.archived'), 0) = 0 THEN 1 ELSE 0 END) AS active_count,
-        SUM(CASE WHEN COALESCE(json_extract(json, '$.archived'), 0) <> 0 THEN 1 ELSE 0 END) AS archived_count,
-        SUM(CASE
-          WHEN COALESCE(json_extract(json, '$.archived'), 0) = 0
-           AND (
-             COALESCE(json_extract(json, '$.manual_unread'), 0) <> 0
-             OR COALESCE(json_extract(json, '$.latest_agent_event_seq'), 0)
-                > COALESCE(json_extract(json, '$.last_read_agent_event_seq'), 0)
-           )
-          THEN 1 ELSE 0
-        END) AS unread_count,
-        SUM(CASE
-          WHEN COALESCE(json_extract(json, '$.archived'), 0) = 0
-           AND COALESCE(json_extract(json, '$.pinned'), 0) <> 0
-          THEN 1 ELSE 0
-        END) AS pinned_count,
-        MAX(updated_at) AS updated_at
+    const totals = this.statement(`
+      SELECT COUNT(*) AS session_count, MAX(updated_at) AS updated_at
       FROM sessions
       WHERE server_id = ?
-    `).get(serverId) as {
-      session_count: number; active_count: number | null; archived_count: number | null
-      unread_count: number | null; pinned_count: number | null; updated_at: number | null
-    }
+    `).get(serverId) as { session_count: number; updated_at: number | null }
+    // Unread is counted with unreadCount (shared/chat-visibility), the dock badge's rule, so SQL only
+    // reads the fields it needs. The pinned, active and archived counts come from the same rows, so
+    // each chat's JSON is parsed once: a second pass made this about 1 ms slower on 1000 chats.
+    // `->` returns JSON text (or NULL when the key is absent), which JSON.parse always accepts.
+    const active = this.statement(`
+      SELECT
+        json_extract(json, '$.pinned') AS pinned,
+        json_extract(json, '$.manual_unread') AS manual_unread,
+        json_extract(json, '$.latest_agent_event_seq') AS latest_agent_event_seq,
+        json_extract(json, '$.last_read_agent_event_seq') AS last_read_agent_event_seq,
+        json -> '$.scheduled_job_run' AS scheduled_job_run
+      FROM sessions
+      WHERE server_id = ? AND COALESCE(json_extract(json, '$.archived'), 0) = 0
+    `).all(serverId) as Array<{
+      pinned: number | null; manual_unread: number | null; latest_agent_event_seq: number | null
+      last_read_agent_event_seq: number | null; scheduled_job_run: string | null
+    }>
+    const sessionCount = Number(totals.session_count ?? 0)
     return {
       serverId,
-      sessionCount: Number(row.session_count ?? 0),
-      activeSessionCount: Number(row.active_count ?? 0),
-      archivedSessionCount: Number(row.archived_count ?? 0),
-      unreadCount: Number(row.unread_count ?? 0),
-      pinnedCount: Number(row.pinned_count ?? 0),
-      updatedAt: row.updated_at == null ? null : Number(row.updated_at)
+      sessionCount,
+      activeSessionCount: active.length,
+      archivedSessionCount: sessionCount - active.length,
+      unreadCount: unreadCount(active.map(session => ({
+        ...session,
+        manual_unread: Boolean(session.manual_unread),
+        scheduled_job_run: session.scheduled_job_run == null ? null : JSON.parse(session.scheduled_job_run)
+      }))),
+      pinnedCount: active.filter(session => session.pinned).length,
+      updatedAt: totals.updated_at == null ? null : Number(totals.updated_at)
     }
   }
 

@@ -12,6 +12,7 @@ import {
   Columns2, History, PanelLeftClose, Pencil, Pin, PinOff, Plus, RefreshCw, Search, Settings, Share2, SquareTerminal, Trash2, Undo2, UsersRound, X
 } from 'lucide-react'
 import type { Session, Surface } from '@shared/types'
+import { isHiddenRunChat, sessionUnread } from '@shared/chat-visibility'
 import { completedPrefixForkAvailable } from '@shared/session-fork'
 import { localSessionImportSupported } from '@shared/local-session-import'
 import { readyChatBackends } from '@shared/runtime-catalog'
@@ -24,7 +25,7 @@ import { rankSessionsForSearch, sidebarFolders } from '../lib/sessions'
 import { surfaceSubline, surfaceTitle } from '../lib/surfaces'
 import { useTerminalStatus } from '../lib/terminal-status'
 import { getWorkspacePreference, setWorkspacePreference } from '../lib/workspace-preferences'
-import { handleMenuCommand, selectMailHintPending, selectBulletinHintPending, sessionUnread, useAppStore } from '../store/app-store'
+import { handleMenuCommand, selectMailHintPending, selectBulletinHintPending, useAppStore } from '../store/app-store'
 import { BackendMark } from './BackendMark'
 import { ServerSelector } from './ServerSelector'
 import { ShortcutTooltip } from './ShortcutTooltip'
@@ -62,6 +63,8 @@ export function Sidebar({ hidden = false }: { hidden?: boolean }) {
   const selectedSurfaceId = useAppStore(state => state.selectedSurfaceId)
   // While a terminal or browser tab is open, no chat row reads as selected.
   const selectedId = useAppStore(state => state.selectedSurfaceId ? null : state.selectedSessionId)
+  // A run chat stays listed while it is the open chat, also behind a terminal or browser tab.
+  const openSessionId = useAppStore(state => state.selectedSessionId)
   const chatPanes = useAppStore(state => state.chatPanes)
   const activeProfileId = useAppStore(state => state.activeProfileId)
   const profileGeneration = useAppStore(state => state.profileGeneration)
@@ -74,7 +77,8 @@ export function Sidebar({ hidden = false }: { hidden?: boolean }) {
   const folderOrder = useAppStore(state => state.folderOrder)
   const collapsed = useAppStore(state => state.collapsedFolders)
   const archivedCollapsed = useAppStore(state => state.archivedCollapsed)
-  const chatCount = sessions.filter(session => !session.archived).length
+  const listedSessions = useMemo(() => sessions.filter(session => !isHiddenRunChat(session, openSessionId)), [sessions, openSessionId])
+  const chatCount = listedSessions.filter(session => !session.archived).length
   const [dragging, setDragging] = useState<{ id: string; label: string; type: 'session' | 'folder' } | null>(null)
   const [drop, setDrop] = useState<DropIndicator | null>(null)
   const dropRef = useRef<DropIndicator | null>(null)
@@ -85,8 +89,8 @@ export function Sidebar({ hidden = false }: { hidden?: boolean }) {
   const sidebarScrollingUntil = useRef(0)
   const sidebarScrollTimer = useRef<number | null>(null)
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: SIDEBAR_LONG_PRESS }))
-  const sections = useMemo(() => buildSections(sessions, folderOrder, '', undefined, surfaces), [sessions, folderOrder, surfaces, getLocale()])
-  const computedFolders = useMemo(() => sidebarFolders(sessions, folderOrder), [folderOrder, sessions])
+  const sections = useMemo(() => buildSections(listedSessions, folderOrder, '', undefined, surfaces), [listedSessions, folderOrder, surfaces, getLocale()])
+  const computedFolders = useMemo(() => sidebarFolders(listedSessions, folderOrder), [folderOrder, listedSessions])
   const stableFolders = useRef(computedFolders)
   if (!stringArraysEqual(stableFolders.current, computedFolders)) stableFolders.current = computedFolders
   const folders = stableFolders.current
