@@ -1,5 +1,39 @@
 # Public development log
 
+## 2026-10-29 — Job run chats stay out of the desktop sidebar, search, badges and turn-end banners (desktop)
+
+- Since 2026-10-14 the desktop sidebar listed every run chat of a
+  standalone scheduled job like an ordinary chat. That change was based on
+  a wrong reading of Codex: the ChatGPT app's default sidebar view leaves
+  scheduled runs out (its Scheduled filter is off by default). Jobs whose
+  runs overlapped filled the sidebar with run chats titled after the job,
+  each counted in the unread badges and each raising "Response finished".
+- A run chat that is not archived is now left out of the sidebar list, the
+  chat count, the folder dots, the folder list and Search chats, unless it
+  is the open chat. The job card's Open run chat link in the chat that
+  scheduled the job opens it; it is then listed with its clock mark, also
+  while a terminal or browser tab is in front of it. With no chat
+  selected (a first launch, or after deleting the open chat), the app opens
+  the first chat that is not a run chat.
+- The app icon badge and the server badges, including the counts kept for
+  servers that are not active, leave unarchived run chats out, as on
+  Android. The per-server count now reads the unarchived chats' fields once
+  and applies the same rule as the icon badge: on a cache of 1000 chats
+  with 990 archived run chats it takes 1.35-1.42 ms instead of
+  1.82-1.96 ms; with 1000 unarchived chats, 4.1-4.4 ms instead of
+  2.9-3.1 ms.
+- As on Android, a run chat other than the open one, archived or not,
+  finishes a turn without a "Response finished" banner unless it has an
+  active emergency alert. Emergency banners and "waiting for you"
+  notifications are unchanged.
+- Checked in the unpackaged app with an isolated profile against an
+  isolated server running a real Codex standalone job. Before the change:
+  four run chats listed, "6 chats", both badges at 5, and a banner for
+  each run. After: "2 chats", both badges at 1, no banner (the app log
+  records the skipped turn end), Search chats finds no run chat, and Open
+  run chat opens and lists the run chat. Not checked in the app: a
+  question or emergency alert raised inside a run chat (covered by tests).
+
 ## 2026-10-29 — Job run chats no longer notify when a turn ends, unless open or raising an emergency alert (mobile)
 
 - The sidebar lists a standalone job's run chat only while it is open or
