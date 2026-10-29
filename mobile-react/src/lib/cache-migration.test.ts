@@ -327,10 +327,11 @@ assertEqual(summarizeCachedSessions('server-a', [
   session('unread', 'thread-1', { latest_agent_event_seq: 4, last_read_agent_event_seq: 2, pinned: true }),
   session('read', 'thread-2', { latest_agent_event_seq: 2, last_read_agent_event_seq: 2 }),
   session('archived', 'thread-3', { archived: true, manual_unread: true, pinned: true }),
+  session('run', 'thread-4', { manual_unread: true, scheduled_job_run: { job_id: 'job-1', session_id: 'unread' } }),
 ]), {
   namespace: 'server-a',
-  sessionCount: 3,
-  activeSessionCount: 2,
+  sessionCount: 4,
+  activeSessionCount: 3,
   archivedSessionCount: 1,
   unreadCount: 1,
   pinnedCount: 1,

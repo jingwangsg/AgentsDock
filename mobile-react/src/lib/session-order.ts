@@ -30,6 +30,15 @@ export function sidebarVisibleSessions(sessions: Session[], selectedSessionId: s
   return sessions.filter(session => !isHiddenRunChat(session, selectedSessionId))
 }
 
+/**
+ * Unread chats the sidebar lists outside Archived, so the badges match the list. The open run chat is
+ * left out too: opening a chat marks it read, and only a Mark as Unread on it while it stays open goes
+ * uncounted.
+ */
+export function unreadCount(sessions: readonly Session[]): number {
+  return sessions.filter(session => !session.archived && !isHiddenRunChat(session, null) && (session.manual_unread || (session.latest_agent_event_seq ?? 0) > (session.last_read_agent_event_seq ?? 0))).length
+}
+
 export function orderedSessionSections(
   sessions: Session[],
   folderOrder: string[],

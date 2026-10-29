@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Session } from '../types'
-import { orderedSessionSections, rankMentionRows, rememberedFolderOrder, resolveSidebarDrop, sidebarVisibleSessions, type SidebarDropRow } from './session-order'
+import { orderedSessionSections, rankMentionRows, rememberedFolderOrder, resolveSidebarDrop, sidebarVisibleSessions, unreadCount, type SidebarDropRow } from './session-order'
 
 function session(id: string, folder = 'General'): Session {
   return { id, title: id, folder, backend: 'codex' } as Session
@@ -122,6 +122,18 @@ test('a standalone job run chat is listed only while it is open or once archived
   const finished = { ...session('run-done', 'Research'), archived: true, scheduled_job_run: { job_id: 'job-1', session_id: 'parent' } } as Session
   assert.deepEqual(sidebarVisibleSessions([parent, running, finished], null).map(value => value.id), ['parent', 'run-done'])
   assert.deepEqual(sidebarVisibleSessions([parent, running, finished], 'run-live').map(value => value.id), ['parent', 'run-live', 'run-done'])
+})
+
+test('the unread count leaves out archived chats and the job run chats the sidebar hides', () => {
+  const unread = { latest_agent_event_seq: 2, last_read_agent_event_seq: 1 }
+  const run = { job_id: 'job-1', session_id: 'parent' }
+  const counted = [{ ...session('parent'), ...unread }, { ...session('marked'), manual_unread: true }]
+  const leftOut = [
+    { ...session('read'), latest_agent_event_seq: 3, last_read_agent_event_seq: 3 },
+    { ...session('archived'), ...unread, archived: true },
+    { ...session('run-live'), ...unread, scheduled_job_run: run },
+  ]
+  assert.equal(unreadCount([...counted, ...leftOut] as Session[]), counted.length)
 })
 
 test('@ picker rows rank a title match first, then every term matching a field in order, then other matches', () => {

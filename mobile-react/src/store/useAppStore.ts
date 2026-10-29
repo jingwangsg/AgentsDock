@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { rememberedFolderOrder } from '../lib/session-order'
+import { rememberedFolderOrder, unreadCount } from '../lib/session-order'
 import { sessionNeedsProviderInteraction } from '../lib/claude-controls'
 import { newIdempotencyKey } from '../lib/team-network'
 import { remoteChatTitlesFrom } from '../lib/live-chat-title'
@@ -4765,10 +4765,6 @@ function updateProfileRuntime(
   const next = [...profiles]
   next[index] = { ...current, ...patch }
   return next
-}
-
-function unreadCount(sessions: readonly Session[]): number {
-  return sessions.filter(session => !session.archived && (session.manual_unread || (session.latest_agent_event_seq ?? 0) > (session.last_read_agent_event_seq ?? 0))).length
 }
 
 /** The folder's newest live chat; a chat or terminal created there starts in its directory. */
