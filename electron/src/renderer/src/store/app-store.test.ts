@@ -5562,6 +5562,80 @@ describe('live reasoning summary store integration', () => {
   })
 })
 
+describe('job run chats', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  it('leaves job run chats out of the dock badge, while one that needs the user still notifies', async () => {
+    const profile = { ...profileFor('profile-badge'), serverIdentity: 'server-badge' }
+    const handlers = new Map<string, (payload: any) => void>()
+    const setBadge = vi.fn().mockResolvedValue(undefined)
+    const notify = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        bootstrap: vi.fn().mockResolvedValue(profileBootstrap(profile, [profile], 3)),
+        native: { log: vi.fn().mockResolvedValue(undefined), setBadge, notify },
+        events: { on: vi.fn((channel: string, handler: (payload: any) => void) => { handlers.set(channel, handler); return () => {} }) }
+      } as unknown as AgentsDockAPI
+    })
+    const focus = vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    useAppStore.setState({
+      initialized: false, profiles: [], activeProfileId: null, profileGeneration: 0,
+      sessions: [], selectedSessionId: null, chatPanes: { primary: null, secondary: null },
+      focusedChatPane: 'primary', snapshots: {}, collapsedFolders: new Set(), archivedCollapsed: false
+    })
+    await useAppStore.getState().initialize()
+    const ordinary = { ...sessionFor('ordinary-chat'), manual_unread: true }
+    const run = { ...sessionFor('nightly-run'), title: 'Nightly sweep', latest_agent_event_seq: 4, scheduled_job_run: { job_id: 'job-1', session_id: ordinary.id } }
+    useAppStore.setState({ sessions: [ordinary, run], selectedSessionId: ordinary.id, chatPanes: { primary: ordinary.id, secondary: null } })
+
+    handlers.get('server:sessions')?.({ profileId: profile.id, profileGeneration: 3, sessions: [ordinary, run] })
+    expect(setBadge).toHaveBeenLastCalledWith(1)
+    handlers.get('server:sessions')?.({ profileId: profile.id, profileGeneration: 3, sessions: [ordinary, { ...run, codex_needs_user_action: true }] })
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Nightly sweep', body: 'The agent is waiting for you', sessionId: run.id }))
+    focus.mockRestore()
+  })
+
+  it('opens the first chat other than a job run chat when none is selected', async () => {
+    const parent = sessionFor('parent-chat')
+    const run = { ...sessionFor('nightly-run'), scheduled_job_run: { job_id: 'job-1', session_id: parent.id } }
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        bootstrap: vi.fn().mockResolvedValue({
+          settings: { serverUrl: 'http://example.test', hasAccessToken: false, serverSetupComplete: true },
+          health: null,
+          sessions: [run, parent],
+          jobs: [],
+          runtimeCatalog: null,
+          selectedSessionId: null,
+          folderOrder: [],
+          collapsedFolders: [],
+          archivedCollapsed: false
+        } satisfies BootstrapPayload),
+        timeline: {
+          cached: vi.fn(async (sessionId: string) => ({ ...snapshot(sessionId, []), session: sessionFor(sessionId), historyVerified: true })),
+          subscribe: vi.fn().mockResolvedValue(undefined),
+          open: vi.fn(),
+          unsubscribe: vi.fn().mockResolvedValue(undefined)
+        },
+        preferences: { get: vi.fn().mockResolvedValue(null), set: vi.fn().mockResolvedValue(undefined) },
+        native: { log: vi.fn().mockResolvedValue(undefined), setBadge: vi.fn().mockResolvedValue(undefined) },
+        events: { on: vi.fn().mockReturnValue(() => {}) }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      initialized: false, profiles: [], activeProfileId: null, profileGeneration: 0,
+      sessions: [], selectedSessionId: null, chatPanes: { primary: null, secondary: null },
+      focusedChatPane: 'primary', snapshots: {}, collapsedFolders: new Set(), archivedCollapsed: false
+    })
+
+    await useAppStore.getState().initialize()
+
+    expect(useAppStore.getState().selectedSessionId).toBe(parent.id)
+  })
+})
+
 describe('emergency alert store integration', () => {
   afterEach(() => vi.restoreAllMocks())
 

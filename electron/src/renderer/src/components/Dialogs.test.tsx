@@ -2772,4 +2772,38 @@ describe('SearchDialog keyboard navigation', () => {
     expect(selectSession).not.toHaveBeenCalled()
     expect(useAppStore.getState().modals.search).toBe(true)
   })
+
+  it('leaves job run chats out of the results, from this server and from cached servers, unless the run chat is open', async () => {
+    const runChat = (id: string, title: string): Session => ({ id, title, backend: 'codex', scheduled_job_run: { job_id: 'job-1', session_id: 'alpha' } })
+    const searchAllProfiles = vi.fn().mockResolvedValue([
+      { profileId: 'remote-profile', profileName: 'Remote Lab', serverIdentity: 'remote-server', session: runChat('remote-run', 'Nightly remote run'), source: 'title' },
+      { profileId: 'remote-profile', profileName: 'Remote Lab', serverIdentity: 'remote-server', session: { id: 'remote-chat', title: 'Nightly notes', backend: 'codex' }, source: 'title' }
+    ])
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { sessions: { searchHistory: vi.fn().mockResolvedValue([]), searchAllProfiles } } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      activeProfileId: 'local-profile',
+      profiles: [
+        { id: 'local-profile', name: 'Local', serverUrl: 'http://local', hasAccessToken: true, serverSetupComplete: true, connectionState: 'online', cachedUnreadCount: 0 },
+        { id: 'remote-profile', name: 'Remote Lab', serverUrl: 'http://remote', serverIdentity: 'remote-server', hasAccessToken: true, serverSetupComplete: true, connectionState: 'cached', cachedUnreadCount: 0 }
+      ],
+      sessions: [...searchSessions, runChat('local-run', 'Nightly sweep')]
+    })
+    const user = userEvent.setup()
+    const resultTitles = async () => {
+      render(<SearchDialog />)
+      await user.type(screen.getByRole('combobox'), 'Nightly')
+      await screen.findByRole('option', { name: /Nightly notes/ })
+      // firstChild: a cached server's result shows the server name in an <em> inside the <strong>.
+      const titles = screen.getAllByRole('option').map(option => option.querySelector('strong')?.firstChild?.textContent)
+      cleanup()
+      return titles
+    }
+
+    expect(await resultTitles()).toEqual(['Nightly notes'])
+    useAppStore.setState({ selectedSessionId: 'local-run' })
+    expect(await resultTitles()).toEqual(['Nightly sweep', 'Nightly notes'])
+  })
 })

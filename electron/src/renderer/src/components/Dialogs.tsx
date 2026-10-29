@@ -7,6 +7,7 @@ import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, u
 import * as Dialog from '@radix-ui/react-dialog'
 import { ArrowRight, Check, ChevronDown, ChevronRight, CircleAlert, Clock3, Copy, Download, FileText, FolderOpen, GitFork, Import, KeyRound, LoaderCircle, RefreshCw, RotateCcw, Search, Server, Sparkles, X } from 'lucide-react'
 import type { AgentFile, AppUpdateStatus, AppUpdateTrack, Backend, BulkImportSessionItem, BulkImportSessionResult, ChatReference, ChatReferenceAction, CoordinatedServerUpdate, CreateJobInput, Health, Job, JobContextMode, JobScheduleKind, LocalSessionCandidate, ServerRestartBlockerSnapshot, ServerSetupCapabilities, ServerSetupProgress, ServerUpdateStatus, ServerUpdateTrack, Session, TeamReference, UpdateJobInput, WorkspaceProfileScope } from '@shared/types'
+import { isHiddenRunChat } from '@shared/chat-visibility'
 import { fuzzyScore } from '@shared/fuzzy'
 import { LOCAL_SESSION_IMPORT_HARD_LIST_LIMIT, cursorLocalSessionImportSupported, localSessionImportCapability, localSessionImportKey, localSessionImportListLimit, localSessionImportSupported } from '@shared/local-session-import'
 import { DEFAULT_SERVER_URL } from '@shared/server-url'
@@ -3578,6 +3579,7 @@ export function SearchDialog() {
   useLocale()
   const open = useAppStore(state => state.modals.search)
   const sessions = useAppStore(state => state.sessions)
+  const selectedSessionId = useAppStore(state => state.selectedSessionId)
   const profiles = useAppStore(state => state.profiles)
   const activeProfileId = useAppStore(state => state.activeProfileId)
   const [query, setQuery] = useState('')
@@ -3595,7 +3597,7 @@ export function SearchDialog() {
   const filtered = useMemo(() => {
     const currentProfile = profiles.find(profile => profile.id === activeProfileId)
     const cached = new Map(profileSearch.results.map(result => [`${result.profileId}\u0000${result.session.id}`, result]))
-    const current = rankSessionsForSearch(sessions, query, new Set(historyResults.keys())).map(session => {
+    const current = rankSessionsForSearch(sessions.filter(session => !isHiddenRunChat(session, selectedSessionId)), query, new Set(historyResults.keys())).map(session => {
       const global = activeProfileId ? cached.get(`${activeProfileId}\u0000${session.id}`) : undefined
       return {
         key: `${activeProfileId ?? 'active'}\u0000${session.id}`,
@@ -3609,12 +3611,12 @@ export function SearchDialog() {
     const seen = new Set(current.map(result => result.key))
     const additional = profileSearch.results.flatMap(result => {
       const key = `${result.profileId}\u0000${result.session.id}`
-      if (seen.has(key)) return []
+      if (seen.has(key) || isHiddenRunChat(result.session, result.profileId === activeProfileId ? selectedSessionId : null)) return []
       seen.add(key)
       return [{ key, profileId: result.profileId, profileName: result.profileName, serverIdentity: result.serverIdentity ?? null, session: result.session, match: result.history }]
     })
     return [...current, ...additional].slice(0, 18)
-  }, [activeProfileId, historyResults, profileSearch.results, profiles, query, sessions, getLocale()])
+  }, [activeProfileId, historyResults, profileSearch.results, profiles, query, selectedSessionId, sessions, getLocale()])
   const selectedIndex = Math.max(0, selectedResultKey ? filtered.findIndex(result => result.key === selectedResultKey) : 0)
   useEffect(() => { if (open) { setQuery(''); setSelectedResultKey(null) } }, [open])
   useEffect(() => {

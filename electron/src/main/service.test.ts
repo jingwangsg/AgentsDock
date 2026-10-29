@@ -10784,6 +10784,46 @@ describe('server profile lifecycle', () => {
     expect(electronHarness.notifications[1].options).toEqual({ title: 'Quick question', body: 'Response finished', silent: false })
   })
 
+  it('raises no turn-end notification for a job run chat other than the open one, archived or not, unless it has an active emergency alert', async () => {
+    electronHarness.notificationSupported = true
+    const run = { job_id: 'job-1', session_id: 'parent' }
+    const summary = (id: string, title: string, seq: number, patch: Partial<Session> = {}): Session => (
+      { id, title, backend: 'codex', latest_agent_event_seq: seq, latest_agent_event_type: 'turn_finished', latest_agent_event_at: `2026-09-28T08:00:${String(seq).padStart(2, '0')}Z`, ...patch }
+    )
+    const emergency = {
+      emergency_alert: { id: `emergency_${'e'.repeat(32)}`, status: 'active', severity: 'critical', message: 'Disk full.', raised_at: '2026-09-28T08:00:03Z' },
+      unacknowledged_emergency_count: 1
+    } as Partial<Session>
+    const rows = (seq: { parent: number; live: number; archived: number }, liveRunPatch: Partial<Session> = {}) => [
+      summary('parent', 'Training monitor', seq.parent),
+      summary('run-live', 'Nightly sweep', seq.live, { scheduled_job_run: run, ...liveRunPatch }),
+      summary('run-archived', 'Morning sweep', seq.archived, { scheduled_job_run: run, archived: true })
+    ]
+    const client = fakeClient({ sessions: async () => rows({ parent: 1, live: 1, archived: 1 }) })
+    const { service } = createProfileService({ 'http://a.test:7850': [client] })
+    service.addWindow({
+      isDestroyed: () => false, isFocused: () => true, on: vi.fn(),
+      webContents: { send: vi.fn(), isDestroyed: () => false, isLoadingMainFrame: () => false }
+    } as never)
+    const internals = service as unknown as { scope: unknown; runBackgroundRefresh(scope: unknown): Promise<void> }
+    const poll = async (next: Session[]) => {
+      client.sessions.mockResolvedValueOnce(next)
+      await internals.runBackgroundRefresh(internals.scope)
+    }
+    const titles = () => electronHarness.notifications.map(notification => notification.options.title).sort()
+
+    await internals.runBackgroundRefresh(internals.scope)
+    await poll(rows({ parent: 2, live: 2, archived: 2 }))
+    expect(titles()).toEqual(['Training monitor'])
+    // With an active emergency alert, the run chat raises its emergency banner and also its turn-end banner.
+    await poll(rows({ parent: 2, live: 3, archived: 2 }, emergency))
+    expect(titles()).toEqual(['EMERGENCY · Nightly sweep', 'Nightly sweep', 'Training monitor'])
+    // As the selected chat, a run chat (archived here) notifies like any chat that is not on screen.
+    service.putPreference('selectedSessionId', 'run-archived')
+    await poll(rows({ parent: 2, live: 3, archived: 3 }, emergency))
+    expect(titles()).toEqual(['EMERGENCY · Nightly sweep', 'Morning sweep', 'Nightly sweep', 'Training monitor'])
+  })
+
   it('shows the macOS banner instead of a native notification and routes Open through the existing delivery', async () => {
     electronHarness.notificationSupported = true
     const shown: NotificationPopupRequest[] = []

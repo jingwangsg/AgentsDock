@@ -5,6 +5,7 @@ import type {
   ServerForceRestartConfirmation, SessionExportFormat, Surface, SurfaceKind, TimelinePage, UpdateServerProfilePatch, UpdateSurfaceInput, WorkspaceProfileScope
 } from '@shared/types'
 import { updateQueuedTurns as reduceQueuedTurns } from '@shared/queue'
+import { unreadCount } from '@shared/chat-visibility'
 import type { TeamHubScope } from '@shared/team-hub'
 import { mailHintPending, type MailArrivalCursor, type MailboxCoverage, type MailHintProjection, type MailHintScope } from '@shared/team-mail-hints'
 import { bulletinHintPending, type BulletinHintRefresh } from '@shared/team-bulletin-hints'
@@ -908,7 +909,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           }
         }
         if (!get().selectedSessionId) {
-          const first = sessions.find(session => !session.archived)
+          const first = firstListedSession(sessions)
           if (first) queueMicrotask(() => void get().selectSession(first.id))
         }
       }),
@@ -2469,7 +2470,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const layout = reconcileChatPaneLayout(
           currentChatPaneLayout(state),
           new Set(sessions.map(session => session.id)),
-          sessions.find(session => !session.archived)?.id ?? null
+          firstListedSession(sessions)?.id ?? null
         )
         return { sessions, snapshots, ...focusedPaneAliases(state, layout) }
       })
@@ -2479,7 +2480,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (selectedAfterDelete) {
         await get().selectSessionInPane(selectedAfterDelete, get().focusedChatPane)
       } else if (!selectedAfterDelete) {
-        const next = sessions.find(session => !session.archived)
+        const next = firstListedSession(sessions)
         if (next) await get().selectSession(next.id)
       }
       return true
@@ -2883,7 +2884,12 @@ export async function waitForWorkspaceReady(): Promise<void> {
 function selectedSessionFromBootstrap(payload: BootstrapPayload): string | null {
   return payload.selectedSessionId && payload.sessions.some(session => session.id === payload.selectedSessionId && !session.archived)
     ? payload.selectedSessionId
-    : payload.sessions.find(session => !session.archived)?.id ?? null
+    : firstListedSession(payload.sessions)?.id ?? null
+}
+
+/** The chat to open when none is selected. A job run chat is skipped: the sidebar lists it only while it is open. */
+function firstListedSession(sessions: readonly Session[]): Session | undefined {
+  return sessions.find(session => !session.archived && !session.scheduled_job_run)
 }
 
 function currentChatPaneLayout(state: Pick<AppState, 'chatPanes' | 'focusedChatPane' | 'selectedSessionId'>): ChatPaneLayout {
@@ -5313,8 +5319,7 @@ function applyPendingSessionPatches(sessions: Session[]): Session[] {
     return pending ? { ...session, ...pending.patch } : session
   })
 }
-function isUnread(session: Session): boolean { return Boolean(session.manual_unread) || (session.latest_agent_event_seq ?? 0) > (session.last_read_agent_event_seq ?? 0) }
-function updateBadge(sessions: Session[]): void { void window.agentsDock.native.setBadge(sessions.filter(session => !session.archived && isUnread(session)).length) }
+function updateBadge(sessions: Session[]): void { void window.agentsDock.native.setBadge(unreadCount(sessions)) }
 
 export function handleMenuCommand(command: string, get: () => AppState, set: (value: Partial<AppState>) => void): void {
   if (command.startsWith('open-session:')) { void get().selectSession(command.slice('open-session:'.length)); return }
@@ -5417,5 +5422,4 @@ export function handleMenuCommand(command: string, get: () => AppState, set: (va
   else set({ error: `Unknown command: ${command}` })
 }
 
-export function sessionUnread(session: Session): boolean { return isUnread(session) }
 export function sessionRunning(sessionId: string): boolean { return useAppStore.getState().activeSessionIds.has(sessionId) }
