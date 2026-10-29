@@ -66,6 +66,31 @@ class SummarizeChatTests(unittest.TestCase):
         self.assertEqual(digest["mail"][0][1], "main thread")
         self.assertFalse(digest["running"])
 
+    def test_standalone_job_runs_are_agent_runs_of_the_owner_chat(self):
+        job = {"title": "Monitor"}
+        digest = self.summarize([
+            # Ended before the window: not listed.
+            event(1, "job_ran", -9, job=job, run_id="run_early", run_session_id="sess_r0"),
+            event(2, "job_finished", -8, run_id="run_early"),
+            # Started before the window and ended in it: listed.
+            event(3, "job_ran", -2, job=job, run_id="run_across", run_session_id="sess_r1"),
+            event(4, "job_finished", 1, run_id="run_across", result_text="Healthy."),
+            event(5, "turn_started", 2, run_id="run_wake", prompt="", purpose="chat_mailbox_wake"),
+            event(6, "job_ran", 3, job=job, run_id="run_stopped", run_session_id="sess_r2"),
+            event(7, "turn_finished", 4, run_id="run_wake", result_text="Replied."),
+            event(8, "job_finished", 5, run_id="run_stopped", stopped=True),
+            event(9, "job_ran", 6, job=job, run_id="run_open", run_session_id="sess_r3"),
+            # A job that runs in this chat has no run chat; its turn reports it.
+            event(10, "job_ran", 7, job=job, run_id="run_in_chat"),
+        ], last_minute=7)
+
+        self.assertEqual(
+            [activity_digest.outcome(run, 100) for run in digest["agent_runs"]],
+            ["03:31 finished: Healthy.", "03:34 finished: Replied.", "03:35 stopped", "still running"],
+        )
+        # The open run keeps its run chat running, not this one.
+        self.assertFalse(digest["running"])
+
     def test_turn_stopped_ends_a_run(self):
         digest = self.summarize([
             event(1, "turn_started", 2, run_id="run_a", prompt="long task", purpose=None),
@@ -165,6 +190,7 @@ class DigestOutputTests(unittest.TestCase):
         now = datetime.now(timezone.utc)
         self.until = datetime.fromtimestamp(now.timestamp() // 1800 * 1800, timezone.utc)
         self.responses = {"/api/admin/remote-servers": {"servers": []}}
+        self.requested = []
 
     def before_until(self, minutes):
         """A timestamp `minutes` minutes before the end of the window."""
@@ -172,6 +198,7 @@ class DigestOutputTests(unittest.TestCase):
 
     def run_digest(self, *args):
         def fake_get(hub, path, **query):
+            self.requested.append(path)
             response = self.responses[path]
             if callable(response):
                 response = response(query)
@@ -259,6 +286,35 @@ class DigestOutputTests(unittest.TestCase):
 
         self.assertIn("## Working · local hub · folder - · running at the end\nLatest model text: Running shard 5", output)
         self.assertNotIn("## Quiet", output)
+
+    def test_run_chats_are_not_read_and_their_runs_appear_in_the_owner_chat(self):
+        started = self.until - timedelta(minutes=5)
+        self.responses.update({
+            "/api/admin/remote-servers": {"servers": [{"id": "r1", "name": "gpu-box", "hidden": False}]},
+            "/api/sessions": {"sessions": []},
+            "/api/remote/r1/api/sessions": {"sessions": [
+                {"id": "sess_owner", "title": "Training", "latest_event_at": self.before_until(4)},
+                {"id": "sess_run", "title": "Monitor", "latest_event_at": self.before_until(4),
+                 "scheduled_job_run": {"job_id": "job_m", "session_id": "sess_owner"}},
+            ]},
+            "/api/remote/r1/api/sessions/sess_owner": {"events_omitted_before": 0, "events": [
+                {"seq": 1, "type": "job_ran", "ts": self.before_until(5), "job": {"id": "job_m", "title": "Monitor"},
+                 "run_id": "run_m", "run_session_id": "sess_run"},
+                {"seq": 2, "type": "job_finished", "ts": self.before_until(4), "job_title": "Monitor",
+                 "run_id": "run_m", "run_session_id": "sess_run", "result_text": "All shards healthy."},
+            ]},
+        })
+
+        output = self.run_digest("--since", "30m")
+        day_output = self.run_digest("--day", f"{started.astimezone(activity_digest.TZ):%Y-%m-%d}")
+
+        self.assertNotIn("/api/remote/r1/api/sessions/sess_run", self.requested)
+        self.assertIn("gpu-box: 1 chats with events", output)
+        self.assertIn("## Training · gpu-box · folder - · idle at the end", output)
+        self.assertIn("agent turn (scheduled job “Monitor”) →", output)
+        self.assertIn("finished: All shards healthy.", output)
+        self.assertNotIn("READ_ERRORS", output)
+        self.assertIn(f"Active hours: {started.astimezone(activity_digest.TZ):%H}", day_output)
 
     def test_a_long_chat_cannot_push_later_chats_out_of_the_output(self):
         long_events = [

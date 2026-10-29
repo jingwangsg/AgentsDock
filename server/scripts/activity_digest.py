@@ -12,7 +12,8 @@ in the app: the server may catch the chat up with its provider transcript.
 
 The user's messages are turns without a purpose that were not imported from
 a provider transcript: typed, queued or steered. Scheduled job runs, mailbox
-wakes and cross-chat mail are agent activity.
+wakes and cross-chat mail are agent activity. A standalone job's run chats
+are not read; the chat that owns the job reports each run.
 """
 from __future__ import annotations
 
@@ -121,6 +122,12 @@ def summarize_chat(events: list[dict], since: datetime, until: datetime, last_ev
     # last_text, end, running}. `end` is when the run stopped holding the
     # chat: its end event, the next turn's start, or the chat's latest event.
     runs: dict[str, dict] = {}
+    # run_id -> the same fields for the runs of this chat's standalone jobs.
+    # Each runs in a run chat of its own, which the digest does not read; this
+    # chat records its start (job_ran with run_session_id) and its end
+    # (job_finished). A run chat works beside this chat, so its run ends none
+    # of this chat's turns and does not make this chat running.
+    standalone_runs: dict[str, dict] = {}
     # run_id or queued_id -> {at, text, run_id or queued_id}; the message's
     # run is attached after the loop.
     messages: dict[str, dict] = {}
@@ -156,13 +163,16 @@ def summarize_chat(events: list[dict], since: datetime, until: datetime, last_ev
             messages.pop(event.get("queued_id"), None)
         elif kind == "turn_steered" and run_id and event.get("queued_id"):
             queued_runs[event["queued_id"]] = run_id
-        elif kind in ("turn_finished", "turn_stopped") and run_id:
+        elif kind in ("turn_finished", "turn_stopped", "job_finished") and run_id:
             # turn_stopped ends a run on Stop and when a restart interrupted it.
-            run = runs.setdefault(run_id, {})
+            run = (standalone_runs if kind == "job_finished" else runs).setdefault(run_id, {})
             run.setdefault("finished", at)
             run.setdefault("end", at)
             run["stopped"] = run.get("stopped") or kind == "turn_stopped" or bool(event.get("stopped"))
             run["result"] = event.get("result_text") or run.get("result") or ""
+        elif kind == "job_ran" and run_id and event.get("run_session_id"):
+            job = event.get("job") or {}
+            standalone_runs.setdefault(run_id, {}).update(started=at, purpose="scheduled_job", job_title=job.get("title"))
         elif kind == "assistant_text" and run_id:
             runs.setdefault(run_id, {})["last_text"] = event.get("text") or ""
         elif kind == "artifact_created" and since <= at < until:
@@ -171,18 +181,27 @@ def summarize_chat(events: list[dict], since: datetime, until: datetime, last_ev
         elif kind == "chat_conversation_message_received" and since <= at < until:
             mail.append((at, event.get("source_title") or "another chat", event.get("handoff_preview") or ""))
 
-    # Only the latest run can still be open; it has run up to the chat's latest event.
-    for run in runs.values():
+    # Only the latest turn can still be open, while several standalone runs
+    # can. An open run has run up to the chat's latest event.
+    for run in [*runs.values(), *standalone_runs.values()]:
         if "end" not in run:
             run.update(end=last_event_at, running=True)
     for message in messages.values():
         message["run"] = runs.get(message.get("run_id") or queued_runs.get(message.get("queued_id"), ""))
     # A run seen only by its end or its text started before the fetched events.
     active = [run for run in runs.values() if run.get("started", since) < until and run["end"] >= since]
+    # A standalone run is listed while it overlaps the window, also when it
+    # started earlier: its run chat is not read, so this is its only report.
+    # One seen only by its end has no start time to print.
+    standalone_active = [
+        run for run in standalone_runs.values() if "started" in run and run["started"] < until and run["end"] >= since
+    ]
+    agent_runs = [run for run in active if run.get("purpose") and run["started"] >= since] + standalone_active
     return {
         "messages": sorted((m for m in messages.values() if since <= m["at"] < until), key=lambda m: m["at"]),
-        "agent_runs": [run for run in active if run.get("purpose") and run["started"] >= since],
+        "agent_runs": sorted(agent_runs, key=lambda run: run["started"]),
         "active": active,
+        "standalone_active": standalone_active,
         "running": any(run.get("running") or run["end"] > until for run in active),
         "files": files,
         "mail": mail,
@@ -288,9 +307,13 @@ def main() -> int:
             if not prefix:
                 complete = False
             continue
+        # Run chats of standalone jobs are skipped: the owner chat reports
+        # each run, and a job that runs every minute makes 1,440 run chats a
+        # day, each read costing the server a page and a history sync.
         candidates = [
             session for session in sessions
             if session["id"] not in args.exclude
+            and not session.get("scheduled_job_run")
             and session.get("latest_event_at") and parse_ts(session["latest_event_at"]) >= since
         ]
         notes.append(f"{server}: {len(candidates)} chats with events")
@@ -314,7 +337,7 @@ def main() -> int:
             lines = render_chat(session, server, digest, LIMITS[mode]) + progress
             if mode == "day":
                 hours = set()
-                for run in digest["active"]:
+                for run in digest["active"] + digest["standalone_active"]:
                     hour = max(run.get("started", since), since).astimezone(TZ).replace(minute=0, second=0, microsecond=0)
                     while hour < min(run["end"], until):
                         hours.add(hour.hour)

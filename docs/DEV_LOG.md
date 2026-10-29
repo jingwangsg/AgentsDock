@@ -1,5 +1,32 @@
 # Public development log
 
+## 2026-10-30 — The activity digest no longer reads job run chats (server script)
+
+- `server/scripts/activity_digest.py` read every chat that had events in
+  its window, including each run chat of a standalone scheduled job. On a
+  remote server where two jobs run every minute, the daily digest found
+  1,869 run chats with events that day and sent over a thousand chat reads
+  to that server in 25 minutes. The server stopped answering twice, for
+  47 s and 63 s, and agent helper calls from other chats on it timed out.
+- The digest now skips run chats (`scheduled_job_run` set). The owner chat,
+  the chat that owns the job, reports each run from its `job_ran` and
+  `job_finished` events, in the line format the run chat's own section
+  used, for example "00:05 agent turn (scheduled job “Monitor”) → 00:06
+  finished: …". A run that started before the window and ended in it is
+  listed too, and the daily report counts these runs in the owner chat's
+  active hours. On that server the daily digest now reads 3 chats instead
+  of 1,872, and a half-hour digest 2 instead of 36 to 66.
+- A message the user types into a run chat is no longer quoted. The
+  digest has to skip these chats rather than read them more cheaply: each
+  read also makes the server catch the chat up with its provider
+  transcript, as opening it in the app does, and the server has no paged
+  read that skips this.
+- Verified with `tests.test_activity_digest`, and with both versions of
+  the script against an isolated server holding an owner chat, an ordinary
+  chat and three run chats: the previous script read all five chats, this
+  one reads two and prints under the owner chat the three run lines that
+  the previous script printed under the run chats.
+
 ## 2026-10-29 — A scheduled run whose agent could not start is reported as failed (server)
 
 - When Claude or Codex could not be started for a scheduled job run, for
