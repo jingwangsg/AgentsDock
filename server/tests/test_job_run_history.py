@@ -781,6 +781,24 @@ class JobRunHistoryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(event["exit_code"], 1)
             self.assertTrue(event["is_error"])
 
+    def test_a_run_whose_provider_never_started_is_failed_in_history_and_summary(self) -> None:
+        common = {"run_id": "start-failed-run", "purpose": "scheduled_job", "job_id": "job-1", "backend": "claude"}
+        reason = "Claude Agent SDK is unavailable: Claude is not authenticated on this server."
+        self.write_events([
+            self.event(1, "turn_started", prompt="Poll", **common),
+            self.event(2, "job_ran", **common),
+            self.event(3, "error", message=reason, **common),
+            self.event(4, "turn_finished", exit_code=None, result_text="", status="failed", **common),
+        ])
+
+        history = agent_server.read_scheduled_job_runs(self.session_id, "job-1")
+        semantic = agent_server.read_semantic_timeline_page(self.session_id, limit=1, tail=True)
+        summary = next(event for event in semantic["events"] if event["type"] == "job_summary")
+
+        self.assertEqual(history["runs"][0]["job_status"], "failed")
+        self.assertEqual(summary["job_status"], "failed")
+        self.assertEqual(summary["message"], reason)
+
     def test_terminal_job_exit_codes_preserve_success_and_stop_status(self) -> None:
         for event_type in ("turn_finished", "job_finished"):
             for fields, expected in (
@@ -788,6 +806,7 @@ class JobRunHistoryTests(unittest.IsolatedAsyncioTestCase):
                 ({"exit_code": None}, "completed"),
                 ({"exit_code": 0}, "completed"),
                 ({"exit_code": 1}, "failed"),
+                ({"exit_code": None, "status": "failed"}, "failed"),
                 ({"exit_code": -1, "stopped": True}, "stopped"),
             ):
                 with self.subTest(event_type=event_type, fields=fields):

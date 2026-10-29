@@ -1,5 +1,22 @@
 # Public development log
 
+## 2026-10-29 — A scheduled run whose agent could not start is reported as failed (server)
+
+- When Claude or Codex could not be started for a scheduled job run, for
+  example Claude on a server without `CLAUDE_CODE_OAUTH_TOKEN` or a Codex
+  binary that cannot be executed, the run's final event had no exit code
+  and no failure mark. The server counted the run as completed: the job
+  card and its run history said COMPLETED, and with "Archive successful
+  runs" the run chat of a standalone job was archived as a successful run.
+- The final event of such a run now says its status is failed. The job
+  card and the run history show FAILED, both while the chat is open and
+  after it is reopened, and a standalone job's run chat is not archived.
+  In an ordinary chat the start error is still shown once.
+- The report a standalone run sends to the chat that scheduled it now
+  says failed for every failed run. Before, a run whose CLI exited with an
+  error also showed COMPLETED on that chat's job card until the chat was
+  reopened.
+
 ## 2026-10-29 — Archived job run chats stay out of the sidebar's Archived section too (desktop, mobile)
 
 - A run chat archived by "Archive successful runs" was still listed under

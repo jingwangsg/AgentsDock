@@ -7,8 +7,10 @@ job archives successful runs, as Codex's "Archive successful runs".
 """
 import asyncio
 import json
+import os
 import unittest
 from collections import deque
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
 import agent_server
@@ -338,6 +340,92 @@ class StandaloneRunReportTests(unittest.IsolatedAsyncioTestCase):
                         **outcome,
                     })
                 archive.assert_not_awaited()
+
+    async def test_a_run_whose_provider_never_started_fails_and_keeps_the_run_chat(self) -> None:
+        # 2026-10-29: a standalone Claude job on a server without CLAUDE_CODE_OAUTH_TOKEN
+        # was reported COMPLETED and its run chat archived as a successful run: a start
+        # failure ends with exit_code None, which counted as completed.
+        run_chat = self.sessions()["sess_run"]
+        manifest = Path("/tmp/manifest.json")
+
+        async def claude_print() -> None:
+            with patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": ""}):
+                await agent_server.run_claude_print("sess_run", "run_standalone", "Check.", dict(run_chat), manifest)
+
+        async def claude_sdk() -> None:
+            # run_claude's refusals and every Agent SDK start failure end here, a chat-hosted job's included.
+            await agent_server.finish_claude_sdk_start_failure(
+                "sess_run", "run_standalone", agent_server.CLAUDE_OAUTH_TOKEN_MISSING_MESSAGE,
+            )
+
+        async def codex_exec() -> None:
+            missing = FileNotFoundError(2, "No such file or directory", "codex")
+            with patch.object(agent_server.asyncio, "create_subprocess_exec", AsyncMock(side_effect=missing)):
+                await agent_server.run_codex_exec("sess_run", "run_standalone", "Check.", dict(run_chat), manifest)
+
+        for name, start in {"Claude print": claude_print, "Claude SDK": claude_sdk, "Codex exec": codex_exec}.items():
+            with self.subTest(name):
+                events = AsyncMock(side_effect=self.echo_append_event)
+                archive = AsyncMock()
+                with (
+                    patch.object(agent_server.STORE, "sessions", self.sessions()),
+                    patch.dict(agent_server.JOBS.jobs, self.jobs(archive_successful_runs=True)),
+                    patch.dict(agent_server.RUN_METADATA, {"run_standalone": {
+                        "purpose": "scheduled_job",
+                        "job_id": "job_standalone",
+                        "job_title": "Monitor standalone",
+                    }}),
+                    patch.multiple(
+                        agent_server,
+                        append_event=events,
+                        update_session=archive,
+                        release_turn_slot=AsyncMock(return_value=True),
+                        schedule_next_queued_turn=Mock(),
+                        record_runtime_failure=Mock(),
+                        capture_git_baseline=AsyncMock(return_value=None),
+                        mark_codex_exec_context_usage_unavailable=AsyncMock(),
+                        refresh_native_session_title=AsyncMock(),
+                        schedule_generated_session_title=Mock(),
+                        finalize_cross_chat_terminal=AsyncMock(),
+                        schedule_model_capacity_resend=Mock(),
+                    ),
+                ):
+                    await start()
+
+                [terminal] = [call.args[2] for call in events.await_args_list if call.args[1] == "turn_finished"]
+                self.assertEqual(agent_server.scheduled_job_run_status({"type": "turn_finished", **terminal}), "failed")
+                # The error event before it already shows why; an error-flagged terminal
+                # would add a second error row in the apps and hide that reason.
+                self.assertFalse(agent_server.timeline_index_is_error({"type": "turn_finished", **terminal}))
+                [report] = [call.args[2] for call in events.await_args_list if call.args[1] == "job_finished"]
+                self.assertEqual(report["status"], "failed")
+                self.assertEqual(agent_server.scheduled_job_run_status({"type": "job_finished", **report}), "failed")
+                archive.assert_not_awaited()
+
+    async def test_a_run_that_exited_non_zero_reports_failed_to_the_owning_chat(self) -> None:
+        # The apps' job cards read status, not exit_code, from job_finished: such a
+        # run showed COMPLETED in the owning chat until the chat was reopened.
+        events = AsyncMock(side_effect=self.echo_append_event)
+        with (
+            patch.object(agent_server.STORE, "sessions", self.sessions()),
+            patch.dict(agent_server.JOBS.jobs, self.jobs(archive_successful_runs=False)),
+            patch.object(agent_server, "append_event", events),
+            patch.object(agent_server, "refresh_native_session_title", AsyncMock()),
+            patch.object(agent_server, "schedule_generated_session_title", Mock()),
+            patch.object(agent_server, "finalize_cross_chat_terminal", AsyncMock()),
+            patch.object(agent_server, "schedule_model_capacity_resend", Mock()),
+        ):
+            await agent_server.append_turn_finished_event("sess_run", {
+                "run_id": "run_standalone",
+                "exit_code": 1,
+                "result_text": "",
+                "purpose": "scheduled_job",
+                "job_id": "job_standalone",
+                "job_title": "Monitor standalone",
+            })
+
+        [report] = [call.args[2] for call in events.await_args_list if call.args[1] == "job_finished"]
+        self.assertEqual(report["status"], "failed")
 
     async def test_finished_run_keeps_the_run_chat_when_a_follow_up_is_queued(self) -> None:
         terminal = {
