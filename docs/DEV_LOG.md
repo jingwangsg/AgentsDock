@@ -1,5 +1,17 @@
 # Public development log
 
+## 2026-10-30 — A Claude agent's background command is no longer stopped after 2 hours (server)
+
+- Claude stops a `run_in_background` command when its timeout runs out, and
+  the longest timeout it allowed was 2 hours. A dashboard or policy server
+  that a user asked an agent to keep running stopped after 2 hours, and the
+  agent could not start it any other way, since AgentsDock refuses detached
+  shells. The server now starts Claude with `BASH_MAX_TIMEOUT_MS` at the
+  CLI's own ceiling, 2,147,483,647 ms (about 24.8 days); a value set in the
+  server's environment is kept. Checked with the real CLI: its Bash tool now
+  reports a background maximum of 2147483647 ms instead of 7200000. Stop
+  still ends such a command, and so does a server restart.
+
 ## 2026-10-30 — The activity digest no longer reads job run chats (server script)
 
 - `server/scripts/activity_digest.py` read every chat that had events in
