@@ -14,7 +14,9 @@
   Archived section on desktop, since the chat is not listed there; the
   alert's toast still shows it. When the mobile app picks a chat to open,
   such as after the open chat is deleted, it skips run chats, as the
-  desktop app already did.
+  desktop app already did. The mobile sidebar's chat count now counts the
+  chats it lists outside Archived, as desktop does; it showed 807 for a
+  list of three.
 
 ## 2026-10-29 — Job run chats stay out of the desktop sidebar, search, badges and turn-end banners (desktop)
 
