@@ -93,4 +93,17 @@ describe('folder header status dots', () => {
     act(() => useAppStore.setState({ selectedSurfaceId: 'terminal-1' }))
     expect(screen.getByText('Nightly sweep')).toBeInTheDocument()
   })
+
+  it('leaves an archived job run chat out of the Archived section unless it is the open chat', () => {
+    const archivedRun = { id: 'chat-run-done', title: 'Morning sweep', backend: 'codex', archived: true, scheduled_job_run: { job_id: 'job-1', session_id: quiet.id } } as Session
+    useAppStore.setState({ sessions: [quiet, archivedRun], archivedCollapsed: false })
+    render(<Sidebar />)
+
+    expect(screen.queryByText('Morning sweep')).toBeNull()
+    expect(screen.queryByText('Archived')).toBeNull()
+
+    act(() => useAppStore.setState({ selectedSessionId: archivedRun.id }))
+    expect(screen.getByText('Archived')).toBeInTheDocument()
+    expect(screen.getByText('Morning sweep').querySelector('.session-run-mark')).not.toBeNull()
+  })
 })

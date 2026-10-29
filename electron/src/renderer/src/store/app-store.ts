@@ -847,9 +847,10 @@ export const useAppStore = create<AppState>((set, get) => ({
           )
           const visible = visibleChatSessionIds(layout.panes)
           const snapshots = syncSnapshotSessions(pruneArchivedSnapshots(state.snapshots, sessions, visible), sessions)
+          // A job run chat is not listed, so its alert opens no folder or Archived section; the toast still shows it.
           const emergencyFolders = new Set(
             sessions
-              .filter(session => activeEmergencyAlert(session) && !session.archived && !session.pinned)
+              .filter(session => activeEmergencyAlert(session) && !session.archived && !session.pinned && !session.scheduled_job_run)
               .map(session => session.folder || 'General')
           )
           // Filtering only removes, so an unchanged size means unchanged members; keep the
@@ -859,7 +860,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             sessions,
             snapshots,
             collapsedFolders: collapsedFolders.length === state.collapsedFolders.size ? state.collapsedFolders : new Set(collapsedFolders),
-            archivedCollapsed: sessions.some(session => session.archived && activeEmergencyAlert(session)) ? false : state.archivedCollapsed,
+            archivedCollapsed: sessions.some(session => session.archived && !session.scheduled_job_run && activeEmergencyAlert(session)) ? false : state.archivedCollapsed,
             ...focusedPaneAliases(state, layout)
           }
         })
@@ -3263,7 +3264,7 @@ function workspaceStateFromBootstrap(
   const syncStatus: ChatSyncStatus = focusedSessionId ? (payload.health?.ok ? 'syncing' : 'offline') : 'idle'
   const emergencyFolders = new Set(
     payload.sessions
-      .filter(session => activeEmergencyAlert(session) && !session.archived && !session.pinned)
+      .filter(session => activeEmergencyAlert(session) && !session.archived && !session.pinned && !session.scheduled_job_run)
       .map(session => session.folder || 'General')
   )
   return {
@@ -3306,7 +3307,7 @@ function workspaceStateFromBootstrap(
     surfacesRevision: undefined,
     selectedSurfaceId: null,
     collapsedFolders: new Set(payload.collapsedFolders.filter(folder => !emergencyFolders.has(folder))),
-    archivedCollapsed: payload.sessions.some(session => session.archived && activeEmergencyAlert(session))
+    archivedCollapsed: payload.sessions.some(session => session.archived && !session.scheduled_job_run && activeEmergencyAlert(session))
       ? false
       : payload.archivedCollapsed,
     activeSessionIds: healthActiveSessionIDs(payload.health),

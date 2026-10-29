@@ -2,12 +2,13 @@ import type { Session } from './types'
 
 /**
  * A job run chat is a chat a standalone scheduled job created for one run. The sidebar and search list it
- * only while it is the open chat or once archived: the job card in the chat that scheduled the job opens
- * it, and a job that runs every minute would otherwise fill the list. ChatGPT.app's Codex sidebar also
- * leaves scheduled runs out of its default view (its Scheduled filter is off).
+ * only while it is the open chat, archived or not: a job that runs every minute would otherwise fill the
+ * list, or the Archived section when the job archives successful runs. The job card in the chat that
+ * scheduled the job opens the latest run's chat, and each entry under Previous runs opens its own.
+ * ChatGPT.app's Codex sidebar also leaves scheduled runs out of its default view (its Scheduled filter is off).
  */
-export function isHiddenRunChat(session: Pick<Session, 'id' | 'archived' | 'scheduled_job_run'>, selectedSessionId: string | null): boolean {
-  return Boolean(session.scheduled_job_run) && !session.archived && session.id !== selectedSessionId
+export function isHiddenRunChat(session: Pick<Session, 'id' | 'scheduled_job_run'>, selectedSessionId: string | null): boolean {
+  return Boolean(session.scheduled_job_run) && session.id !== selectedSessionId
 }
 
 export function sessionUnread(session: Pick<Session, 'manual_unread' | 'latest_agent_event_seq' | 'last_read_agent_event_seq'>): boolean {

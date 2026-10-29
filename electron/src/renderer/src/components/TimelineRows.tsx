@@ -2466,6 +2466,7 @@ function JobHistoryRun({ event, sessionId }: { event: Event; sessionId: string }
       <ChevronRight size={12} />
     </summary>
     {open && <div className="job-history-run-body">
+      {event.run_session_id?.trim() && <button type="button" className="job-detail-toggle" onClick={() => runTimelineAction(useAppStore.getState().selectSession(event.run_session_id!.trim()))}><MessageSquareShare size={12} />{t('timeline.job.openRunChat')}</button>}
       {presentation.structured
         ? <pre>{presentation.detail}</pre>
         : <div className="job-history-markdown"><MarkdownContent text={presentation.detail} sessionId={sessionId} fold={false} /></div>}

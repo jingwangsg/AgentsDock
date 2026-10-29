@@ -3614,6 +3614,43 @@ describe('timeline pin state', () => {
     expect(document.querySelector('.job-row')).toHaveAttribute('data-job-state', 'scheduled')
   })
 
+  it('opens an earlier standalone run\'s own chat from Previous runs, as the sidebar does not list it', () => {
+    const selectSession = vi.fn(async () => {})
+    useAppStore.setState({
+      selectSession,
+      jobs: [{
+        id: 'job-1', session_id: 'chat-1', title: 'Monitor training', prompt: 'Check it',
+        interval_seconds: 60, enabled: true, context_mode: 'standalone'
+      }],
+      sessions: [{ id: 'chat-1', title: 'Training goal', backend: 'codex' }]
+    } as Partial<ReturnType<typeof useAppStore.getState>>)
+    const earlier: Event = {
+      id: 'job-finished-1', session_id: 'chat-1', seq: 3, type: 'job_finished',
+      ts: '2026-10-06T10:01:00Z', run_id: 'run-1', job_id: 'job-1', exit_code: 0,
+      run_session_id: 'run-chat-1', result_text: 'Training is at step 600.'
+    }
+    const latest: Event = {
+      id: 'job-finished-2', session_id: 'chat-1', seq: 5, type: 'job_finished',
+      ts: '2026-10-06T10:02:00Z', run_id: 'run-2', job_id: 'job-1', exit_code: 0,
+      run_session_id: 'run-chat-2', result_text: 'Training is at step 1200.'
+    }
+    const item: JobItem = {
+      kind: 'job', id: 'job:job-1', key: 'job:job-1', seq: 5,
+      title: 'Monitor training', events: [earlier, latest], latest,
+      eventCount: 2, runCount: 2, startSeq: 3, endSeq: 5
+    }
+    const { container } = render(<TimelineRowView item={item} sessionId="chat-1" onFindFile={() => {}} pinnedItemIds={new Set()} />)
+
+    fireEvent.click(within(container).getByRole('button', { name: 'Previous runs 1' }))
+    const earlierRun = container.querySelector<HTMLDetailsElement>('.job-history-run')!
+    act(() => {
+      earlierRun.open = true
+      earlierRun.dispatchEvent(new Event('toggle'))
+    })
+    fireEvent.click(within(earlierRun).getByRole('button', { name: 'Open run chat' }))
+    expect(selectSession).toHaveBeenCalledWith('run-chat-1')
+  })
+
   it('links a standalone run to its own chat and treats that chat as part of the live job', () => {
     const selectSession = vi.fn(async () => {})
     useAppStore.setState({

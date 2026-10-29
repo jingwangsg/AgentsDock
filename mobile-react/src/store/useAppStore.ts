@@ -799,7 +799,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const scope = installConnection(activeProfile.id, activeProfile.serverURL, token, namespace, set)
         const selected = workspace.selectedSessionId && sessions.some(value => value.id === workspace.selectedSessionId)
           ? workspace.selectedSessionId
-          : sessions.find(value => !value.archived)?.id ?? null
+          : firstListedSession(sessions)?.id ?? null
         set({
           initialized: true,
           profiles,
@@ -1273,7 +1273,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const incomingSessions = sessionsResult.status === 'fulfilled' ? sessionsResult.value : get().sessions
     let selected = get().selectedSessionId
     if (sessionsResult.status === 'fulfilled' && (!selected || !incomingSessions.some(value => value.id === selected))) {
-      selected = incomingSessions.find(value => !value.archived)?.id ?? null
+      selected = firstListedSession(incomingSessions)?.id ?? null
     }
     let sessions = incomingSessions
     set(state => {
@@ -3339,7 +3339,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       await removeSnapshot(scope.namespace, sessionId)
       if (!connectionIsCurrent(scope)) return
       const sessions = get().sessions.filter(value => value.id !== sessionId)
-      const next = deletedSelectedSession ? sessions.find(value => !value.archived)?.id ?? null : get().selectedSessionId
+      const next = deletedSelectedSession ? firstListedSession(sessions)?.id ?? null : get().selectedSessionId
       set(state => {
         const snapshots = { ...state.snapshots }
         const drafts = { ...state.drafts }
@@ -4150,7 +4150,7 @@ async function prepareServerProfileActivation(
     ])
     const selected = workspace.selectedSessionId && sessions.some(value => value.id === workspace.selectedSessionId)
       ? workspace.selectedSessionId
-      : sessions.find(value => !value.archived)?.id ?? null
+      : firstListedSession(sessions)?.id ?? null
     const snapshot = selected ? await loadSnapshot(namespace, selected) : null
     await saveProfileSettings({
       schemaVersion: 2,
@@ -4512,7 +4512,7 @@ async function acceptHealthIdentity(
       if (!connectionIsCurrent(scope)) return
       const selected = workspace.selectedSessionId && sessions.some(value => value.id === workspace.selectedSessionId)
         ? workspace.selectedSessionId
-        : sessions.find(value => !value.archived)?.id ?? null
+        : firstListedSession(sessions)?.id ?? null
       const snapshot = selected ? await loadSnapshot(targetNamespace, selected) : null
       if (!connectionIsCurrent(scope)) return
       set(state => ({
@@ -4765,6 +4765,11 @@ function updateProfileRuntime(
   const next = [...profiles]
   next[index] = { ...current, ...patch }
   return next
+}
+
+/** The chat to open when none is chosen. A job run chat is skipped, as the sidebar does not list it. */
+function firstListedSession(sessions: readonly Session[]): Session | undefined {
+  return sessions.find(session => !session.archived && !session.scheduled_job_run)
 }
 
 /** The folder's newest live chat; a chat or terminal created there starts in its directory. */
@@ -5820,7 +5825,7 @@ function requestNotificationPermissionOnce(): void {
 /**
  * One notification per finished turn: a reconnect can redeliver its terminal event. A job run chat
  * other than the open one does not notify, archived or not: it is reached from the job card in the
- * chat that scheduled it, the server archives a successful run as it ends, and a job that runs every
+ * chat that scheduled it, a job can archive each successful run as it ends, and a job that runs every
  * minute would post one notification per run. An active emergency alert in it still notifies, and so
  * do its questions and approvals, since the run waits for the answer.
  */

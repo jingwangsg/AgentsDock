@@ -78,6 +78,8 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
   const needsServerSetup = useAppStore(state => isServerSetupRequired({ serverConfigured: state.serverConfigured, serverURL: state.serverURL }))
   const sessions = useAppStore(state => state.sessions)
   const selected = useAppStore(state => state.selectedSessionId)
+  // As on desktop: the chats listed outside Archived, so hidden job run chats are not counted.
+  const chatCount = useMemo(() => sidebarVisibleSessions(sessions, selected).filter(session => !session.archived).length, [sessions, selected])
   const surfaces = useAppStore(state => state.surfaces)
   const selectedSurfaceId = useAppStore(state => state.selectedSurfaceId)
   const selectSurface = useAppStore(state => state.selectSurface)
@@ -554,7 +556,7 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
         })()}</ScaleDecorator>}
       />
       <View style={[styles.footer, { borderColor: colors.border, minHeight: 34 + insets.bottom, paddingBottom: insets.bottom }]}>
-        <Text style={{ color: colors.muted, fontSize: 10 }}>{sessions.length} chats</Text>
+        <Text style={{ color: colors.muted, fontSize: 10 }}>{chatCount} {chatCount === 1 ? 'chat' : 'chats'}</Text>
         <View style={{ flex: 1 }} />
         {waitingSessionCount ? <>
           <View style={[styles.footerDot, { backgroundColor: colors.orange }]} />

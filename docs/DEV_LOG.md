@@ -1,5 +1,23 @@
 # Public development log
 
+## 2026-10-29 — Archived job run chats stay out of the sidebar's Archived section too (desktop, mobile)
+
+- A run chat archived by "Archive successful runs" was still listed under
+  Archived. On a server with two jobs that run every minute, Archived held
+  1,375 run chats. The sidebar, Search chats on desktop and the sidebar
+  search on mobile now list a run chat only while it is the open chat,
+  archived or not.
+- The job card already opened the latest run's chat. Each entry under
+  Previous runs now has its own "Open run chat", so earlier runs stay
+  reachable.
+- An emergency alert in a run chat no longer expands its folder or the
+  Archived section on desktop, since the chat is not listed there; the
+  alert's toast still shows it. When the mobile app picks a chat to open,
+  such as after the open chat is deleted, it skips run chats, as the
+  desktop app already did. The mobile sidebar's chat count now counts the
+  chats it lists outside Archived, as desktop does; it showed 807 for a
+  list of three.
+
 ## 2026-10-29 — Job run chats stay out of the desktop sidebar, search, badges and turn-end banners (desktop)
 
 - Since 2026-10-14 the desktop sidebar listed every run chat of a
