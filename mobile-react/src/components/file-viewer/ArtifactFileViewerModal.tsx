@@ -29,6 +29,7 @@ import {
   reconcileAdaptiveViewerNavigation,
 } from '../../lib/adaptive-file-viewer-state'
 import { dismissAppKeyboard } from '../../lib/app-keyboard'
+import { FileReadStatusError, isTunnelFailure, readFileWithRetry } from '../../lib/file-read-retry'
 import { inferredMobileFileContentType, mobileFileViewerKind, mobileFileViewerLayout, workspaceRelativeSourcePath, type MobileFileViewerKind, type MobileFileViewerLayout } from '../../lib/file-viewer'
 import { fullscreenModalPadding, type FullscreenSafeAreaInsets } from '../../lib/fullscreen-modal-layout'
 import { filesNewestFirst, formatBytes } from '../../lib/format'
@@ -529,19 +530,25 @@ async function loadBoundedArtifactText(file: AgentFile, requestedLimit: number, 
   assertArtifactFileScope(file, connection)
   if (file.size === 0) return { content: '', truncated: false }
   const limit = Math.max(1, Math.min(Math.floor(requestedLimit), 8 * 1024 * 1024))
-  const controller = new AbortController()
-  const response = await fetch(connection.client.fileURL(connection.sessionId, file.id), {
-    headers: { ...connection.client.authHeaders(), Range: `bytes=0-${limit - 1}` },
-    signal: controller.signal,
+  // Each attempt has its own controller: a failed attempt aborts it before the retry.
+  const { response, controller } = await readFileWithRetry(async () => {
+    assertArtifactFileScope(file, connection)
+    const controller = new AbortController()
+    const response = await fetch(connection.client.fileURL(connection.sessionId, file.id), {
+      headers: { ...connection.client.authHeaders(), Range: `bytes=0-${limit - 1}` },
+      signal: controller.signal,
+    })
+    if (!artifactConnectionIsCurrent(connection)) {
+      controller.abort()
+      throw new Error('The active server or chat changed while opening this file.')
+    }
+    if (response.status !== 200 && response.status !== 206) {
+      const retryable = await isTunnelFailure(response.status, () => response.text())
+      controller.abort()
+      throw new FileReadStatusError(`File preview request failed with HTTP ${response.status}.`, retryable)
+    }
+    return { response, controller }
   })
-  if (!artifactConnectionIsCurrent(connection)) {
-    controller.abort()
-    throw new Error('The active server or chat changed while opening this file.')
-  }
-  if (response.status !== 200 && response.status !== 206) {
-    controller.abort()
-    throw new Error(`File preview request failed with HTTP ${response.status}.`)
-  }
   const declaredLength = strictHeaderInteger(response.headers.get('content-length'))
   const contentRange = parseContentRange(response.headers.get('content-range'))
   if (response.status === 206) {
@@ -625,15 +632,20 @@ async function downloadArtifactToCache(file: AgentFile, connection: ArtifactConn
     return existing.uri
   }
   if (existing.exists) await FileSystem.deleteAsync(destination, { idempotent: true }).catch(() => undefined)
-  const result = await FileSystem.downloadAsync(
-    connection.client.fileURL(connection.sessionId, file.id),
-    destination,
-    { headers: connection.client.authHeaders() },
-  )
-  if (result.status !== 200) {
-    await FileSystem.deleteAsync(result.uri, { idempotent: true }).catch(() => undefined)
-    throw new Error(`File download failed with HTTP ${result.status}.`)
-  }
+  const result = await readFileWithRetry(async () => {
+    assertArtifactFileScope(file, connection)
+    const result = await FileSystem.downloadAsync(
+      connection.client.fileURL(connection.sessionId, file.id),
+      destination,
+      { headers: connection.client.authHeaders() },
+    )
+    if (result.status !== 200) {
+      const retryable = await isTunnelFailure(result.status, () => FileSystem.readAsStringAsync(result.uri))
+      await FileSystem.deleteAsync(result.uri, { idempotent: true }).catch(() => undefined)
+      throw new FileReadStatusError(`File download failed with HTTP ${result.status}.`, retryable)
+    }
+    return result
+  })
   if (!artifactConnectionIsCurrent(connection)) {
     await FileSystem.deleteAsync(result.uri, { idempotent: true }).catch(() => undefined)
     throw new Error('The active server or chat changed while downloading this file.')

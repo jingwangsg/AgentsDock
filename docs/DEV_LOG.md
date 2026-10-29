@@ -1,5 +1,49 @@
 # Public development log
 
+## 2026-10-30 — Chat file reads are retried when the hub's tunnel drops (desktop, Android, iOS)
+
+- A chat file read through the hub failed at once when the hub's ssh tunnel
+  to a remote server dropped. Saving a 1.1 MB video from a remote chat
+  showed "Could not download …: Download failed (502 Bad Gateway):
+  {"detail":{"code":"remote_proxy_error",…}}", and the same file
+  downloaded normally a few minutes later. The tunnel to that server
+  restarted five times that night. The media viewer, the text preview and
+  the mobile downloads failed the same way.
+- The desktop and mobile apps now send such a read again 2, 6 and 14 s
+  after the first failure. A retry follows a 502/503/504 from the hub with
+  code `remote_unreachable` (the tunnel is restarting), `remote_proxy_error`
+  or `remote_timeout`, or a connection that resets, closes mid-response or
+  cannot connect in time. The hub restarts a dropped tunnel 2 s after its
+  ssh exits; in the reported case the tunnel was back 12.9 s after the
+  failed read. Every other answer, including `remote_not_found`, auth
+  failures and anything the remote itself sends, fails at once with the
+  same message as before, and so does the last failed retry.
+- Desktop: Save, Open, Show in Folder and drag of a chat file; the media
+  viewer and video player for chat files and files linked by path; the
+  text preview. A download cut off mid-way continues after the bytes
+  already saved with a Range request when the server's ETag shows the file
+  is unchanged, and starts over otherwise.
+- Android and iOS: Download and Share, the text preview, the PDF preview
+  and iOS video preparation start the read over. While a download waits to
+  start over, its notice says "The connection to the server dropped.
+  Retrying…". Android video playback streams through the system player,
+  whose own retry policy is unchanged.
+- Verified on an isolated hub and remote on one Mac, with the hub's own
+  proxy code and a stand-in for the bulk ssh tunnel that could be killed
+  and that the hub restarts like a real one. On the previous desktop build,
+  killing the tunnel 5 s into a 29 MB download showed "Could not download
+  "episode.mp4": TypeError: terminated", a download started during the 2 s
+  restart showed the 502 `remote_unreachable` message, and the video in
+  the preview stopped at 6.9 s of 40 s. With this change both downloads
+  finished, the first one with a 206 resume, the saved file had the source
+  file's SHA-256, and the video played to the end. On the Android emulator,
+  Share failed with "unexpected end of stream" before and now finishes
+  after one "Retrying…" notice; a text preview opened during the restart
+  failed with HTTP 502 before and now shows the text. iOS was not run.
+- Not covered: on Android, the legacy expo-file-system download that the
+  PDF preview uses never settles when the body stops mid-way (OkHttp
+  ignores the exception), so no retry runs there.
+
 ## 2026-10-30 — A Claude agent's background command is no longer stopped after 2 hours (server)
 
 - Claude stops a `run_in_background` command when its timeout runs out, and

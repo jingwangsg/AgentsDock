@@ -2375,7 +2375,7 @@ export class AgentServerClient {
     return response.digest
   }
 
-  fileRequest(sessionId: string, fileId: string, request?: Request, callerSignal?: AbortSignal): Promise<Response> {
+  fileRequest(sessionId: string, fileId: string, request?: Pick<RequestInit, 'method' | 'headers' | 'signal'>, callerSignal?: AbortSignal): Promise<Response> {
     const configuration = this.configuration
     const headers = new Headers(request?.headers)
     this.applyAuth(headers, configuration)

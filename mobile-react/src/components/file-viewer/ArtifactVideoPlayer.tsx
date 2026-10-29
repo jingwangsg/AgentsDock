@@ -15,6 +15,7 @@ import {
   IOS_VIDEO_STAGE_STALL_MS,
   reusableArtifactVideoCache,
 } from '../../lib/artifact-video-staging'
+import { FileReadStatusError, isTunnelFailure, readFileWithRetry } from '../../lib/file-read-retry'
 import type { MobileFileViewerLayout } from '../../lib/file-viewer'
 import type { AgentFile } from '../../types'
 import { ArtifactIOSSystemVideoPlayer } from './ArtifactIOSSystemVideoPlayer'
@@ -158,45 +159,56 @@ function StagedIOSArtifactVideo({ file, connection, remoteSource, registerPause,
         }
       }
 
-      const task = FileSystem.createDownloadResumable(
-        remoteSource.uri,
-        cacheDestination,
-        { headers: remoteSource.headers },
-        value => {
-          if (!stillCurrent()) return
-          lastProgressAt = Date.now()
-          const next = artifactVideoStageProgress(
-            value.totalBytesWritten,
-            value.totalBytesExpectedToWrite,
-            expectedBytes,
-          )
-          if (next == null) return
-          const now = Date.now()
-          if (next >= 1 || now - lastPublishedAt >= 150 || next - lastPublishedProgress >= 0.02) {
-            lastPublishedAt = now
-            lastPublishedProgress = next
-            setProgress(next)
-          }
-        },
-      )
-      taskRef.current = task
-      stallTimer = setInterval(() => {
-        if (!stillCurrent() || Date.now() - lastProgressAt < IOS_VIDEO_STAGE_STALL_MS) return
-        stalled = true
-        if (taskRef.current === task) taskRef.current = null
-        void task.cancelAsync().catch(() => undefined)
-        setStageProblem('The video download stopped responding. Retry, download it, or close the viewer.')
-      }, 1_000)
-      const result = await task.downloadAsync()
-      if (taskRef.current === task) taskRef.current = null
-      if (stallTimer) clearInterval(stallTimer)
-      stallTimer = null
+      // Each retry starts a new task that downloads the whole video again.
+      const result = await readFileWithRetry(async () => {
+        if (!stillCurrent()) return undefined
+        const task = FileSystem.createDownloadResumable(
+          remoteSource.uri,
+          cacheDestination,
+          { headers: remoteSource.headers },
+          value => {
+            if (!stillCurrent()) return
+            lastProgressAt = Date.now()
+            const next = artifactVideoStageProgress(
+              value.totalBytesWritten,
+              value.totalBytesExpectedToWrite,
+              expectedBytes,
+            )
+            if (next == null) return
+            const now = Date.now()
+            if (next >= 1 || now - lastPublishedAt >= 150 || next - lastPublishedProgress >= 0.02) {
+              lastPublishedAt = now
+              lastPublishedProgress = next
+              setProgress(next)
+            }
+          },
+        )
+        taskRef.current = task
+        // The wait before a retry must not count as a stall.
+        lastProgressAt = Date.now()
+        stallTimer = setInterval(() => {
+          if (!stillCurrent() || Date.now() - lastProgressAt < IOS_VIDEO_STAGE_STALL_MS) return
+          stalled = true
+          if (taskRef.current === task) taskRef.current = null
+          void task.cancelAsync().catch(() => undefined)
+          setStageProblem('The video download stopped responding. Retry, download it, or close the viewer.')
+        }, 1_000)
+        const result = await task.downloadAsync().finally(() => {
+          if (taskRef.current === task) taskRef.current = null
+          if (stallTimer) clearInterval(stallTimer)
+          stallTimer = null
+        })
+        // Stale, stalled or cancelled: no retry; the checks after the loop handle it.
+        if (!stillCurrent() || stalled || !result) return result
+        if (result.status < 200 || result.status >= 300) {
+          const retryable = await isTunnelFailure(result.status, () => FileSystem.readAsStringAsync(result.uri))
+          await FileSystem.deleteAsync(result.uri, { idempotent: true }).catch(() => undefined)
+          throw new FileReadStatusError(`Video download failed with HTTP ${result.status}.`, retryable)
+        }
+        return result
+      }, { onRetry: () => setProgress(null) })
       if (!stillCurrent() || stalled) return
       if (!result) throw new Error('The video download was cancelled.')
-      if (result.status < 200 || result.status >= 300) {
-        await FileSystem.deleteAsync(result.uri, { idempotent: true }).catch(() => undefined)
-        throw new Error(`Video download failed with HTTP ${result.status}.`)
-      }
       const downloaded = await FileSystem.getInfoAsync(result.uri)
       if (!stillCurrent()) return
       if (!completedArtifactVideoDownload(downloaded, expectedBytes)) {

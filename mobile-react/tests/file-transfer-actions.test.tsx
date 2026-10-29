@@ -7,7 +7,7 @@ import { WorkspaceFileViewerModal } from '../src/components/file-viewer/Workspac
 import { FileViewerContext } from '../src/components/file-viewer/FileViewerContext'
 import { useFileTransfer } from '../src/components/file-viewer/useFileTransfer'
 import { FileTransferNotice } from '../src/components/file-viewer/FileTransferNotice'
-import { Alert, Directory, File, Platform, clipboardWrites, nativeTransfer, setTestWidth } from './file-transfer-mocks'
+import { Alert, Directory, File, Platform, clipboardWrites, nativeTransfer, previewProps, setTestWidth } from './file-transfer-mocks'
 import { resetComponentStore, setTestClient, useAppStore } from './component-mocks/app-store'
 import type { AgentFile, CanvasSummary, Event, WorkspaceInfo } from '../src/types'
 
@@ -350,6 +350,35 @@ for (const os of ['ios', 'android'] as const) {
   assert.equal(closed, 0, `${os}: long-press actions keep the sheet open`)
   await close()
   console.log(`PASS ${os} Outputs & sources long-press: copy artifact and canvas paths, authenticated download in place`)
+}
+// The text preview of a chat file is retried through a hub tunnel restart: a 502 remote_unreachable, then the bytes.
+{
+  reset()
+  await mount({ name: 'artifact text preview', family: 'artifact' })
+  const requests: string[] = []
+  const answers = [
+    new Response(JSON.stringify({ detail: { code: 'remote_unreachable', remote_id: 'remote-a' } }), { status: 502, headers: { 'content-type': 'application/json' } }),
+    new Response('line 1\nline 2\n', { status: 206, headers: { 'content-range': 'bytes 0-13/14', 'content-length': '14' } }),
+  ]
+  const realFetch = globalThis.fetch
+  const realSetTimeout = globalThis.setTimeout
+  // Like React Native's fetch, an already-aborted signal fails the request at once.
+  globalThis.fetch = (async (url: string, init: RequestInit) => {
+    if (init.signal?.aborted) throw Object.assign(new Error('Aborted'), { name: 'AbortError' })
+    requests.push(`${url} ${new Headers(init.headers).get('range')}`)
+    return answers.shift()!
+  }) as typeof fetch
+  globalThis.setTimeout = ((callback: () => void) => { queueMicrotask(callback); return 0 }) as unknown as typeof setTimeout
+  try {
+    const loaded = await previewProps.loadText!(1000)
+    assert.deepEqual(loaded, { content: 'line 1\nline 2\n', truncated: false })
+    assert.deepEqual(requests, Array(2).fill('https://synthetic.invalid/api/sessions/session-a/files/file%2Fone bytes=0-999'))
+  } finally {
+    globalThis.fetch = realFetch
+    globalThis.setTimeout = realSetTimeout
+  }
+  await close()
+  console.log('PASS the artifact text preview retries a hub tunnel failure')
 }
 Platform.OS = 'ios'
 console.log('All rendered file transfer behavioral tests passed')

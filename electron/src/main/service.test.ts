@@ -1,7 +1,10 @@
 // @vitest-environment node
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import type { AddressInfo } from 'node:net'
+import { setTimeout as retryWait } from 'node:timers/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type {
@@ -94,6 +97,12 @@ vi.mock('./local-hub', async importOriginal => ({ ...await importOriginal<typeof
 vi.mock('./open-in-zed', () => ({ openInZed: vi.fn(async () => undefined) }))
 // Nor read this machine's ssh aliases.
 vi.mock('./ssh-hosts', async importOriginal => ({ ...await importOriginal<typeof import('./ssh-hosts')>(), hubSshAliasHost: vi.fn(() => null) }))
+// A retried file read waits seconds in the app; here each wait is only recorded.
+const retryWaits = vi.hoisted(() => [] as number[])
+vi.mock('node:timers/promises', async importOriginal => ({
+  ...await importOriginal<typeof import('node:timers/promises')>(),
+  setTimeout: vi.fn(async (delay: number) => { retryWaits.push(delay) })
+}))
 
 import { LocalCache, TIMELINE_PAGING_SCHEMA_VERSION } from './persistence'
 import { localHubConfigDirs, startLocalServerAgent } from './local-hub'
@@ -412,6 +421,154 @@ describe('concurrent artifact downloads', () => {
       await Promise.all(saves)
       now.mockRestore()
     }
+  })
+})
+
+describe('chat file reads after a dropped hub tunnel', () => {
+  const content = Buffer.from('frame '.repeat(20_000))
+  const etag = '"video-v1"'
+  type Answer = (request: IncomingMessage, response: ServerResponse) => void
+
+  const tunnelFailure = (code: string): Answer => (_request, response) => {
+    response.writeHead(502, { 'content-type': 'application/json' })
+    response.end(JSON.stringify({ detail: { code, remote_id: '044be05ef472', message: 'ReadError' } }))
+  }
+  // Like the remote's FileResponse: a Range is honored unless its If-Range names another version.
+  const serveFile = (bytes: Buffer, version: string): Answer => (request, response) => {
+    const start = Number(/^bytes=(\d+)-$/.exec(request.headers.range ?? '')?.[1] ?? Number.NaN)
+    const ifRange = request.headers['if-range']
+    if (Number.isSafeInteger(start) && (!ifRange || ifRange === version)) {
+      response.writeHead(206, { etag: version, 'content-range': `bytes ${start}-${bytes.length - 1}/${bytes.length}` })
+      response.end(bytes.subarray(start))
+    } else {
+      response.writeHead(200, { etag: version, 'content-length': String(bytes.length) })
+      response.end(bytes)
+    }
+  }
+  // The hub closes the connection when the tunnel drops mid-body.
+  const cutAfter = (bytes: number): Answer => (request, response) => {
+    response.writeHead(200, { etag, 'content-length': String(content.length) })
+    response.write(content.subarray(0, bytes), () => setTimeout(() => request.socket.destroy(), 100))
+  }
+
+  // Real loopback HTTP, so the failures are Node's own; the shared setup's fetch stub returns afterwards.
+  const fetchStub = globalThis.fetch
+  beforeEach(() => {
+    vi.unstubAllGlobals()
+    retryWaits.length = 0
+  })
+  afterEach(() => { vi.stubGlobal('fetch', fetchStub) })
+
+  async function hubService(...answers: Answer[]) {
+    const requests: Array<IncomingMessage['headers']> = []
+    const server = createServer((request, response) => {
+      requests.push(request.headers)
+      ;(answers.shift() ?? serveFile(content, etag))(request, response)
+    })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    cleanup.push(() => server.close())
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/file`
+    // fileRequest, workspacePreviewRequest and absolutePreviewRequest take the same arguments.
+    const send = (_sessionId: string, _id: string, request?: Pick<RequestInit, 'method' | 'headers' | 'signal'>, signal?: AbortSignal) => (
+      fetch(url, { method: request?.method, headers: request?.headers, signal: signal ?? request?.signal })
+    )
+    const service = Object.create(AppService.prototype) as AppService
+    const scope = { profileId: 'profile', generation: 1, namespace: 'profile:profile', client: { fileRequest: send, workspacePreviewRequest: send, absolutePreviewRequest: send } }
+    Object.assign(service, {
+      activeProfileId: scope.profileId,
+      profileGeneration: scope.generation,
+      validatedGeneration: scope.generation,
+      scope
+    })
+    const directory = mkdtempSync(join(tmpdir(), 'agentsdock-dropped-tunnel-'))
+    cleanup.push(() => rmSync(directory, { recursive: true, force: true }))
+    return { service, requests, directory }
+  }
+
+  async function save(service: AppService, directory: string) {
+    const destination = join(directory, 'episode.mp4')
+    electronHarness.showSaveDialog.mockResolvedValue({ canceled: false, filePath: destination })
+    const saved = await service.saveFile('chat', { id: 'art_episode', filename: 'episode.mp4', content_type: 'video/mp4' })
+    return { saved, destination }
+  }
+
+  it('saves the file once the hub has the tunnel back', async () => {
+    const { service, requests, directory } = await hubService(tunnelFailure('remote_proxy_error'))
+
+    const { saved, destination } = await save(service, directory)
+
+    expect(saved).toBe(destination)
+    expect(readFileSync(destination)).toEqual(content)
+    expect(requests).toHaveLength(2)
+    expect(retryWaits).toEqual([2_000])
+  })
+
+  it('continues a download cut off mid-way after the bytes already written', async () => {
+    const { service, requests, directory } = await hubService(cutAfter(50_000))
+
+    const { destination } = await save(service, directory)
+
+    expect(readFileSync(destination)).toEqual(content)
+    expect(requests[1]).toMatchObject({ range: 'bytes=50000-', 'if-range': etag })
+    expect(readdirSync(directory)).toEqual(['episode.mp4'])
+  })
+
+  it('starts over when the file changed after the cut', async () => {
+    const changed = Buffer.from('re-encoded '.repeat(9_000))
+    const { service, requests, directory } = await hubService(cutAfter(50_000), serveFile(changed, '"video-v2"'))
+
+    const { destination } = await save(service, directory)
+
+    expect(requests[1]).toMatchObject({ range: 'bytes=50000-', 'if-range': etag })
+    expect(readFileSync(destination)).toEqual(changed)
+  })
+
+  it('reports the hub\'s own failure after three retries over 14 s', async () => {
+    const failure = tunnelFailure('remote_proxy_error')
+    const { service, requests, directory } = await hubService(failure, failure, failure, failure)
+
+    await expect(save(service, directory)).rejects.toThrow(
+      'Download failed (502 Bad Gateway): {"detail":{"code":"remote_proxy_error","remote_id":"044be05ef472","message":"ReadError"}}'
+    )
+
+    expect(requests).toHaveLength(4)
+    expect(retryWaits).toEqual([2_000, 4_000, 8_000])
+    expect(readdirSync(directory)).toEqual([])
+  })
+
+  it('sends nothing more once the server profile changed during the wait', async () => {
+    const { service, requests, directory } = await hubService(tunnelFailure('remote_unreachable'))
+    vi.mocked(retryWait).mockImplementationOnce(async () => { Object.assign(service, { profileGeneration: 2 }) })
+
+    await expect(save(service, directory)).rejects.toThrow('Server profile switch superseded this operation.')
+
+    expect(requests).toHaveLength(1)
+    expect(readdirSync(directory)).toEqual([])
+  })
+
+  const mediaReads: Array<[string, (service: AppService, request: Request) => Promise<Response>]> = [
+    ['a chat file', (service, request) => service.mediaResponse('profile', 1, 'chat', 'art_episode', request)],
+    ['a workspace file', (service, request) => service.workspaceMediaResponse('profile', 1, 'chat', 'out/episode.mp4', request)],
+    ['a file at an absolute path', (service, request) => service.absoluteMediaResponse('profile', 1, 'chat', '/data/episode.mp4', request)]
+  ]
+  it.each(mediaReads)('answers a media range request for %s once the hub has the tunnel back', async (_kind, readMedia) => {
+    const { service, requests } = await hubService(tunnelFailure('remote_unreachable'))
+    const request = new Request('agentsdock-media://file', { headers: { Range: 'bytes=1000-' } })
+
+    const response = await readMedia(service, request)
+
+    expect(response.status).toBe(206)
+    expect(Buffer.from(await response.arrayBuffer())).toEqual(content.subarray(1000))
+    expect(requests.map(headers => headers.range)).toEqual(['bytes=1000-', 'bytes=1000-'])
+  })
+
+  it('previews a text artifact after the connection to the hub dropped', async () => {
+    const { service, directory } = await hubService(request => request.socket.destroy())
+    Object.assign(service, { localFilePath: vi.fn(() => join(directory, 'notes.txt')) })
+
+    await expect(service.readTextFile('chat', { id: 'art_notes', filename: 'notes.txt', content_type: 'text/plain' }))
+      .resolves.toMatchObject({ content: content.toString() })
+    expect(retryWaits).toEqual([2_000])
   })
 })
 
