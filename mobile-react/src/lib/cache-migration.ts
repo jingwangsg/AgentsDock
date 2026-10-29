@@ -1,6 +1,7 @@
 import type { PinnedItem, Session, Snapshot, WorkspacePreferences } from '../types'
 import { SNAPSHOT_CACHE_VERSION } from './history'
 import { normalizeWorkspacePreferences } from './server-profiles'
+import { unreadCount } from './session-order'
 
 export const CACHE_SNAPSHOT_SESSION_LIMIT = 80
 // Mobile timelines render the latest window and page older history on demand.
@@ -157,7 +158,6 @@ export function mergeWorkspacePreferences(
 export function summarizeCachedSessions(namespace: string, sessions: readonly Session[]): CachedServerSummaryValue {
   let activeSessionCount = 0
   let archivedSessionCount = 0
-  let unreadCount = 0
   let pinnedCount = 0
   let updatedAt: number | null = null
   for (const session of sessions) {
@@ -168,7 +168,6 @@ export function summarizeCachedSessions(namespace: string, sessions: readonly Se
       continue
     }
     activeSessionCount += 1
-    if (session.manual_unread || (session.latest_agent_event_seq ?? 0) > (session.last_read_agent_event_seq ?? 0)) unreadCount += 1
     if (session.pinned) pinnedCount += 1
   }
   return {
@@ -176,7 +175,7 @@ export function summarizeCachedSessions(namespace: string, sessions: readonly Se
     sessionCount: sessions.length,
     activeSessionCount,
     archivedSessionCount,
-    unreadCount,
+    unreadCount: unreadCount(sessions),
     pinnedCount,
     updatedAt,
   }

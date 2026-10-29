@@ -1,5 +1,15 @@
 # Public development log
 
+## 2026-10-29 — The unread badges leave out the job run chats the sidebar hides (mobile)
+
+- The sidebar lists a standalone job's run chat only while it is open or
+  once it is archived, but the server's unread badge and the app icon badge
+  counted it. A server running two standalone jobs every minute showed 99+
+  unread over a list of three chats.
+- Both badges now leave out unarchived run chats, including the counts the
+  app keeps for servers that are not active. The open run chat is not
+  counted either; opening a chat marks it read.
+
 ## 2026-10-28 — A delete or Send no longer waits behind an agent's job-run read; reconnect bursts lag less; a cold run trace checks history once (server)
 
 - An agent reading its own chat's job runs held the chat's lifecycle lock
