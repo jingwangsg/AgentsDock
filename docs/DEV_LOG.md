@@ -10,6 +10,11 @@
 - The job card already opened the latest run's chat. Each entry under
   Previous runs now has its own "Open run chat", so earlier runs stay
   reachable.
+- An emergency alert in a run chat no longer expands its folder or the
+  Archived section on desktop, since the chat is not listed there; the
+  alert's toast still shows it. When the mobile app picks a chat to open,
+  such as after the open chat is deleted, it skips run chats, as the
+  desktop app already did.
 
 ## 2026-10-29 — Job run chats stay out of the desktop sidebar, search, badges and turn-end banners (desktop)
 

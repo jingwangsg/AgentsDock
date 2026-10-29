@@ -5634,6 +5634,48 @@ describe('job run chats', () => {
 
     expect(useAppStore.getState().selectedSessionId).toBe(parent.id)
   })
+
+  it('keeps Archived collapsed for an emergency in an archived job run chat, which Archived does not list', async () => {
+    const parent = sessionFor('parent-chat')
+    const run = {
+      ...sessionFor('nightly-run'), archived: true, scheduled_job_run: { job_id: 'job-1', session_id: parent.id },
+      emergency_alert: { id: 'alert-1', status: 'active', severity: 'critical', message: 'Disk full', raised_at: '2026-10-29T12:00:00Z' }
+    } satisfies Session
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        bootstrap: vi.fn().mockResolvedValue({
+          settings: { serverUrl: 'http://example.test', hasAccessToken: false, serverSetupComplete: true },
+          health: null,
+          sessions: [parent, run],
+          jobs: [],
+          runtimeCatalog: null,
+          selectedSessionId: parent.id,
+          folderOrder: [],
+          collapsedFolders: [],
+          archivedCollapsed: true
+        } satisfies BootstrapPayload),
+        timeline: {
+          cached: vi.fn(async (sessionId: string) => ({ ...snapshot(sessionId, []), session: sessionFor(sessionId), historyVerified: true })),
+          subscribe: vi.fn().mockResolvedValue(undefined),
+          open: vi.fn(),
+          unsubscribe: vi.fn().mockResolvedValue(undefined)
+        },
+        preferences: { get: vi.fn().mockResolvedValue(null), set: vi.fn().mockResolvedValue(undefined) },
+        native: { log: vi.fn().mockResolvedValue(undefined), setBadge: vi.fn().mockResolvedValue(undefined) },
+        events: { on: vi.fn().mockReturnValue(() => {}) }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      initialized: false, profiles: [], activeProfileId: null, profileGeneration: 0,
+      sessions: [], selectedSessionId: null, chatPanes: { primary: null, secondary: null },
+      focusedChatPane: 'primary', snapshots: {}, collapsedFolders: new Set(), archivedCollapsed: true
+    })
+
+    await useAppStore.getState().initialize()
+
+    expect(useAppStore.getState().archivedCollapsed).toBe(true)
+  })
 })
 
 describe('emergency alert store integration', () => {

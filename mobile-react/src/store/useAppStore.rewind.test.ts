@@ -264,6 +264,15 @@ try {
   assert.deepEqual(useAppStore.getState().snapshots[sessionA.id]!.events.map(value => value.seq), [1, 2, 6, 7], 'the cached window is rebuilt from the server')
   assert.equal(useAppStore.getState().snapshots[sessionA.id]!.historyRevision, 1, 'the snapshot records the revision it now matches')
 
+  // Deleting the open chat opens the first chat the sidebar lists, never a job run chat.
+  const doomed = session('doomed')
+  const originalDelete = client.deleteSession.bind(client)
+  client.deleteSession = async () => {}
+  useAppStore.setState({ sessions: [runChat, doomed, sessionA, sessionB], selectedSessionId: doomed.id })
+  await useAppStore.getState().deleteSession(doomed.id, useAppStore.getState().profileGeneration)
+  assert.equal(useAppStore.getState().selectedSessionId, sessionA.id, 'deleting the open chat skips the job run chat')
+  client.deleteSession = originalDelete
+
   console.log('store rewind and notification regressions passed')
 } finally {
   appState.__emitAppState('background')
