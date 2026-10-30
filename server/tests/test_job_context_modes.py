@@ -447,7 +447,13 @@ class StandaloneProviderContextTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertIn("agent_cross_chat_routes", capability["actions"])
                 launched_prompt = run_claude.await_args.args[2]
-                self.assertEqual(launched_prompt, "scheduled prompt")
+                # The prompt names that route for its @Target chip.
+                [route] = capability["provider_route_grants"].values()
+                self.assertEqual(launched_prompt, (
+                    "scheduled prompt" + agent_server.CHAT_REFERENCE_ROUTES_START
+                    + f'"@Target" #1: route_id={route["route_id"]} alias={route["alias"]}'
+                    + agent_server.CHAT_REFERENCE_ROUTES_END
+                ))
                 launched_env = run_claude.await_args.kwargs[
                     "provider_runtime_env"
                 ]
