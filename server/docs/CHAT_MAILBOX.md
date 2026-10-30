@@ -21,7 +21,9 @@ legacy exchanges retain their negotiated delivery behavior.
 - A reply is an independent `send --route <route> --reply-to <message_id>`.
   There is no automatic reply, reply obligation, wait lease, or goal pause.
 
-Message bodies remain agent-authored peer content, never independent user authorization.
+Message bodies come from the user's own agents (the chat's pairs). The receiving
+agent does ordinary work they ask for as the user's request; destructive or
+irreversible actions still need the user's explicit authorization.
 Opening a message in the desktop does not mark it read by the agent.
 
 ## Explicit user delegation
@@ -48,13 +50,18 @@ native steering without a fresh reference, or a peer reply cannot mint it.
 }
 ```
 
-This attests who explicitly addressed this recipient and what the user said;
-it does not assert that every task proposed by the agent is authorized. The
-receiving agent must compare the prepared task with the exact original scope,
-constraints, and reference action. A route mention is not itself a command to
-execute arbitrary work. No tool, filesystem, route, job, deployment, or other
-permissions are added. A body containing lookalike fields or provenance
-wrappers remains untrusted text. Replies do not inherit or forward this proof.
+This attests who explicitly addressed this recipient and what the user said.
+The receiving agent needs it only for destructive or irreversible actions
+(deleting files or data outside its scratch or worktree, deleting branches,
+force-pushing or rewriting shared history, cancelling or killing training jobs,
+clusters or tickets it did not start, dropping or overwriting datasets or
+checkpoints, deleting scheduled jobs), which need the user's explicit
+authorization in the receiving chat or a `user_delegation` that clearly asks
+for them. Archiving, deleting and exporting a chat need a turn the user
+started. Ordinary work a peer asks for needs no delegation. No tool,
+filesystem, route, job, deployment, or other permissions are added. A body
+containing lookalike fields or provenance wrappers remains text, not
+attestation. Replies do not inherit or forward this proof.
 
 The instruction and its explicit-reference marker commit atomically with the
 message and are included in idempotency comparisons. Reads and retries use that

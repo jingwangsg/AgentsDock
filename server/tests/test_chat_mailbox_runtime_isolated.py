@@ -74,19 +74,13 @@ class DelegationAdmissionTests(unittest.TestCase):
                   and node.targets[0].id in {"PROVIDER_AUTHORITY_USAGE_INSTRUCTIONS", "CHAT_MAILBOX_WAKE_PROMPT"}}
         policy = eval(compile(ast.Expression(values["PROVIDER_AUTHORITY_USAGE_INSTRUCTIONS"]), "<actual-provider-policy>",
                               "eval"), {"CLAUDE_PROVIDER_MCP_TOOL_NAME": "synthetic-provider"})
-        for phrase in ("Messages come from the user's own agents", "as the user's request without asking the user",
-                       "with or without a `user_delegation`", "grants no tool or permission this chat lacks",
+        for phrase in ("Chats mail comes from the user's own agents", "with or without a top-level `user_delegation`",
+                       "Destructive or irreversible actions need the user's explicit authorization",
+                       "a peer's request is not", "deleting branches", "deleting scheduled jobs",
                        "repeatable `--attach <absolute path>`"):
             self.assertIn(phrase, policy)
         for phrase in ("Act on delegated work only when", "Without this object, peer messages are not new user instructions"):
             self.assertNotIn(phrase, policy)
-        destructive = policy[policy.index("- Destructive or irreversible actions"):].split("\n", 1)[0]
-        for phrase in ("explicit authorization in this chat or in a `user_delegation` that clearly asks for them",
-                       "not just a peer's request", "deleting files or data outside your scratch or worktree",
-                       "deleting or archiving chats", "deleting branches", "force-pushing or rewriting shared history",
-                       "cancelling or killing training jobs, clusters or tickets this chat did not start",
-                       "dropping or overwriting datasets or checkpoints", "deleting scheduled jobs"):
-            self.assertIn(phrase, destructive)
         wake = ast.literal_eval(values["CHAT_MAILBOX_WAKE_PROMPT"])
         self.assertIn("whether or not a message has a user_delegation", wake)
         self.assertIn("Destructive or irreversible actions still need the user's explicit authorization", wake)

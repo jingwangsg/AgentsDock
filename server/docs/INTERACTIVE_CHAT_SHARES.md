@@ -17,6 +17,8 @@ capabilities in transit; use HTTPS for untrusted networks.
 
 This is trusted collaboration, **not a provider sandbox**. A guest cannot directly
 use native terminal, filesystem, downloads, administration, or other-chat APIs.
+The chat's agent cannot message other chats while it works on a guest's
+message: other chats act on that mail as the owner's request.
 The collaborator can stop or steer work, manage the queue and goals, change
 chat model/permission settings, respond to approvals, and create or run persistent
 scheduled jobs for that chat. Prompts go to the existing chat's agent with its normal tools/context:

@@ -51,8 +51,9 @@ remote servers a hub manages.
   A turn without text attaches none. The receiving server stores the
   instruction as that peer's attestation, so a hub trusts its registered
   remotes to attest their users' turns. The receiving agent treats every
-  message as a request from the user's own agent and needs the instruction
-  only for destructive or irreversible actions.
+  message as a request from the user's own agent and needs the user's
+  authorization, in the receiving chat or in this instruction, only for
+  destructive or irreversible actions.
 
 ## Wire
 

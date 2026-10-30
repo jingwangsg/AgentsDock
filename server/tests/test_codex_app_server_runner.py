@@ -4105,17 +4105,18 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_steers_chips_that_share_a_title_reach_codex_with_their_own_routes(self) -> None:
         # 2026-10-30: steered messages whose chips all read "@New agent" named different new chats;
         # the agent got only "@New agent" and sent every task to an older, unrelated route.
+        # A live pair needs the target's reverse route; ids must match route_[0-9a-f]{32}.
         forwards = []
         for digit, target in (("1", "new-1"), ("2", "new-2")):
             pair_id, forward_id, reverse_id = "pair_" + digit * 32, "route_" + digit * 32, "route_" + digit * 31 + "f"
             forwards.append({"route_id": forward_id, "revision": "rev_" + digit * 32, "alias": f"chat{digit}",
                              "target_session_id": target, "actions": ["instruction", "request_reply"],
                              "pair_id": pair_id, "paired_route_id": reverse_id})
+            reverse = {"route_id": reverse_id, "revision": "rev_" + digit * 31 + "f", "alias": "source",
+                       "target_session_id": "chat-native", "actions": ["instruction"],
+                       "pair_id": pair_id, "paired_route_id": forward_id}
             agent_server.STORE.sessions[target] = {"id": target, "title": "New agent", "backend": "codex",
-                                                   "provider_cross_chat_routes": [{
-                "route_id": reverse_id, "revision": "rev_" + digit * 31 + "f", "alias": "source",
-                "target_session_id": "chat-native", "actions": ["instruction"],
-                "pair_id": pair_id, "paired_route_id": forward_id}]}
+                                                   "provider_cross_chat_routes": [reverse]}
         self.session["provider_cross_chat_routes"] = forwards
         prompt = "@New agent integrate VPP. @New agent integrate DreamZero."
         agent_server.QUEUED_TURNS["chat-native"] = deque([{
@@ -4141,8 +4142,8 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([items[0]["text"] for items, _message_id in turn.steer_calls], [
             prompt + "\n\n[AgentsDock @chat routes]\n"
-            f"1. @New agent: route_id={forwards[0]['route_id']} alias=chat1\n"
-            f"2. @New agent: route_id={forwards[1]['route_id']} alias=chat2\n"
+            f'"@New agent" #1: route_id={forwards[0]["route_id"]} alias=chat1\n'
+            f'"@New agent" #2: route_id={forwards[1]["route_id"]} alias=chat2\n'
             "[End AgentsDock @chat routes]"
         ])
 

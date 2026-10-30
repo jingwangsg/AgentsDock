@@ -110,7 +110,6 @@ class NativeGoalSteerTests(unittest.IsolatedAsyncioTestCase):
             "normalized_provider_cross_chat_route_snapshot": lambda value: value or [],
             "queued_codex_runtime_matches_active": lambda *args: True,
             "build_user_provider_prompt": lambda chat, prompt, files: prompt,
-            "chat_reference_route_lines": lambda chat, references: "",
             "clean_assistant_text": lambda text: text.strip(),
             "codex_app_server_tool": lambda item: None,
             "project_codex_notification": Mock(),

@@ -174,7 +174,7 @@ class GoalFollowupLifecycleTests(unittest.IsolatedAsyncioTestCase):
             "queued_claude_runtime_matches_active": Mock(return_value=False),
             "queued_codex_runtime_matches_active": Mock(return_value=True),
             "build_user_provider_prompt": Mock(side_effect=lambda chat, prompt, files: prompt + (" [synthetic attachment context]" if files else "")),
-            "chat_reference_route_lines": lambda chat, references: "",
+            "chat_reference_routes_block": lambda chat, prompt, references: "",
             "should_recover_codex_resume": Mock(return_value=False),
             "collect_manifest": AsyncMock(), "collect_recent_leftover_manifests": AsyncMock(),
             "publish_turn_code_diff": AsyncMock(), "record_runtime_success": Mock(),
