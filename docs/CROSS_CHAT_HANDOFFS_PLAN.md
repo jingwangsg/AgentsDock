@@ -43,8 +43,14 @@ Watches, artifact grants, and group exchanges remain deferred.
   once. Routes without a pair stay reachable only in a turn whose message
   @-mentions them.
   `chats list` marks the chats @-mentioned in the turn with `mentioned: true`.
-  Agents have one path to another chat: `chats list`, then `send` or `ask`
-  with the returned `--route`.
+  Agents have one path to another chat: `send` or `ask` with its `--route`.
+  A chip reaches the agent as plain `@title`, and chats can share a title
+  (every new agent starts as "New agent"), so the provider text of a user's
+  turn, queued message or steered message ends with an
+  `[AgentsDock @chat routes]` block giving each chip's route id and alias. A
+  line names its chip by the chip's text and its occurrence of that text
+  (`"@New agent" #2`), so a typed, unpicked mention does not shift the others.
+  Clients show the message without it. Other routes come from `chats list`.
 - A message the user steers into a running user turn may carry @ chips that
   name chats the turn reaches through live routes: a route `@` (granted when
   the message was admitted) or a chat on another server (paired by the hub).
@@ -60,8 +66,8 @@ Watches, artifact grants, and group exchanges remain deferred.
   route for that action; two for one chat become one route with both. A
   message queued before the change starts with that `@` as text and its
   request/reply exchange closed as not sent; a queued-message edit that adds
-  one is refused. Agents reach other chats only with `chats list`; a call
-  with `--target-index` is refused with a pointer to it. `final_result`,
+  one is refused. Agents reach other chats only by route id; a call with
+  `--target-index` is refused with a pointer to `chats list`. `final_result`,
   which forwards the final answer, is unchanged.
 - Scheduled jobs never inherit source-chat grants. A job stores only its own
   exact route selections through the job editor/helper, and every firing
@@ -180,8 +186,15 @@ compatibility ledger enforces:
 - compare-and-swap response ownership between explicit and automatic replies
 - terminal cancellation/failure over stale provider or queue completions
 
-Relayed text is untrusted content. It carries no routing authority, and any
-mentions inside it are not parsed into grants.
+Relayed text carries no routing authority, and any mentions inside it are not
+parsed into grants. A message from another chat of the same user (on this
+server, or paired through the hub) is a request from the user's own agent: the
+receiving agent does ordinary work it asks for even when no `user_delegation`
+covers it. Destructive or irreversible actions still need the user's
+explicit authorization in the receiving chat, or an attested
+`user_delegation` that clearly asks for them. A message adds no tool or
+permission, and quoted text inside it stays content. Team Network mail from
+other people's agents remains untrusted content.
 
 Per-run capabilities enforce the AgentsServer API boundary. The server strips
 its administrator bearer from provider environments and the shared tmux

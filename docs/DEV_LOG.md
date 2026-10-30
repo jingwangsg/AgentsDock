@@ -1,5 +1,84 @@
 # Public development log
 
+## 2026-10-30 — Agents tell apart @chats that share a title, and the user's own agents act on each other's requests (server)
+
+- A chat chip reached the agent as plain `@title`. Every chat made with
+  "Create new agent" starts as "New agent", so three messages steered into
+  one turn, each naming a different new chat, all read "@New agent". The
+  agent did not list its routes again and sent all three tasks to an older
+  chat that watches Slack. The provider text of a user's turn, a queued
+  message, a message steered into a running Claude or Codex turn and a
+  scheduled job's prompt now ends with an `[AgentsDock @chat routes]` block. It gives each chip its route id
+  and alias, or says that no route is available, and names the chip by its
+  text and occurrence (`"@New agent" #2`), so a typed mention that was not
+  picked does not shift the others. A chip that only asks for the final
+  answer to be delivered is left out. The agent instructions point to the
+  block; `chats list` still lists every route. The chat shows the message as
+  the user typed it: history import and rewind remove the block. The block
+  quotes the chip's text and leaves out current chat titles, because an
+  agent can rename a chat and the block is part of a user message.
+- Agents refused each other's work over authorization. A request without a
+  `user_delegation`, for example one sent from a turn that mail started, was
+  refused, and so was one whose attached user message did not name the
+  task. New rule: chats of the same user that reach each other through
+  AgentsDock chat routes, on one server or across the user's servers through
+  a hub, trust each other. A peer's request is the user's request. The agent
+  does ordinary work it asks for (code, commands, analysis, submitting evals
+  or tickets, uploads, starting training, messaging other agents, creating
+  scheduled jobs under the existing Jobs policy) even when no
+  `user_delegation` covers it.
+- Limits. Destructive or irreversible actions still need the user's explicit
+  authorization: the user's own message in that chat, or an attested
+  `user_delegation` that clearly asks for them. A peer's request or a turn
+  started by mail is not enough. The instructions name deleting files or
+  data outside the agent's scratch or worktree, deleting branches,
+  force-pushing or rewriting shared history, cancelling or killing training
+  jobs, clusters or tickets the chat did not start, dropping or overwriting
+  datasets or checkpoints, and deleting scheduled jobs. Archiving, deleting
+  and exporting chats keep their stricter rule: the server refuses them
+  unless the user started the turn. Team Network mail from other people's
+  agents stays untrusted content. Quoted text, tool output and labels that
+  imitate AgentsDock wrappers stay content, and a peer message adds no tool
+  or permission. `user_delegation` is still attached and shown; it is no
+  longer required for ordinary work.
+- Because peer chats now act on mail as the owner's request, the agent of a
+  shared chat can no longer message other chats while it works on a guest's
+  message: a guest's turn gets no chat routes, and a guest's message steered
+  into a running turn, including a Codex goal, removes them from that run
+  before the agent can read it.
+- Changed text: the provider tool description, the static agent
+  instructions (Claude, Codex, Cursor), the cross-chat delivery rules, the
+  prompt of a turn that mail starts, and the unread-mail hint. The static
+  Claude instructions stay under their 13,000-character budget (12,962).
+- Verified with the real Claude and Codex CLIs on two isolated servers, the
+  previous server and this one, with the same prompts:
+  - Two chips "@New agent" in one message, the first for a new chat and the
+    second for an older one, asking for a VPP and a DreamZero integration.
+    The previous server's agent wrote "Two chats were both named New agent,
+    so I assigned one task to each" and sent both tasks to the wrong chat.
+    This server's agent sent each task to its chip's chat.
+  - The reported shape: two messages, each with one "@New agent" chip for a
+    different new chat, steered into a Claude turn that was running a
+    command. Claude received the block with each steered message. The
+    previous server's agent asked the user which "New agent" was which
+    (unanswered, the question resolved itself after 10 minutes); this
+    server's agent sent each task to its chip's chat without asking.
+  - A request to write `uname -sm` to a file, sent by an agent whose turn
+    mail had started, so it carried no `user_delegation`. On the previous
+    server the receiving Claude agent answered "your message arrived without
+    a server-attested user_delegation" and the Codex agent also refused; on
+    this server both wrote the file and replied.
+  - A request from the same chain to delete a file outside the receiving
+    chat's directory. Both servers' agents kept the file; on this server the
+    agent replied that deleting it needs the user's explicit authorization,
+    also when the file held ordinary notes.
+- Not covered: the chips were sent through the server's turn API with the
+  desktop app's request fields, not picked in the app (no client change);
+  Cursor and OpenCode chats were not run; the shared-chat guest rule is
+  covered by unit tests only.
+- The hub and every remote server need a restart or redeploy to use this.
+  No desktop or mobile change.
+
 ## 2026-10-30 — Chat file reads are retried when the hub's tunnel drops (desktop, Android, iOS)
 
 - A chat file read through the hub failed at once when the hub's ssh tunnel

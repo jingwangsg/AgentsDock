@@ -965,6 +965,15 @@ class SteerRewindTests(RewindFixture):
             await server.rewind_session("chat", rewind_request(to_seq=steer_seq, expected_latest_seq=latest))
         self.assertEqual(sess["fork_resume_session_at"], "tool-result-uuid")
 
+    async def test_a_steer_with_chat_chips_matches_the_row_carrying_their_routes(self) -> None:
+        sess, [steer_seq], latest = self.steered_chat()
+        # chat_reference_routes_block's text after a steer's prompt.
+        sent = ('Also check the logs\n\n[AgentsDock @chat routes]\n"@Other" #1: route_id=route_' + "a" * 32
+                + " alias=chat1\n[End AgentsDock @chat routes]")
+        with self.claude_transcript(self.TOOL_RESULT, self.queued_command_row("steer-uuid", "tool-result-uuid", sent)):
+            await server.rewind_session("chat", rewind_request(to_seq=steer_seq, expected_latest_seq=latest))
+        self.assertEqual(sess["fork_resume_session_at"], "tool-result-uuid")
+
     async def test_a_steer_whose_row_is_missing_or_ambiguous_leaves_the_chat_unchanged(self) -> None:
         for rows in [
             (self.TOOL_RESULT,),

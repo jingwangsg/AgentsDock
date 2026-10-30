@@ -4102,6 +4102,51 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
         ))
         self.assertNotIn("chat-native", agent_server.STEERING_SESSIONS)
 
+    async def test_a_steers_chips_that_share_a_title_reach_codex_with_their_own_routes(self) -> None:
+        # 2026-10-30: steered messages whose chips all read "@New agent" named different new chats;
+        # the agent got only "@New agent" and sent every task to an older, unrelated route.
+        # A live pair needs the target's reverse route; ids must match route_[0-9a-f]{32}.
+        forwards = []
+        for digit, target in (("1", "new-1"), ("2", "new-2")):
+            pair_id, forward_id, reverse_id = "pair_" + digit * 32, "route_" + digit * 32, "route_" + digit * 31 + "f"
+            forwards.append({"route_id": forward_id, "revision": "rev_" + digit * 32, "alias": f"chat{digit}",
+                             "target_session_id": target, "actions": ["instruction", "request_reply"],
+                             "pair_id": pair_id, "paired_route_id": reverse_id})
+            reverse = {"route_id": reverse_id, "revision": "rev_" + digit * 31 + "f", "alias": "source",
+                       "target_session_id": "chat-native", "actions": ["instruction"],
+                       "pair_id": pair_id, "paired_route_id": forward_id}
+            agent_server.STORE.sessions[target] = {"id": target, "title": "New agent", "backend": "codex",
+                                                   "provider_cross_chat_routes": [reverse]}
+        self.session["provider_cross_chat_routes"] = forwards
+        prompt = "@New agent integrate VPP. @New agent integrate DreamZero."
+        agent_server.QUEUED_TURNS["chat-native"] = deque([{
+            "queued_id": "queued-chips", "prompt": prompt, "file_ids": [], "backend": agent_server.BACKEND_CODEX,
+            "chat_references": [
+                {"session_id": target, "display_title_snapshot": "New agent", "source_text_start": start,
+                 "source_text_end": start + len("@New agent"), "action": "route", "grant_intent": True}
+                for target, start in (("new-1", 0), ("new-2", prompt.index("@New agent", 1)))
+            ],
+        }])
+        turn = FakeTurn()
+        stack, _events, _finished, _exec_fallback = self.runner_patches(FakeManager(turn))
+        with stack:
+            runner = asyncio.create_task(agent_server.run_codex_app_server(
+                "chat-native", "run-original", "Original request", dict(self.session),
+                Path(self.cwd) / ".runner-test-manifest.json", allow_exec_fallback=False,
+            ))
+            await self.wait_for_native_provider_ready(runner)
+            self.assertTrue((await agent_server.run_queued_turn_now("chat-native", "queued-chips"))["native_steer"])
+            turn.feed(agent_message("final-chips", "Sent both tasks.", "final_answer"))
+            turn.feed(completed_notification())
+            await asyncio.wait_for(runner, timeout=2)
+
+        self.assertEqual([items[0]["text"] for items, _message_id in turn.steer_calls], [
+            prompt + "\n\n[AgentsDock @chat routes]\n"
+            f'"@New agent" #1: route_id={forwards[0]["route_id"]} alias=chat1\n'
+            f'"@New agent" #2: route_id={forwards[1]["route_id"]} alias=chat2\n'
+            "[End AgentsDock @chat routes]"
+        ])
+
     async def test_native_steer_resets_preceding_terminal_error(self) -> None:
         turn = FakeTurn([
             {
