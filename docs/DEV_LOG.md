@@ -7,8 +7,8 @@
   one turn, each naming a different new chat, all read "@New agent". The
   agent did not list its routes again and sent all three tasks to an older
   chat that watches Slack. The provider text of a user's turn, a queued
-  message and a message steered into a running Claude or Codex turn now ends
-  with an `[AgentsDock @chat routes]` block. It gives each chip its route id
+  message, a message steered into a running Claude or Codex turn and a
+  scheduled job's prompt now ends with an `[AgentsDock @chat routes]` block. It gives each chip its route id
   and alias, or says that no route is available, and names the chip by its
   text and occurrence (`"@New agent" #2`), so a typed mention that was not
   picked does not shift the others. A chip that only asks for the final
