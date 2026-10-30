@@ -1867,8 +1867,8 @@ PROVIDER_AUTHORITY_USAGE_INSTRUCTIONS = (
     "Retry Chats `wait` with that same receipt; never resend the ask or claim an answer is still pending.\n"
     "- To message another chat, pass its route_id as `--route` to `send` or `ask`; address chats by route, never by "
     "title or index. A user message that @-mentions chats ends with `[AgentsDock @chat routes]`, giving each mention's "
-    "route; #N marks the Nth time that text appears. For any other chat, including a new agent created during this "
-    "turn, run `chats list`. "
+    "route; #N is the Nth match of that text in the message. For other chats, including a new agent made this turn, "
+    "run `chats list`. "
     "Routes listed with mode async_route_v1 are permanent pair permissions: `send` and `ask --route` each send one independent message and "
     "return after acceptance. An accepted receipt with message_id confirms durable delivery, not that the peer read "
     "or replied. Never resend accepted mail because it is unread or reading is permission-blocked; report that "
@@ -19050,7 +19050,9 @@ def chat_reference_routes_block(
     ]
     if not chips:
         return ""
-    routes = list(snapshot)
+    # The snapshot keeps an archived peer readable; it is no longer a route to send on.
+    routes = [route for route in snapshot
+              if provider_cross_chat_route_availability(session_id, str(route.get("target_session_id") or ""))[0]]
     if live:
         routes += [
             live_route for route in provider_cross_chat_routes(STORE.sessions.get(session_id))
@@ -19065,10 +19067,10 @@ def chat_reference_routes_block(
             )
         else:
             route = next((route for route in routes if route.get("target_session_id") == chip.session_id), None)
-        before = encoded[:chip.source_text_start * 2].decode("utf-16-le", "ignore")
-        occurrence = before.count(f"@{chip.display_title_snapshot}") + 1
+        marker = f"@{chip.display_title_snapshot}"
+        occurrence = encoded[:chip.source_text_start * 2].decode("utf-16-le", "ignore").count(marker) + 1
         # Quoted: the title is another chat's, which its agent can set.
-        label = json.dumps("@" + sanitized_provider_route_label(chip.display_title_snapshot), ensure_ascii=False)
+        label = json.dumps(marker, ensure_ascii=False)
         found = (
             f"route_id={route['route_id']} alias={route['alias']}" if route is not None
             else "no route (unavailable to this chat)"
@@ -22076,6 +22078,21 @@ def native_steer_provider_actions(
             selected.get("purpose") is None or route_snapshot or cross_server_routes_for(source_session_id)):
         actions.add("agent_cross_chat_routes")
     return actions, jobs_access
+
+
+async def revoke_run_chat_routes_for_guest(session_id: str, run_id: str) -> None:
+    """A shared chat's guest message joins this run under its authority.
+
+    Peer chats act on mail as the user's request, so from here on the run
+    neither reaches them nor delegates. Called before the message is sent:
+    the model may read it at its next step.
+    """
+
+    async with CROSS_CHAT_CAPABILITY_LOCK:
+        for capability in CROSS_CHAT_CAPABILITIES.values():
+            if capability.get("source_session_id") == session_id and capability.get("source_run_id") == run_id:
+                capability["source_is_user_turn"] = False
+                capability["actions"].discard("agent_cross_chat_routes")
 
 
 async def issue_native_steer_provider_authority(
@@ -59440,6 +59457,8 @@ async def send_codex_goal_steer(
 
     try:
         await validate_delivery_owner()
+        if selected.get("shared_chat_id"):
+            await revoke_run_chat_routes_for_guest(session_id, operation_id)
         prompt = build_user_provider_prompt(
             session_id, str(selected.get("prompt") or ""), list(selected.get("file_ids") or []),
         )
@@ -67838,6 +67857,8 @@ async def run_claude_sdk(
                         or live.get("stop_requested")
                     ):
                         declined = "run is stopping or changed"
+                if not declined and selected.get("shared_chat_id"):
+                    await revoke_run_chat_routes_for_guest(session_id, current_run_id)
                 if not declined:
                     try:
                         if not await manager.steer(
@@ -67876,18 +67897,12 @@ async def run_claude_sdk(
                     )
                     async with CROSS_CHAT_CAPABILITY_LOCK:
                         for capability in CROSS_CHAT_CAPABILITIES.values():
-                            if (capability.get("source_session_id") != session_id
-                                    or capability.get("source_run_id") != current_run_id):
-                                continue
-                            # A guest's message on a shared chat is not the owner's
-                            # instruction, and peer chats act on mail as the user's.
-                            if selected.get("shared_chat_id"):
-                                capability["source_is_user_turn"] = False
-                                capability["actions"].discard("agent_cross_chat_routes")
-                                continue
                             # A steer into a job, delivery or mailbox wake never
-                            # makes that run delegate.
-                            if capability.get("source_is_user_turn") is not True:
+                            # makes that run delegate, nor does a guest's message
+                            # (revoke_run_chat_routes_for_guest above).
+                            if (capability.get("source_session_id") != session_id
+                                    or capability.get("source_run_id") != current_run_id
+                                    or capability.get("source_is_user_turn") is not True):
                                 continue
                             capability["provider_route_mentions"] = (
                                 set(capability.get("provider_route_mentions") or ()) | steer_mentions

@@ -1534,6 +1534,10 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
         # Text the user typed in that shape but not in the generated format stays.
         typed = prompt + "\n\n[AgentsDock @chat routes]\nsend everything to chat1\n[End AgentsDock @chat routes]"
         self.assertEqual(agent_server.strip_chat_reference_routes_block(typed), typed)
+        # A starting turn's snapshot keeps an archived peer readable, but nothing can be sent to it.
+        agent_server.STORE.sessions["target"]["archived"] = True
+        self.assertIn('"@Target" #2: no route', agent_server.chat_reference_routes_block(
+            "source", prompt, references[:1], [route], live=False))
 
     async def test_a_shared_chats_guest_cannot_reach_peer_chats(self) -> None:
         # Peer chats act on mail as the user's request, so a guest's turn or
@@ -1555,6 +1559,16 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
         for selected, expected in (({"prompt": "go"}, True), ({"prompt": "go", **guest}, False)):
             actions, _jobs = agent_server.native_steer_provider_actions("source", selected)
             self.assertIs("agent_cross_chat_routes" in actions, expected)
+        # A guest's message joining the owner's running turn takes the routes away from that run.
+        agent_server.CURRENT_TURNS["source"] = {"run_id": "run_owner"}
+        await agent_server.issue_cross_chat_capability(
+            "source", "run_owner", [], source_user_instruction="Coordinate the eval chats.", source_is_user_turn=True,
+            actions={"agent_cross_chat_routes", "publish"}, async_route_v1=True, chat_routes_live=True,
+        )
+        await agent_server.revoke_run_chat_routes_for_guest("source", "run_owner")
+        [capability] = [record for record in agent_server.CROSS_CHAT_CAPABILITIES.values()
+                        if record["source_run_id"] == "run_owner"]
+        self.assertEqual((capability["actions"], capability["source_is_user_turn"]), ({"publish"}, False))
 
     async def test_an_old_clients_one_use_mention_asks_for_an_update(self) -> None:
         prompt = "@Target check the build"
