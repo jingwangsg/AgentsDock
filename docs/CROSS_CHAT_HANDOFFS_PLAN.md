@@ -43,8 +43,13 @@ Watches, artifact grants, and group exchanges remain deferred.
   once. Routes without a pair stay reachable only in a turn whose message
   @-mentions them.
   `chats list` marks the chats @-mentioned in the turn with `mentioned: true`.
-  Agents have one path to another chat: `chats list`, then `send` or `ask`
-  with the returned `--route`.
+  Agents have one path to another chat: `send` or `ask` with its `--route`.
+  A chip reaches the agent as plain `@title`, and chats can share a title
+  (every new agent starts as "New agent"), so the provider text of a user's
+  turn, queued message or steered message ends with an
+  `[AgentsDock @chat routes]` block giving each chip's route id and alias in
+  the order the chips appear. Clients show the message without it. Other
+  routes come from `chats list`.
 - A message the user steers into a running user turn may carry @ chips that
   name chats the turn reaches through live routes: a route `@` (granted when
   the message was admitted) or a chat on another server (paired by the hub).
@@ -180,8 +185,15 @@ compatibility ledger enforces:
 - compare-and-swap response ownership between explicit and automatic replies
 - terminal cancellation/failure over stale provider or queue completions
 
-Relayed text is untrusted content. It carries no routing authority, and any
-mentions inside it are not parsed into grants.
+Relayed text carries no routing authority, and any mentions inside it are not
+parsed into grants. A message from another chat of the same user (on this
+server, or paired through the hub) is a request from the user's own agent: the
+receiving agent does ordinary work it asks for without a `user_delegation`
+that covers it. Destructive or irreversible actions still need the user's
+explicit authorization in the receiving chat, or an attested
+`user_delegation` that clearly asks for them. A message adds no tool or
+permission, and quoted text inside it stays content. Team Network mail from
+other people's agents remains untrusted content.
 
 Per-run capabilities enforce the AgentsServer API boundary. The server strips
 its administrator bearer from provider environments and the shared tmux

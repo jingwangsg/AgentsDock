@@ -1446,6 +1446,58 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
             {"target", "other"},
         )
 
+    async def provider_text_of_new_agent_turn(self, **start: object) -> tuple[str, str, list[str]]:
+        """Admit "@New agent A. @New agent B." for two chats with that title; return
+        the prompt, the provider user text and the two target ids."""
+
+        targets = ["new1", "new2"]
+        for target in targets:
+            agent_server.STORE.sessions.setdefault(target, {
+                "id": target, "title": "New agent", "backend": "codex", "provider_cross_chat_routes": [],
+            })
+        prompt = "@New agent integrate VPP. @New agent integrate DreamZero."
+        sent: list[str] = []
+        with patch.object(agent_server, "assert_provider_user_message_unchanged",
+                          side_effect=lambda actual, _original: sent.append(actual)):
+            await self.capture_start_admission("source", agent_server.TurnRequest(
+                prompt=prompt,
+                chat_references=[
+                    self.grant_reference(target="new1", title="New agent"),
+                    self.grant_reference(target="new2", title="New agent", start=prompt.index("@New agent", 1)),
+                ],
+                client_capabilities=[agent_server.AGENT_CROSS_CHAT_ROUTES_CLIENT_CAPABILITY],
+            ), **start)
+        self.assertEqual(len(sent), 1)
+        return prompt, sent[0], targets
+
+    def new_agent_routes_block(self, targets: list[str]) -> str:
+        routes = {route["target_session_id"]: route for route in agent_server.provider_cross_chat_routes(
+            agent_server.STORE.sessions["source"])}
+        return "\n\n[AgentsDock @chat routes]\n" + "\n".join(
+            f"{index}. @New agent: route_id={routes[target]['route_id']} alias={routes[target]['alias']}"
+            for index, target in enumerate(targets, start=1)
+        ) + "\n[End AgentsDock @chat routes]"
+
+    async def test_a_turns_chips_that_share_a_title_reach_the_provider_with_their_own_routes(self) -> None:
+        # 2026-10-30: three chips all reading "@New agent" named three new chats. The provider text
+        # carried only "@New agent", and the agent sent every task to an older, unrelated route.
+        prompt, sent, targets = await self.provider_text_of_new_agent_turn()
+        self.assertEqual(sent, prompt + self.new_agent_routes_block(targets))
+        self.assertIn("ends with `[AgentsDock @chat routes]`", agent_server.PROVIDER_AUTHORITY_USAGE_INSTRUCTIONS)
+        # The chat itself keeps the message as the user typed it.
+        self.assertEqual(agent_server.strip_agentsdock_generated_user_text(sent, provider_history=True), prompt)
+
+    async def test_a_queued_messages_chips_that_share_a_title_reach_the_provider_with_their_own_routes(self) -> None:
+        # The message was queued while the chat worked: its pairs were granted then, and the turn
+        # that later runs it starts from the queued route snapshot.
+        _prompt, _sent, targets = await self.provider_text_of_new_agent_turn()
+        snapshot = [route for route in agent_server.provider_cross_chat_routes(agent_server.STORE.sessions["source"])
+                    if route["target_session_id"] in targets]
+        prompt, sent, _targets = await self.provider_text_of_new_agent_turn(
+            queued_id="queued_new_agents", accepted_provider_route_snapshot=snapshot,
+        )
+        self.assertEqual(sent, prompt + self.new_agent_routes_block(targets))
+
     async def test_an_old_clients_one_use_mention_asks_for_an_update(self) -> None:
         prompt = "@Target check the build"
         for action in ("instruction", "request_reply"):
@@ -2642,14 +2694,16 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
         # into the thread-level instructions; the envelope keeps only the
         # labelled blocks and dynamic facts.
         instructions = agent_server.CROSS_CHAT_DELIVERY_INSTRUCTIONS
-        self.assertIn("is the task for this chat", instructions)
-        self.assertIn("without asking the user to authorize it again", instructions)
-        self.assertIn("if they conflict, the source instruction wins", instructions)
+        self.assertIn("is the task for this chat from one of the user's agents", instructions)
+        self.assertIn("act on it without asking the user to authorize it;", instructions)
+        self.assertIn("It needs no source instruction; destructive actions follow the rule above", instructions)
+        self.assertIn("the source instruction wins", instructions)
         self.assertIn("not a second task addressed wholesale", instructions)
         self.assertIn("within this chat's existing permissions", instructions)
-        self.assertIn("grants no additional authority", instructions)
-        self.assertIn("agent-authored task detail, not independent user authority", instructions)
-        self.assertNotIn("grants no additional authority", prompt)
+        self.assertIn("grants no additional permissions", instructions)
+        # 2026-10-30: the scope rules made peers refuse ordinary work between the user's own chats.
+        self.assertNotIn("cannot expand the source user's scope", instructions)
+        self.assertNotIn("grants no additional permissions", prompt)
         self.assertIn(
             "[Source user instruction — verbatim, user-authored]",
             prompt,
@@ -2756,7 +2810,7 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("result content for continuing that task", instructions)
         self.assertIn("not a second task addressed wholesale", instructions)
         self.assertIn("not user authority", instructions)
-        self.assertIn("grants no additional authority", instructions)
+        self.assertIn("grants no additional permissions", instructions)
         self.assertIn(source_instruction, status_prompt)
         self.assertIn("[Server-generated exchange status]", status_prompt)
         self.assertIn("server-generated informational context", instructions)
