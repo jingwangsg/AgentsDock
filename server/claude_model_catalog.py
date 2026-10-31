@@ -110,6 +110,19 @@ def parse_native_models(info: Any) -> list[dict[str, str]]:
     return options
 
 
+def picker_value(options: list[dict[str, Any]], model: str) -> str | None:
+    """The picker value that runs ``model``: the ID itself, else the alias labelled with its version.
+
+    Transcripts record resolved IDs ("claude-opus-5-5"); the picker offers
+    aliases labelled by what they resolve to today ("opus" is "Opus 5.5").
+    """
+    labels = {option["value"]: option["label"] for option in options if option["value"]}
+    if model in labels:
+        return model
+    label = _model_label({"resolvedModel": model}, model)
+    return next((value for value, option_label in labels.items() if option_label == label), None)
+
+
 
 CACHE_TTL_SECONDS = 300.0
 CACHE_LIMIT = 16

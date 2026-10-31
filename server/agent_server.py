@@ -89964,6 +89964,14 @@ async def create_session(req: CreateSessionRequest) -> dict[str, Any]:
 
 
 async def create_session_with_history(req: CreateSessionRequest) -> dict[str, Any]:
+    if req.model is None and req.effort is None:
+        # A resume that picks neither a model nor an effort continues on the conversation's.
+        backend = (req.backend or DEFAULT_BACKEND).lower()
+        # The keys cover every field a request can name its provider ID in, one ID per backend.
+        provider_id = dict(local_session_ownership.provider_session_keys(req.model_dump(), DEFAULT_BACKEND)).get(backend)
+        if provider_id:
+            model, effort = await asyncio.to_thread(resumed_chat_runtime, backend, provider_id)
+            req = req.model_copy(update={"model": model, "effort": effort})
     sess = await STORE.create(req)
     provider_id = session_provider_id(sess)
     should_import = bool(provider_id) if req.import_history is None else req.import_history
@@ -89997,6 +90005,73 @@ async def carry_over_moved_chat_state(sessions: list[dict[str, Any]]) -> None:
             continue
         if summary:
             logger.info("chat state carry-over session=%s %s", session_id, summary)
+
+
+def resumed_chat_runtime(
+    backend: str, provider_id: str, transcript: Path | None = None,
+) -> tuple[str | None, str | None]:
+    """The model and effort a chat created from a provider conversation continues with.
+
+    The latest sibling-install chat that used the conversation holds what the
+    user last picked in AgentsDock. Without one, or when that chat used the
+    server default model, the transcript's last turn holds what the
+    conversation last ran. A model this server's picker does not offer keeps
+    the default.
+    """
+    if backend not in (BACKEND_CLAUDE, BACKEND_CODEX):
+        return None, None  # Cursor's history does not record a model.
+    model = effort = None
+    try:
+        model, effort = moved_chat_state.earlier_chat_runtimes(STATE_DIR, DEFAULT_BACKEND).get(
+            (backend, provider_id), (None, None))
+    except Exception as exc:
+        # An unreadable sibling index must not hide the transcript.
+        logger.warning("earlier chat runtimes unavailable: %s", concise_error_message(exc))
+    source = "earlier chat"
+    # A resumed chat must start even when its transcript or this server's picker cannot be read.
+    try:
+        if not model:
+            source = "transcript"
+            transcript = transcript or provider_history_path({"backend": backend, "session_id": provider_id})
+            events = reversed_jsonl_events(transcript) if transcript else ()
+            if backend == BACKEND_CLAUDE:
+                for event in events:
+                    message = event.get("message") or {}
+                    # Skip subagent rows and the CLI's own "<synthetic>" error notices.
+                    if (event.get("type") == "assistant" and event.get("isSidechain") is not True
+                            and message.get("model") != "<synthetic>"):
+                        # requestedModel keeps the 1M-context suffix that message.model drops.
+                        model, effort = event.get("requestedModel") or message.get("model"), event.get("effort")
+                        break
+            else:
+                for event in events:
+                    if event.get("type") == "turn_context":
+                        turn = event.get("payload") or {}
+                        model, effort = turn.get("model"), turn.get("effort")
+                        break
+        if not model:
+            logger.info("resumed chat %s %s keeps the default model: none recorded", backend, provider_id)
+            return None, None
+
+        if backend == BACKEND_CLAUDE:
+            catalog = parse_claude_help_catalog()
+            picker_model = claude_model_catalog.picker_value(catalog["models"], model)
+            picker_effort = effort if effort in {option["value"] for option in catalog["efforts"] if option["value"]} else None
+        else:
+            catalog = discover_codex_catalog()
+            picker_model = model if any(option["value"] == model for option in catalog["models"]) else None
+            # STORE.create rejects an effort this model does not support; drop it here instead.
+            picker_effort = normalize_runtime_effort_for_model(BACKEND_CODEX, picker_model, effort)
+        if picker_model is None:
+            logger.info("resumed chat %s %s keeps the default model: %s from the %s is not in this server's picker",
+                        backend, provider_id, model, source)
+            return None, None
+        logger.info("resumed chat %s %s continues on model=%s effort=%s; the %s recorded model=%s effort=%s",
+                    backend, provider_id, picker_model, picker_effort, source, model, effort)
+        return picker_model, picker_effort
+    except Exception as exc:
+        logger.warning("resumed chat %s %s keeps the default model: %s", backend, provider_id, concise_error_message(exc))
+        return None, None
 
 
 @app.get("/api/local-sessions")
@@ -90175,6 +90250,9 @@ async def bulk_import_sessions_guarded(
                         error="The transcript contains no importable chat messages.",
                     ))
                     continue
+                model, effort = await asyncio.to_thread(
+                    resumed_chat_runtime, item.backend, item.provider_session_id, source_path,
+                )
                 staged_session = await STORE.create(
                     CreateSessionRequest(
                         backend=item.backend,
@@ -90182,6 +90260,8 @@ async def bulk_import_sessions_guarded(
                         cwd=candidate_cwd or DEFAULT_CWD,
                         title=(item.title or str(candidate.get("label") or "")).strip()
                         or None,
+                        model=model,
+                        effort=effort,
                     ),
                     initializing_import=True,
                 )
