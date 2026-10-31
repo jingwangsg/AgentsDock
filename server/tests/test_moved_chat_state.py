@@ -293,5 +293,105 @@ class ImportCarriesStateTests(Installs, unittest.IsolatedAsyncioTestCase):
         self.assertIn("earlier chat titles unavailable", "\n".join(logs.output))
 
 
+def picker(models, efforts=("low", "medium", "high", "xhigh", "max")):
+    """A runtime catalog's model and effort rows, led by the server-default row."""
+    return {"models": [{"value": "", "label": "Server default"}, *({"value": value, "label": label} for value, label in models)],
+            "efforts": [{"value": "", "label": "Server default"}, *({"value": effort, "label": effort} for effort in efforts)]}
+
+
+# The rows of Claude's native picker on a real hub (2026-10-31): aliases are labelled by what they resolve to.
+CLAUDE_PICKER = picker((("default", "Default — Sonnet 5.5"), ("opus", "Opus 5.5"), ("claude-opus-5", "Opus 5"),
+                        ("sonnet", "Sonnet 5.5"), ("haiku", "Haiku 5.5")))
+CODEX_PICKER = picker((("gpt-6.1-sol", "GPT-6.1-Sol"), ("gpt-6-luna", "GPT-6-Luna")))
+
+
+class ResumeKeepsModelTests(Installs, unittest.IsolatedAsyncioTestCase):
+    """Resume chat continues on the model and effort the conversation last used."""
+
+    def setUp(self):
+        super().setUp()
+        self.cwd = self.home / "workspace"
+        self.cwd.mkdir()
+        projects = self.home / ".claude" / "projects"
+        rows = [{"type": "user", "message": {"role": "user", "content": "question"}},
+                {"type": "assistant", "requestedModel": "claude-opus-5-5", "effort": "high",
+                 "message": {"model": "claude-opus-5-5", "role": "assistant", "content": [{"type": "text", "text": "answer"}]}},
+                # The CLI's own error notice is not the conversation's model.
+                {"type": "assistant", "isApiErrorMessage": True,
+                 "message": {"model": "<synthetic>", "role": "assistant", "content": [{"type": "text", "text": "API Error"}]}}]
+        transcript = projects / agent_server.claude_project_dir_for_cwd(str(self.cwd)).name / "claude-conversation.jsonl"
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text("".join(json.dumps({**row, "sessionId": "claude-conversation", "cwd": str(self.cwd)}) + "\n" for row in rows))
+        rollout = self.home / ".codex" / "sessions" / "2026" / "10" / "31" / "rollout-2026-10-31T00-00-00-codex-conversation.jsonl"
+        rollout.parent.mkdir(parents=True)
+        rollout.write_text("".join(json.dumps(row) + "\n" for row in (
+            {"type": "session_meta", "payload": {"id": "codex-conversation", "cwd": str(self.cwd)}},
+            {"type": "turn_context", "payload": {"model": "gpt-6.1-sol", "effort": "xhigh"}},
+            {"type": "event_msg", "payload": {"type": "user_message", "message": "question"}},
+            {"type": "event_msg", "payload": {"type": "agent_message", "message": "answer"}},
+            {"type": "turn_context", "payload": {"model": "gpt-6-luna", "effort": "low"}},
+            {"type": "event_msg", "payload": {"type": "user_message", "message": "follow-up"}},
+            {"type": "event_msg", "payload": {"type": "agent_message", "message": "done"}},
+        )))
+        self.store = agent_server.SessionStore()
+        self.side_chats = side_questions.SideQuestions(storage_path=self.new / "side_chats.sqlite3")
+        self.addAsyncCleanup(self.side_chats.close)
+        self.claude_picker = CLAUDE_PICKER
+        for name, value in (("STATE_DIR", self.new), ("SESSIONS_FILE", self.new / "sessions.json"),
+                            ("STORE", self.store), ("CLAUDE_PROJECTS_ROOT", projects),
+                            ("CODEX_SESSIONS_ROOT", rollout.parents[3]), ("CODEX_SESSION_INDEX_PATH", self.home / "no-index"),
+                            ("AGENT_TOKEN", "new-token"), ("SIDE_QUESTIONS", self.side_chats),
+                            ("other_local_instance_provider_keys", lambda: set()), ("local_history_import_guard", nullcontext),
+                            ("parse_claude_help_catalog", lambda: self.claude_picker),
+                            ("discover_codex_catalog", lambda: CODEX_PICKER)):
+            self.enterContext(patch.object(agent_server, name, value))
+        self.enterContext(patch.object(agent_server, "ensure_dirs", side_effect=lambda session_id=None:
+            (agent_server.session_dir(session_id) if session_id else self.new).mkdir(parents=True, exist_ok=True)))
+
+    async def runtime(self, created):
+        # Let the background carry-over finish inside the test.
+        await asyncio.gather(*(task for task in asyncio.all_tasks()
+                               if task.get_coro().__name__ == "carry_over_moved_chat_state"))
+        session = self.store.sessions[created]
+        return session["model"], session["effort"]
+
+    async def import_chat(self, backend, provider_id):
+        result = (await agent_server.bulk_import_sessions_guarded(agent_server.BulkImportSessionsRequest(items=[{
+            "provider_session_id": provider_id, "backend": backend, "cwd": str(self.cwd)}]), set()))["results"][0]
+        self.assertTrue(result["ok"], result)
+        return await self.runtime(result["session_id"])
+
+    async def test_a_claude_chat_continues_on_the_transcript_model_and_effort(self):
+        # The transcript records the resolved ID; the picker offers it as the "opus" alias.
+        self.assertEqual(await self.import_chat("claude", "claude-conversation"), ("opus", "high"))
+
+    async def test_a_codex_chat_continues_on_the_rollout_model_and_effort(self):
+        self.assertEqual(await self.import_chat("codex", "codex-conversation"), ("gpt-6-luna", "low"))
+
+    async def test_the_earlier_chat_model_comes_before_the_transcript(self):
+        (self.old / "sessions.json").write_text(json.dumps({OLD_ID: {
+            "backend": "claude", "claude_session_id": "claude-conversation", "model": "sonnet", "effort": "max",
+            "updated_at": "2026-10-17T00:00:00Z"}}))
+
+        self.assertEqual(await self.import_chat("claude", "claude-conversation"), ("sonnet", "max"))
+
+    async def test_a_model_missing_from_the_picker_keeps_the_default(self):
+        self.claude_picker = picker((("default", "Default — Sonnet 5.5"), ("sonnet", "Sonnet 5.5")))
+
+        with self.assertLogs(agent_server.logger, "INFO") as logs:
+            self.assertEqual(await self.import_chat("claude", "claude-conversation"), (None, None))
+        self.assertIn("resumed chat keeps the default model: claude claude-opus-5-5 from the transcript "
+                      "is not in this server's picker", "\n".join(logs.output))
+
+    async def test_resume_by_id_continues_on_the_conversation_model_unless_one_is_picked(self):
+        created = await agent_server.create_session(agent_server.CreateSessionRequest(
+            backend="codex", provider_session_id="codex-conversation", cwd=str(self.cwd)))
+        self.assertEqual(await self.runtime(created["session"]["id"]), ("gpt-6-luna", "low"))
+
+        picked = await agent_server.create_session(agent_server.CreateSessionRequest(
+            backend="claude", provider_session_id="claude-conversation", cwd=str(self.cwd), model="sonnet"))
+        self.assertEqual(await self.runtime(picked["session"]["id"]), ("sonnet", None))
+
+
 if __name__ == "__main__":
     unittest.main()
