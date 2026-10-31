@@ -1,5 +1,51 @@
 # Public development log
 
+## 2026-10-31 — Resumed chats keep the model and effort the conversation last used (server)
+
+- A chat created with Resume or Import Chats started on the server's default
+  model and effort, whatever the conversation had used. A Codex chat resumed
+  from a GPT-6-Luna / low conversation ran its next turn on GPT-6-Sol /
+  xhigh, the Codex config default. A Claude chat resumed from a Haiku 5.5 /
+  high conversation showed "Sonnet 5.5" (the default) while the Claude CLI
+  itself continued on Haiku 5.5, with the effort reset to medium.
+- The server now gives the new chat a model and effort, in this order:
+  - the most recently updated chat on a sibling install (an earlier install
+    of a moved cluster remote) that used the same conversation, if that chat
+    has a model: it is what the user last picked in AgentsDock;
+  - otherwise the transcript's last turn: Claude's last assistant row
+    (`requestedModel`, `effort`; subagent rows and the CLI's `<synthetic>`
+    error notices are skipped) or Codex's last `turn_context` (`model`,
+    `effort`). An unreadable sibling index is logged and the transcript is
+    still read.
+- The model is kept only if this server's model picker offers it. Claude
+  transcripts record resolved IDs, so `claude-opus-5-5` becomes the `opus`
+  alias that the picker labels "Opus 5.5". A model the picker does not offer
+  keeps the default, for example `claude-sonnet-5-5[1m]` on an account whose
+  picker has no 1M row; the server log says why. An effort the picker does
+  not offer for that model is dropped, so a Codex model that no longer
+  supports the recorded effort still starts the chat.
+- This applies to bulk import (Import Chats, and Resume of a listed
+  conversation) and to `POST /api/sessions` with a provider ID when the
+  client sends neither a model nor an effort (Resume by ID with details). A
+  model or effort the client sends still wins. Cursor history records no
+  model and is unchanged. No client change.
+- Native behaviour, measured with Claude Code 2.1.314 and Codex 0.166.0:
+  `claude --resume` keeps the model and resets the effort to the CLI
+  default; the `codex resume` TUI keeps both; `codex exec resume` switches to
+  the config default and warns that the session was recorded with another
+  model. AgentsDock now keeps both for both providers.
+
+```text
+Change and expected user behavior: a resumed or imported chat starts on the model and effort its conversation last used, if this server's picker offers that model.
+Source commit / app build / server version: branch fix/resume-keeps-model; desktop built from the branch (unpackaged electron-vite build); server 1.0.7-beta.11.
+Test surface: isolated native app (isolated profile) against two isolated servers, main and the branch, each with its own temporary home holding copies of real Claude and Codex transcripts.
+Actions exercised and observed outcomes: Resume by session ID in the desktop for a Claude Haiku 5.5 / high and a Codex GPT-6-Luna / low conversation, bulk import of three more (Opus 5.5 / high, Sonnet 5.5 1M / medium, GPT-6.1-Sol / high), one real turn in each resumed disposable chat. Main: all five chats had no model; the desktop showed "Sonnet 5.5" and "GPT-6-Sol · xhigh"; the turns ran Haiku 5.5 / medium and GPT-6-Sol / xhigh. Branch: haiku/high, gpt-6-luna/low, opus/high, gpt-6.1-sol/high, and the default for Sonnet 5.5 1M (not in the picker, logged); the desktop showed "Haiku 5.5 · High", "GPT-6-Luna · Low", "Opus 5.5 · High", "GPT-6.1-Sol · High"; the turns ran Haiku 5.5 / high and GPT-6-Luna / low. An earlier install's chat (fable / max) won over its transcript (Haiku 5.5 / medium).
+Real boundaries exercised; any mocked/stubbed boundaries: desktop dialog, IPC, HTTP, bulk import and POST /api/sessions, real transcripts, real Claude SDK and Codex app-server turns, pickers from the real CLIs. Nothing stubbed in this check; the unit tests stub the picker.
+Focused regression / typecheck / production build: tests for the Claude transcript, the Codex rollout, sibling precedence, an unavailable model, an effort the Codex model no longer supports, an unreadable sibling index and Resume by ID fail on main and pass; picker mapping and sibling lookup tests; all 8 server shards; desktop production build.
+Remaining limitations or blocked acceptance: a server whose Claude picker was never captured offers only family aliases without versions, so a transcript's resolved Claude ID keeps the default there until the picker is read (a catalog refresh does that). Not tested on Android.
+Availability: source only; the hub and remote servers need a server update.
+```
+
 ## 2026-10-30 — Agents tell apart @chats that share a title, and the user's own agents act on each other's requests (server)
 
 - A chat chip reached the agent as plain `@title`. Every chat made with

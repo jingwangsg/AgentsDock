@@ -7,7 +7,8 @@ Importing a provider transcript on the new install creates a new chat that
 starts without the canvases, published files and side chat of the earlier
 chat that used the conversation. When exactly one chat in a sibling install
 owns the same provider conversation, this copies that state to the new chat.
-It also gives Resume chat the title the conversation had in a sibling install.
+It also gives Resume chat the title, model and effort the conversation had in
+a sibling install.
 Sibling installs are only read, never changed.
 """
 from __future__ import annotations
@@ -73,6 +74,7 @@ def earlier_chat_runtimes(state_dir: Path, default_backend: str) -> dict[tuple[s
                 # A parked identity of another backend never ran on this chat's model.
                 if key[0] == backend:
                     owners.setdefault(key, []).append((str(row.get("updated_at") or ""), row.get("model"), row.get("effort")))
+    # Compare updated_at only: on a tie, a None model cannot be compared with a model name.
     return {key: max(found, key=lambda owner: owner[0])[1:] for key, found in owners.items()}
 
 

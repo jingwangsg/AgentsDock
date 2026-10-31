@@ -143,10 +143,12 @@ class NativeModelLabelTests(unittest.TestCase):
             {"value": "opus[1m]", "displayName": "Opus (1M context)", "resolvedModel": "claude-opus-5-5[1m]"},
             {"value": "claude-opus-5", "displayName": "Opus 5", "resolvedModel": "claude-opus-5"},
             {"value": "sonnet", "displayName": "Sonnet", "resolvedModel": "claude-sonnet-5-5"},
+            {"value": "haiku", "displayName": "Haiku", "resolvedModel": "claude-haiku-4-5-20251001"},
         )
         for model, value in (("claude-opus-5-5", "opus"), ("claude-opus-5-5[1m]", "opus[1m]"),
                              ("claude-opus-5", "claude-opus-5"), ("claude-sonnet-5-5", "sonnet"),
-                             ("claude-sonnet-5-5[1m]", None), ("claude-mythos-9", None)):
+                             ("claude-haiku-4-5-20251001", "haiku"), ("claude-sonnet-5-5[1m]", None),
+                             ("claude-mythos-9", None), ("us.anthropic.claude-opus-5-5-v1", None)):
             with self.subTest(model=model):
                 self.assertEqual(catalog.picker_value(rows, model), value)
 
