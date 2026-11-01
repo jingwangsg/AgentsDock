@@ -29,13 +29,15 @@ export interface OpenInZedRequest {
 
 /**
  * What Open in Zed needs for a chat: its directory on the server, and how this Mac reaches that
- * server. A remote is always named by its alias (written right before Zed connects): Zed runs
- * without the shell environment a Sky cluster's own ssh entry relies on, and the alias carries it.
+ * server. A remote behind a hub notation (oci@, aws@, osmo@) is named by its alias (written right
+ * before Zed connects): ssh cannot dial the notation, and Zed runs without the shell environment a
+ * Sky cluster's own ssh entry relies on, which the alias carries. A plain host is opened through the
+ * user's own ssh entry, as `ssh <host>` reaches it.
  */
 export function openInZedInput(session: Pick<Session, 'id' | 'cwd'>, profile: PublicServerProfile | undefined, profileGeneration: number): OpenInZedRequest | null {
   const path = session.cwd?.trim()
   if (!path || !profile) return null
   const sshHost = profile.sshHost ?? null
-  const hostAlias = sshHost && SSH_HOST_ALIAS_PATTERN.test(profile.name) ? profile.name : null
+  const hostAlias = sshHost && /^(oci|aws|osmo)@/.test(sshHost.trim()) && SSH_HOST_ALIAS_PATTERN.test(profile.name) ? profile.name : null
   return { path, sshHost, hostAlias, sessionId: session.id, profileId: profile.id, profileGeneration }
 }

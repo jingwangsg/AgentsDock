@@ -129,7 +129,7 @@ CLUSTER_HOME_ENV = {"oci@": "AGENTSDOCK_OCI_HOME", "osmo@": "AGENTSDOCK_OSMO_HOM
 OSMO_POOLS: dict[str, str] = {}
 # No leading "-": workflow and task names are passed to the osmo CLI as arguments.
 OSMO_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
-# `ssh <remote name>` from this machine: one alias file per remote (see write_ssh_alias), in the
+# `ssh <remote name>` from this machine: one alias file per oci@, aws@ or osmo@ remote (see _keep_ssh_alias), in the
 # directory where the desktop app keeps its own aliases and that ~/.ssh/config includes.
 SSH_ALIAS_DIR = Path.home() / ".agentsdock" / "ssh"
 SSH_CONFIG = Path.home() / ".ssh" / "config"
@@ -834,7 +834,7 @@ async def ssh_alias_content(name: str, ssh_host: str, route: SSHRoute) -> str:
             # The hub's own connect limit; an interactive login waits for the pod as long as its user does.
             if key != "ConnectTimeout":
                 lines.append(f"  {key} {value}")
-    else:
+    else:  # oci@ or aws@ (_keep_ssh_alias writes no alias for a plain host): Sky's entry, as ssh -G resolves it
         resolved = await resolved_ssh_options(route.destination)
         for key, option in SSH_ALIAS_OPTIONS:
             for value in resolved.get(key, []):
@@ -842,7 +842,7 @@ async def ssh_alias_content(name: str, ssh_host: str, route: SSHRoute) -> str:
                 value = {"true": "yes", "false": "no"}.get(value, value) if key == "stricthostkeychecking" else value
                 if value == "none" or (key == "serveraliveinterval" and value == "0"):
                     continue
-                if key == "proxycommand" and ssh_host.startswith(("oci@", "aws@")):
+                if key == "proxycommand":
                     # Sky's proxy needs the environment the hub's route sets: Sky's CA bundle, and for aws@ the
                     # STS session, relayed again when it nears its end. This file's __main__ sets it up and runs
                     # the command; ssh still expands the command's % tokens.
@@ -1588,7 +1588,7 @@ class RemoteServerManager:
         self._bootstrapping: str | None = None
         # This hub's own server identity: a hub it attaches may list this hub among its remotes.
         self.own_identity = own_identity
-        # Keep an ssh alias per remote in SSH_ALIAS_DIR (see _keep_ssh_alias).
+        # Keep an ssh alias per oci@, aws@ or osmo@ remote in SSH_ALIAS_DIR (see _keep_ssh_alias).
         self.ssh_aliases = ssh_aliases
         self.servers: dict[str, RemoteServer] = {}
         self.tunnels: dict[str, Tunnel] = {}
@@ -1697,10 +1697,12 @@ class RemoteServerManager:
         server = self.servers.get(remote_id)
         if server is None:
             return
-        # A Host block named like a host the hub dials would take over the hub's own connections to it (its
-        # `ssh -G` and tunnels read the alias first); `ssh <name>` reaches such a host as it is anyway.
+        # Only a host notation gets an alias, since ssh cannot dial one itself; a plain host is the user's own ssh
+        # entry, which `ssh` and Zed use as it is. A Host block named like a host the hub dials would take over the
+        # hub's own connections to it (its `ssh -G` and tunnels read the alias first). The file is removed, not just
+        # left alone: an earlier hub wrote one for plain hosts too.
         dialed = {entry.ssh_host.split("@")[-1] for entry in [*self.servers.values(), *self.forwards.values()]}
-        if server.name in dialed:
+        if not server.ssh_host.startswith(("oci@", "aws@", "osmo@")) or server.name in dialed:
             remove_ssh_alias(server.name)
             return
         # Two remotes of one name would take turns in one file.
