@@ -27,7 +27,7 @@ describe('zedTarget', () => {
     expect(() => zedTarget({ path: '/root', sshHost: 'osmo@wf-1' })).toThrow('osmo@')
   })
 
-  it('names the local alias this Mac keeps for the server when Forward SSH is on', () => {
+  it('names the local alias this Mac keeps for an oci@ server', () => {
     expect(zedTarget({ path: '/mnt/lustre/proj', sshHost: 'oci@jing-debug-a236', hostAlias: 'oci_dev' })).toBe('ssh://oci_dev/mnt/lustre/proj')
     expect(zedTarget({ path: '/mnt/lustre/proj', sshHost: 'oci@jing-debug-a236', hostAlias: '' })).toBe('ssh://jing-debug-a236/mnt/lustre/proj')
     expect(() => zedTarget({ path: '/srv', sshHost: 'nv_gb300', hostAlias: 'my server' })).toThrow(/alias/)

@@ -1635,9 +1635,7 @@ sys.exit(255)
         script = self.tmp_path / "ssh"
         script.write_text(f"""#!{sys.executable}
 import sys, time
-if "-G" in sys.argv:
-    print("hostname lab.example\\nuser me\\nport 22")
-elif "-N" in sys.argv:
+if "-N" in sys.argv:
     time.sleep(30)
 """)
         script.chmod(0o700)
@@ -1654,6 +1652,7 @@ elif "-N" in sys.argv:
             # Named like a host the hub dials (yam_dev's): an alias would take over the hub's own ssh to it.
             make_server(id="bbbbbbbbbbbb", name="yam09", ssh_host="osmo@wf-other", local_port=free_port()),
             make_server(id="cccccccccccc", name="has space", ssh_host="osmo@wf-other", local_port=free_port()),  # not a Host alias
+            # One name for two remotes: neither gets the file.
             make_server(id="dddddddddddd", name="twin", ssh_host="osmo@wf-running", local_port=free_port()),
             make_server(id="eeeeeeeeeeee", name="twin", ssh_host="osmo@wf-other", local_port=free_port()),
             make_server(id="ffffffffffff", name="mine", ssh_host="osmo@wf-other", local_port=free_port()),
@@ -1683,6 +1682,7 @@ elif "-N" in sys.argv:
                         break
                     await asyncio.sleep(0.05)
                 await asyncio.sleep(0.5)  # the other remotes' first routes have resolved too
+                # The block from the osmo route; test_ssh_alias_takes_the_route_of_each_host_notation checks all of it.
                 assert (aliases / "lab").read_text().splitlines()[1:4] == ["Host lab", "  HostName wf-running", "  User root"]
                 assert (aliases / "mine").read_text() == foreign and sorted(path.name for path in aliases.iterdir()) == ["lab", "mine"]
                 tunnel = manager.tunnels["aaaaaaaaaaaa"]

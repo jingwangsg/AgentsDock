@@ -4,11 +4,12 @@
 
 - The hub wrote an alias `~/.agentsdock/ssh/<remote name>` for every remote,
   including one whose SSH host is an ordinary entry in `~/.ssh/config`, such
-  as a remote `yam09_dev` on host `yam09`. Open in Zed named that alias, and
-  for a remote without a hub alias it wrote one that reaches the host's sshd
-  through AgentsDock's port tunnel. Because the alias directory is included
-  ahead of the user's own Host blocks, an alias named like the host itself
-  would have sent `ssh <host>` through AgentsDock.
+  as a remote `lab_dev` on host `lab`. Open in Zed named that alias. For a
+  remote the hub kept no alias for, such as one named like its own host,
+  Open in Zed wrote an alias that reaches the host's sshd through
+  AgentsDock's port tunnel. The alias directory is included ahead of the
+  user's own Host blocks, so such a file could send `ssh <host>` through
+  AgentsDock.
 - The hub now keeps an alias only for a remote behind a host notation
   (`oci@`, `aws@`, `osmo@`), which ssh cannot dial itself. For any other
   remote it removes the alias it wrote earlier; this takes effect when the
@@ -18,6 +19,19 @@
   servers open as before.
 - Forward SSH, the per-server button in Settings → Servers, is unchanged: it
   still writes an alias when the user turns it on.
+- A port-tunnel alias that an earlier desktop build wrote for a plain host
+  is not removed; delete it from `~/.agentsdock/ssh` by hand.
+
+```text
+Change and expected user behavior: only oci@, aws@ and osmo@ remotes get an ssh alias; `ssh <host>` and Open in Zed reach a plain host through the user's own ssh entry.
+Source commit / app build / server version: branch fix/ssh-alias-only-for-hub-notations; desktop build 138; hub change ships with the next hub restart.
+Test surface: the branch's desktop build (electron-vite out/, isolated user data) against the running hub on this Mac, on a hub remote whose name equals its plain ssh host.
+Actions exercised and observed outcomes: opened a chat on that remote and clicked Open in Zed. Zed's state database recorded the workspace on host `<host>` with no user or port, Zed.log showed "ssh <host> ready in 4.59s", and ~/.agentsdock/ssh kept the same files and modification times.
+Real boundaries exercised; any mocked/stubbed boundaries: renderer → main IPC, the Zed CLI and Zed's own ssh connection. The hub's alias rule was exercised by the manager test with real tunnels and a stub ssh/osmo, not by the running hub, which still runs the previous code.
+Focused regression / typecheck / production build: hub alias tests (a plain remote's earlier hub alias is removed; notation, dialed-name, twin, invalid-name and ownership rules), openInZedInput and MarkdownContent tests, desktop typecheck and full vitest.
+Remaining limitations or blocked acceptance: hub behavior is unverified until the hub restarts; leftover desktop port-tunnel aliases for plain hosts are not cleaned up.
+Availability: desktop build 138; the hub needs a restart.
+```
 
 ## 2026-11-01 — Updating the Claude or Codex CLI installs it when the CLI's own update cannot (server)
 

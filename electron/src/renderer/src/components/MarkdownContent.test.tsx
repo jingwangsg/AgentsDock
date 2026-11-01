@@ -143,7 +143,7 @@ describe('MarkdownContent', () => {
   })
 
   describe('the right-click menu of an absolute path link', () => {
-    const remote = { sshHost: 'oci_dev', hostAlias: 'oci_dev', sessionId: 'chat-7', profileId: 'profile-a', profileGeneration: 3 }
+    const remote = { sshHost: 'oci@jing-debug', hostAlias: 'oci_dev', sessionId: 'chat-7', profileId: 'profile-a', profileGeneration: 3 }
     const pick = async (link: string, item: string) => {
       fireEvent.contextMenu(screen.getByRole('link', { name: link }))
       await userEvent.click(await screen.findByRole('menuitem', { name: item }))
@@ -151,7 +151,7 @@ describe('MarkdownContent', () => {
 
     beforeEach(() => {
       useAppStore.setState({
-        profiles: [{ id: 'profile-a', name: 'oci_dev', serverUrl: `${DEFAULT_SERVER_URL}/api/remote/oci`, sshHost: 'oci_dev' } as PublicServerProfile],
+        profiles: [{ id: 'profile-a', name: 'oci_dev', serverUrl: `${DEFAULT_SERVER_URL}/api/remote/oci`, sshHost: 'oci@jing-debug' } as PublicServerProfile],
         activeProfileId: 'profile-a',
         profileGeneration: 3
       })

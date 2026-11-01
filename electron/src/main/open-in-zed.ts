@@ -13,7 +13,7 @@ export interface OpenInZedInput {
   column?: number
   /** SSH destination of that server; omitted for a server on this machine. */
   sshHost?: string | null
-  /** The local SSH alias this Mac keeps for that server (Forward SSH); the URL names it instead of the raw host. */
+  /** The local SSH alias of a server behind oci@, aws@ or osmo@ (see openInZedInput); the URL names it instead of the raw host. */
   hostAlias?: string | null
 }
 
