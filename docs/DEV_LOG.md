@@ -1,5 +1,53 @@
 # Public development log
 
+## 2026-11-01 — Updating the Claude or Codex CLI installs it when the CLI's own update cannot (server)
+
+- Settings → Servers → Update Codex CLI failed on a server whose `codex` was
+  unpacked by hand from a release tarball and linked from `~/.local/bin`:
+  `codex update` exited 1 with "Could not detect the Codex installation
+  method". Claude had the same problem without an error: with
+  `~/.local/bin/claude` a hand-made copy, `claude update` printed
+  "Successfully updated from 2.1.312 to version 2.1.316" and exited 0, but it
+  does not replace a launcher it did not create, so the chats kept running
+  2.1.312 while the row reported success.
+- The server now runs the official installer instead of `<cli> update` when
+  the CLI its chats run is a native binary that neither the official
+  installer, npm nor a Homebrew cask put there. The CLI's own update is still
+  used for its installer's directory (`~/.codex/packages/standalone`,
+  `~/.local/share/claude/versions`), npm (`node_modules`), Homebrew casks
+  (`Caskroom`; neither CLI has a formula) and scripts (package-manager shims,
+  or wrappers written on purpose). A failed update of those is reported as
+  before and never falls back, and a CLI set with `CLAUDE_BIN`/`CODEX_BIN`
+  (a path or another name) is never replaced.
+- Claude's installer also leaves a launcher it did not create in place, so
+  the server moves that launcher aside for the install and puts it back if
+  the install fails. New Claude turns on that server cannot start while the
+  installer runs (18 s in the check below).
+- After an install the server checks that the chats now resolve the CLI into
+  the installer's directory. If another copy still comes first, for example
+  because `CODEX_INSTALL_DIR` sent the Codex link elsewhere, the row shows an
+  error that names it.
+- The response's `action` is `install` when the installer ran. The row shows
+  the installer's last line ("Codex CLI 0.166.0 installed successfully.",
+  "✅ Installation complete!"), and Update & redeploy all reports
+  "installed". No client change.
+- Measured with Codex 0.166.0 and Claude Code 2.1.316 on macOS in isolated
+  homes: npm installs of both update themselves through npm; a Codex
+  Homebrew cask runs `brew upgrade --cask codex`; a Claude Homebrew cask only
+  prints `brew upgrade claude-code` and exits 0 (unchanged, read from the
+  Claude binary).
+
+```text
+Change and expected user behavior: Update Codex CLI / Update Claude CLI replaces a hand-installed CLI with the official install, and reports an error when the chats would still run another copy.
+Source commit / app build / server version: branch fix/cli-update-falls-back-to-installer; no client build; server 1.0.7-beta.11.
+Test surface: three isolated servers on this Mac (main and the branch, each with its own temporary home), no hub or remote involved.
+Actions exercised and observed outcomes: with a tarball-style Codex 0.165.0 and a hand-linked Claude 2.1.312 planted in each home, POST /api/admin/runtimes/{codex,claude}/update. Main: Codex 500 "`codex update` exited with 1: Error: Could not detect the Codex installation method…"; Claude 200 "update", "Successfully updated from 2.1.312 to version 2.1.316", diagnostic still 2.1.312. Branch: Codex 200 "install", 0.166.0, ~/.local/bin/codex now a symlink into the standalone directory; Claude 200 "install", 2.1.316, ~/.local/bin/claude now a symlink into claude/versions; a second update of each ran the CLI's own update. A third server with CODEX_INSTALL_DIR elsewhere returned 500 "…the chats still run …/.local/bin/codex instead of the CLI it installed".
+Real boundaries exercised; any mocked/stubbed boundaries: HTTP endpoint, the real installers downloaded from chatgpt.com and claude.ai, real CLIs. The desktop and mobile rows were not exercised; they display `output`, which the response fills as before.
+Focused regression / typecheck / production build: tests for a hand-installed CLI, a failed update of an installer/npm/Homebrew install, a wrapper script, a configured CLI path or name, an unreadable binary, missing curl/bash, a CLI the chats do not run after an install, and the Claude launcher put back after a failed install; all 8 server shards.
+Remaining limitations or blocked acceptance: Linux CLI behaviour was read from the Codex source and the Claude binary, not run. A Homebrew Claude still only gets the brew instructions.
+Availability: source only; the hub and remote servers need a server update.
+```
+
 ## 2026-10-31 — Resumed chats keep the model and effort the conversation last used (server)
 
 - A chat created with Resume or Import Chats started on the server's default
