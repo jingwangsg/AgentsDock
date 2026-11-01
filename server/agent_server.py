@@ -86366,9 +86366,22 @@ RUNTIME_CLI_INSTALL_COMMANDS = {
 }
 
 
+def runtime_cli_installer_owns(backend: str, env: dict[str, str], executable: str | None) -> bool:
+    """Whether `executable` resolves into the directory where the official installer keeps the CLI's releases."""
+
+    if not executable:
+        return False
+    home = env.get("HOME", str(Path.home()))
+    if backend == BACKEND_CODEX:
+        root = Path(env.get("CODEX_HOME") or f"{home}/.codex") / "packages" / "standalone"
+    else:
+        root = Path(env.get("XDG_DATA_HOME") or f"{home}/.local/share") / "claude" / "versions"
+    return Path(executable).resolve().is_relative_to(root.resolve())
+
+
 @app.post("/api/admin/runtimes/{backend}/update")
 async def update_runtime_cli(backend: Literal["claude", "codex"], request: Request):
-    """Update CLI on this server, installing it when missing: the per-row button, and the update-all job's remote step."""
+    """Update CLI on this server, installing it when it is missing or `update` cannot manage it: the per-row button, and the update-all job's remote step."""
 
     require_native_admin_control(request)
     result = await run_runtime_cli_update(backend)
@@ -86382,7 +86395,8 @@ async def update_hub_cli(backend: str) -> tuple[str, bool]:
 
 
 async def run_runtime_cli_update(backend: str) -> dict[str, Any]:
-    """Run the CLI's own `update` with the binary and PATH this server's chats spawn, or its official installer when it is missing."""
+    """Run the CLI's own `update` with the binary and PATH this server's chats spawn, or its official installer when
+    the CLI is missing or is an install that `update` cannot manage."""
 
     if RUNTIME_CLI_UPDATE_LOCK.locked():
         raise HTTPException(409, "A CLI update is already running on this server.")
@@ -86390,7 +86404,18 @@ async def run_runtime_cli_update(backend: str) -> dict[str, Any]:
         env = codex_app_server_env() if backend == BACKEND_CODEX else runner_env()
         configured = runtime_executable(backend)
         executable = shutil.which(configured, path=env.get("PATH"))
-        if executable:
+        # `update` cannot manage a native binary that neither the official installer, npm nor a Homebrew cask put there
+        # (measured 2026-11-01): `codex update` exits 1 with "Could not detect the Codex installation method", and `claude
+        # update` reports success but leaves a launcher it did not create running the old version. A script is a package
+        # manager's shim (pnpm writes shell shims) or a wrapper written on purpose; a CLAUDE_BIN/CODEX_BIN setting is the
+        # operator's choice, and a binary this server cannot read is left to `update` as before.
+        unmanaged = False
+        if executable and configured == backend and not runtime_cli_installer_owns(backend, env, executable):
+            real = Path(executable).resolve()
+            if not {"node_modules", "Caskroom"} & set(real.parts):
+                with suppress(OSError), real.open("rb") as binary:
+                    unmanaged = binary.read(2) != b"#!"
+        if executable and not unmanaged:
             command = [executable, "update"]
             action, label = "update", f"`{backend} update`"
         elif os.sep in configured:
@@ -86399,10 +86424,21 @@ async def run_runtime_cli_update(backend: str) -> dict[str, Any]:
         else:
             missing = [tool for tool in ("curl", "bash") if not shutil.which(tool, path=env.get("PATH"))]
             if missing:
-                raise HTTPException(404, f"The {backend} CLI is not installed on this server, and installing it needs {' and '.join(missing)}.")
+                state = f"at {executable} is an install `{backend} update` cannot manage" if executable else "is not installed on this server"
+                raise HTTPException(404, f"The {backend} CLI {state}, and installing it needs {' and '.join(missing)}.")
             # pipefail: a failed download must fail the install, not hand an empty script to a shell that exits 0.
             command = ["bash", "-o", "pipefail", "-c", RUNTIME_CLI_INSTALL_COMMANDS[backend]]
             action, label = "install", f"The {backend} installer"
+
+        # Claude's installer will not replace a ~/.local/bin/claude it did not create (measured 2026-11-01; its message
+        # says to remove it and update again), so the chats would stay on the old CLI. Move it aside for the install (new
+        # Claude turns cannot start until it ends), and put it back unless the chats then resolve `claude` into the
+        # installer's directory.
+        launcher = Path(env.get("HOME", str(Path.home()))) / ".local" / "bin" / "claude"
+        moved_launcher = None
+        if unmanaged and backend == BACKEND_CLAUDE and Path(executable) == launcher:
+            moved_launcher = launcher.with_name(".claude.moved-aside-by-agentsdock")
+            os.replace(launcher, moved_launcher)
 
         started: list[subprocess.Popen[str]] = []
 
@@ -86433,6 +86469,12 @@ async def run_runtime_cli_update(backend: str) -> dict[str, Any]:
             raise
         except subprocess.TimeoutExpired:
             raise HTTPException(500, f"{label} did not finish within {RUNTIME_CLI_UPDATE_TIMEOUT_SECONDS / 60:g} minutes.") from None
+        finally:
+            if moved_launcher is not None:
+                if runtime_cli_installer_owns(backend, env, shutil.which(configured, path=env.get("PATH"))):
+                    moved_launcher.unlink()
+                else:
+                    os.replace(moved_launcher, launcher)
         if backend == BACKEND_CODEX:
             # New Codex turns start on the updated binary; running ones finish on the old process.
             await refresh_codex_app_server_binary(force=True)
@@ -86441,11 +86483,18 @@ async def run_runtime_cli_update(backend: str) -> dict[str, Any]:
     # 500, not 502/504: those mean the hub could not reach this server, and clients treat them so.
     if returncode:
         raise HTTPException(500, f"{label} exited with {returncode}" + (f": {output}" if output else "."))
-    if action == "install" and not shutil.which(configured, path=env.get("PATH")):
-        raise HTTPException(
-            500, f"{label} finished, but this server's chats still cannot find `{configured}` on their PATH"
-            + (f": {output}" if output else "."),
-        )
+    if action == "install":
+        installed = shutil.which(configured, path=env.get("PATH"))
+        if not installed:
+            raise HTTPException(
+                500, f"{label} finished, but this server's chats still cannot find `{configured}` on their PATH"
+                + (f": {output}" if output else "."),
+            )
+        if not runtime_cli_installer_owns(backend, env, installed):
+            raise HTTPException(
+                500, f"{label} finished, but this server's chats still run {installed} instead of the CLI it installed"
+                + (f": {output}" if output else "."),
+            )
     return {"output": output, "diagnostic": diagnostic, "action": action}
 
 

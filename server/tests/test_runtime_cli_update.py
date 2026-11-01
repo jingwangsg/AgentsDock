@@ -1,6 +1,9 @@
-"""The app can run `claude update` / `codex update` on a server with the binary its chats spawn, or install a missing CLI."""
+"""The app can run `claude update` / `codex update` on a server with the binary its chats spawn, or install a missing CLI
+or one `update` cannot manage."""
 
+import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -116,17 +119,39 @@ class RuntimeCliUpdateTests(unittest.TestCase):
         return tools
 
     def installer(self, name, *, into="$HOME/.local/bin"):
-        """What an official installer does here: put a fake CLI reporting 2.0.0 in `into`, then print whether
+        """What an official installer does here: put a fake CLI reporting 2.0.0 in its releases directory, link it from
+        `into` (Claude's, like the real one, leaves an existing `into/claude` in place), then print whether
         CODEX_NON_INTERACTIVE reached it."""
+        releases = "$HOME/.codex/packages/standalone/releases" if name == "codex" else "$HOME/.local/share/claude/versions"
+        unless_present = f'[ -e "{into}/claude" ] || ' if name == "claude" else ""
         return (
-            f'mkdir -p "{into}"\n'
-            f'cat > "{into}/{name}" <<"EOF"\n'
+            f'mkdir -p "{releases}" "{into}"\n'
+            f'cat > "{releases}/2.0.0" <<"EOF"\n'
             '#!/bin/sh\n'
             'if [ "$1" = "--version" ]; then echo "2.0.0"; fi\n'
             'EOF\n'
-            f'chmod 755 "{into}/{name}"\n'
+            f'chmod 755 "{releases}/2.0.0"\n'
+            f'{unless_present}ln -sf "{releases}/2.0.0" "{into}/{name}"\n'
             'echo "non-interactive=${CODEX_NON_INTERACTIVE:-unset}"\n'
         )
+
+    def native_binary(self, path, *, fails):
+        """A native executable (no `#!`) at `path` that exits 1 if `fails`, else 0, whatever it is asked."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(shutil.which("false" if fails else "true"), path)
+        if sys.platform == "darwin":
+            # macOS kills a copied system binary that still carries Apple's platform signature.
+            subprocess.run(["codesign", "-f", "-s", "-", str(path)], check=True, capture_output=True)
+        return path
+
+    def hand_installed(self, name):
+        """A CLI unpacked by hand from a tarball and linked from ~/.local/bin, as on the server that showed the bug;
+        it exits as that CLI's `update` did there (measured: codex 1, claude 0)."""
+        home = self.bin / "home"
+        binary = self.native_binary(home / ".local" / "lib" / f"{name}-1.0" / "bin" / name, fails=name == "codex")
+        (home / ".local" / "bin").mkdir(parents=True, exist_ok=True)
+        (home / ".local" / "bin" / name).symlink_to(binary)
+        return binary
 
     def test_a_missing_cli_is_installed_with_its_official_installer(self):
         for backend, url in (("claude", "https://claude.ai/install.sh"), ("codex", "https://chatgpt.com/codex/install.sh")):
@@ -144,6 +169,105 @@ class RuntimeCliUpdateTests(unittest.TestCase):
                 self.assertEqual(response.json()["output"], f"non-interactive={1 if backend == 'codex' else 'unset'}")
                 self.assertEqual(self.refresh_codex.await_count, 1 if backend == "codex" else 0)
                 self.assertEqual(self.client.post(f"/api/admin/runtimes/{backend}/update", headers=HEADERS).json()["action"], "update")
+
+    def test_a_hand_installed_cli_is_replaced_by_the_official_installer(self):
+        home = self.bin / "home"
+        for backend in ("codex", "claude"):
+            with self.subTest(backend):
+                self.fake_curl(self.installer(backend))
+                self.hand_installed(backend)
+                self.refresh_codex.reset_mock()
+
+                response = self.client.post(f"/api/admin/runtimes/{backend}/update", headers=HEADERS)
+
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()["action"], "install")
+                self.assertEqual(response.json()["diagnostic"]["version"], "2.0.0")
+                self.assertEqual(self.refresh_codex.await_count, 1 if backend == "codex" else 0)
+                # Claude's old launcher, moved aside for its installer, is gone.
+                self.assertEqual(list((home / ".local" / "bin").glob(".*")), [])
+
+    def test_a_failed_update_of_an_installer_npm_or_homebrew_cli_is_not_reinstalled(self):
+        # Such a failure is the CLI's own (a network error, say): the installer would hit it too, or replace a working install.
+        home = self.bin / "home"
+        for backend, where in (
+            ("codex", ".codex/packages/standalone/releases/1.0/codex"),
+            ("claude", ".local/share/claude/versions/1.0"),
+            ("claude", ".npm-global/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe"),
+            ("codex", "homebrew/Caskroom/codex/1.0/codex"),
+        ):
+            with self.subTest(where):
+                tools = self.fake_curl(self.installer(backend))
+                launcher = home / ".local" / "bin" / backend
+                launcher.parent.mkdir(parents=True, exist_ok=True)
+                launcher.unlink(missing_ok=True)
+                launcher.symlink_to(self.native_binary(home / where, fails=True))
+
+                response = self.client.post(f"/api/admin/runtimes/{backend}/update", headers=HEADERS)
+
+                self.assertEqual(response.status_code, 500)
+                self.assertEqual(response.json()["detail"], f"`{backend} update` exited with 1.")
+                self.assertFalse((tools / "curl.log").exists())
+
+    def test_a_wrapper_script_is_updated_not_replaced(self):
+        tools = self.fake_curl(self.installer("codex"))
+        wrapper = self.bin / "home" / ".local" / "bin" / "codex"
+        wrapper.parent.mkdir(parents=True)
+        wrapper.write_text('#!/bin/sh\necho "wrapped $1"\n')
+        wrapper.chmod(0o755)
+
+        response = self.client.post("/api/admin/runtimes/codex/update", headers=HEADERS)
+
+        self.assertEqual((response.status_code, response.json()["action"], response.json()["output"]), (200, "update", "wrapped update"))
+        self.assertFalse((tools / "curl.log").exists())
+
+    def test_a_configured_cli_is_never_replaced(self):
+        tools = self.fake_curl(self.installer("codex"))
+        binary = self.hand_installed("codex")
+        (self.bin / "home" / ".local" / "bin" / "codex-nightly").symlink_to(binary)
+        for configured in (str(binary), "codex-nightly"):
+            with self.subTest(configured), patch.object(server, "CODEX_BIN", configured):
+                response = self.client.post("/api/admin/runtimes/codex/update", headers=HEADERS)
+
+                self.assertEqual(response.status_code, 500)
+                self.assertEqual(response.json()["detail"], "`codex update` exited with 1.")
+                self.assertFalse((tools / "curl.log").exists())
+
+    def test_a_binary_the_server_cannot_read_is_updated_not_replaced(self):
+        tools = self.fake_curl(self.installer("codex"))
+        self.hand_installed("codex").chmod(0o111)
+
+        response = self.client.post("/api/admin/runtimes/codex/update", headers=HEADERS)
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json()["detail"], "`codex update` exited with 1.")
+        self.assertFalse((tools / "curl.log").exists())
+
+    def test_an_install_the_chats_do_not_run_is_an_error(self):
+        # The installer linked its CLI from a directory later on the chats' PATH (as with CODEX_INSTALL_DIR).
+        tools = self.fake_curl("")
+        (tools / "installer.sh").write_text(self.installer("codex", into=str(tools)))
+        self.hand_installed("codex")
+
+        response = self.client.post("/api/admin/runtimes/codex/update", headers=HEADERS)
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json()["detail"], (
+            f"The codex installer finished, but this server's chats still run {self.bin}/home/.local/bin/codex "
+            "instead of the CLI it installed: non-interactive=1"
+        ))
+
+    def test_a_failed_install_puts_the_old_claude_launcher_back(self):
+        self.fake_curl(self.installer("claude"), before='echo "curl: (6) Could not resolve host: claude.ai" >&2\nexit 6')
+        binary = self.hand_installed("claude")
+
+        response = self.client.post("/api/admin/runtimes/claude/update", headers=HEADERS)
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json()["detail"], "The claude installer exited with 6: curl: (6) Could not resolve host: claude.ai")
+        launcher = self.bin / "home" / ".local" / "bin" / "claude"
+        self.assertEqual(launcher.readlink(), binary)
+        self.assertEqual([path.name for path in launcher.parent.iterdir()], ["claude"])
 
     def test_a_failed_download_fails_the_install(self):
         self.fake_curl(self.installer("claude"), before='echo "curl: (22) The requested URL returned error: 403" >&2\nexit 22')
@@ -195,6 +319,18 @@ class RuntimeCliUpdateTests(unittest.TestCase):
         response = self.client.post("/api/admin/runtimes/codex/update", headers=HEADERS)
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json()["detail"], "The codex CLI is not installed on this server, and installing it needs curl.")
+
+    def test_replacing_a_hand_installed_cli_needs_curl_and_bash(self):
+        self.chats_env(Path(tempfile.mkdtemp(dir=self.bin)))
+        self.hand_installed("codex")
+
+        response = self.client.post("/api/admin/runtimes/codex/update", headers=HEADERS)
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], (
+            f"The codex CLI at {self.bin}/home/.local/bin/codex is an install `codex update` cannot manage, "
+            "and installing it needs curl and bash."
+        ))
 
     def test_a_cli_configured_as_a_missing_path_is_not_installed(self):
         tools = self.fake_curl(self.installer("claude"))
