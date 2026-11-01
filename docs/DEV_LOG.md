@@ -1,5 +1,24 @@
 # Public development log
 
+## 2026-11-02 — SSH aliases only for oci@, aws@ and osmo@ servers (hub, desktop)
+
+- The hub wrote an alias `~/.agentsdock/ssh/<remote name>` for every remote,
+  including one whose SSH host is an ordinary entry in `~/.ssh/config`, such
+  as a remote `yam09_dev` on host `yam09`. Open in Zed named that alias, and
+  for a remote without a hub alias it wrote one that reaches the host's sshd
+  through AgentsDock's port tunnel. Because the alias directory is included
+  ahead of the user's own Host blocks, an alias named like the host itself
+  would have sent `ssh <host>` through AgentsDock.
+- The hub now keeps an alias only for a remote behind a host notation
+  (`oci@`, `aws@`, `osmo@`), which ssh cannot dial itself. For any other
+  remote it removes the alias it wrote earlier; this takes effect when the
+  hub reconnects to that remote.
+- Open in Zed opens a plain host as `ssh://<host>/<path>`, through the user's
+  own ssh entry, with no alias and no port tunnel. oci@, aws@ and osmo@
+  servers open as before.
+- Forward SSH, the per-server button in Settings → Servers, is unchanged: it
+  still writes an alias when the user turns it on.
+
 ## 2026-11-01 — Updating the Claude or Codex CLI installs it when the CLI's own update cannot (server)
 
 - Settings → Servers → Update Codex CLI failed on a server whose `codex` was

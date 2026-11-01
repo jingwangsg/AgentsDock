@@ -1601,9 +1601,6 @@ sys.exit(255)
             # Sky's command runs inside the helper, which sets up the hub's route environment; ssh still expands %h and %p.
             f"  ProxyCommand {helper} {shlex.quote(sky_command)}",
         ]
-        # A plain host's own ProxyCommand runs as it is.
-        plain = asyncio.run(rs.ssh_alias_content("lab", "me@lab-host", rs.SSHRoute([], "me@lab-host", {})))
-        assert f"  ProxyCommand {sky_command}" in plain.splitlines()
         # ssh itself reads the block back unchanged.
         config = self.tmp_path / "alias"
         config.write_text(content)
@@ -1644,23 +1641,27 @@ elif "-N" in sys.argv:
     time.sleep(30)
 """)
         script.chmod(0o700)
+        self.fake_osmo()
         aliases = self.tmp_path / "aliases"
         self.enterContext(mock.patch.object(rs, "ssh_binary", return_value=str(script)))
         self.enterContext(mock.patch.object(rs, "SSH_ALIAS_DIR", aliases))
         self.enterContext(mock.patch.object(rs, "SSH_CONFIG", self.tmp_path / "ssh_config"))
         manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path, ssh_aliases=True)
         rs.save_registry(manager.path, [
-            make_server(id="aaaaaaaaaaaa", name="lab", ssh_host="me@lab.example", local_port=free_port()),
-            # Named like the host it dials: `ssh plain_host` already reaches it, and an alias would take over the hub's own ssh.
-            make_server(id="bbbbbbbbbbbb", name="plain_host", ssh_host="plain_host", local_port=free_port()),
-            make_server(id="cccccccccccc", name="has space", ssh_host="me@other.example", local_port=free_port()),  # not a Host alias
-            make_server(id="dddddddddddd", name="twin", ssh_host="me@one.example", local_port=free_port()),
-            make_server(id="eeeeeeeeeeee", name="twin", ssh_host="me@two.example", local_port=free_port()),
-            make_server(id="ffffffffffff", name="mine", ssh_host="me@mine.example", local_port=free_port()),
+            make_server(id="aaaaaaaaaaaa", name="lab", ssh_host="osmo@wf-running", local_port=free_port()),
+            # A plain host: `ssh yam09` reaches it through the user's own entry, so the hub's earlier alias goes.
+            make_server(id="abcabcabcabc", name="yam_dev", ssh_host="yam09", local_port=free_port()),
+            # Named like a host the hub dials (yam_dev's): an alias would take over the hub's own ssh to it.
+            make_server(id="bbbbbbbbbbbb", name="yam09", ssh_host="osmo@wf-other", local_port=free_port()),
+            make_server(id="cccccccccccc", name="has space", ssh_host="osmo@wf-other", local_port=free_port()),  # not a Host alias
+            make_server(id="dddddddddddd", name="twin", ssh_host="osmo@wf-running", local_port=free_port()),
+            make_server(id="eeeeeeeeeeee", name="twin", ssh_host="osmo@wf-other", local_port=free_port()),
+            make_server(id="ffffffffffff", name="mine", ssh_host="osmo@wf-other", local_port=free_port()),
         ])
         aliases.mkdir()
+        (aliases / "yam_dev").write_text(f"{rs.SSH_ALIAS_MARKER} for the remote server yam_dev (yam09).\nHost yam_dev\n")
         # The desktop app's file for the same remote gives way; its file for another server stays.
-        (aliases / "lab").write_text('# Added by AgentsDock for the server "lab" (SSH host me@lab.example). Reaches its sshd ...\nHost lab\n')
+        (aliases / "lab").write_text('# Added by AgentsDock for the server "lab" (SSH host osmo@wf-running). Reaches its sshd ...\nHost lab\n')
         foreign = '# Added by AgentsDock for the server "mine" (SSH host me@elsewhere.example). ...\nHost mine\n'
         (aliases / "mine").write_text(foreign)
 
@@ -1682,7 +1683,7 @@ elif "-N" in sys.argv:
                         break
                     await asyncio.sleep(0.05)
                 await asyncio.sleep(0.5)  # the other remotes' first routes have resolved too
-                assert (aliases / "lab").read_text().splitlines()[1:] == ["Host lab", "  HostName lab.example", "  User me", "  Port 22"]
+                assert (aliases / "lab").read_text().splitlines()[1:4] == ["Host lab", "  HostName wf-running", "  User root"]
                 assert (aliases / "mine").read_text() == foreign and sorted(path.name for path in aliases.iterdir()) == ["lab", "mine"]
                 tunnel = manager.tunnels["aaaaaaaaaaaa"]
                 manager.update("aaaaaaaaaaaa", rs.RemoteServerUpdate(name="lab2"))

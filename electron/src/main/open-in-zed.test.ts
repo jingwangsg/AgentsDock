@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it, vi } from 'vitest'
+import { openInZedInput } from '../shared/ssh-host-alias'
+import type { PublicServerProfile } from '../shared/types'
 import { findZedCli, readZedWorkspaceFolders, zedTarget } from './open-in-zed'
 
 vi.mock('node:child_process', async importOriginal => ({ ...await importOriginal<typeof import('node:child_process')>(), execFile: vi.fn() }))
@@ -47,6 +49,19 @@ describe('zedTarget', () => {
     expect(() => zedTarget({ path: 'proj' })).toThrow(/absolute path/)
     expect(() => zedTarget({ path: '/srv', sshHost: '-oProxyCommand=evil' })).toThrow(/SSH host/)
     expect(() => zedTarget({ path: '/srv', sshHost: 'host name' })).toThrow(/SSH host/)
+  })
+})
+
+describe('openInZedInput', () => {
+  const profile = (name: string, sshHost: string | null) => ({ id: 'p', name, serverUrl: 'http://127.0.0.1:7850', sshHost }) as PublicServerProfile
+
+  it('names the alias only for a hub notation; a plain host opens through its own ssh entry', () => {
+    const chat = { id: 'chat-a', cwd: '/root/proj' }
+    expect(openInZedInput(chat, profile('oci_dev', 'oci@jing-debug'), 3)).toMatchObject({ sshHost: 'oci@jing-debug', hostAlias: 'oci_dev' })
+    expect(openInZedInput(chat, profile('osmo_dev', 'osmo@wf-1'), 3)?.hostAlias).toBe('osmo_dev')
+    const plain = openInZedInput(chat, profile('yam09_dev', 'yam09'), 3)
+    expect(plain).toMatchObject({ sshHost: 'yam09', hostAlias: null })
+    expect(zedTarget(plain!)).toBe('ssh://yam09/root/proj')
   })
 })
 

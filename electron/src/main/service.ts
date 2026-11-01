@@ -5532,7 +5532,8 @@ export class AppService {
     if (sshHost && hubAliasHost !== null && hubAliasHost !== sshHost) {
       throw new Error(`The SSH alias "${request.hostAlias?.trim()}" belongs to another server the hub keeps; rename this server on this Mac to open it in Zed.`)
     }
-    // A chat on this Mac, or a remote whose profile name cannot be an ssh alias: Zed gets the path or the raw host directly.
+    // A chat on this Mac, a plain ssh host, or a remote whose profile name cannot be an ssh alias (no hostAlias, see
+    // openInZedInput): Zed gets the path or the raw host directly.
     // A remote whose alias the hub keeps is reached through that alias, with no tunnel from this app.
     if (!sshHost || !request.hostAlias?.trim() || hubAliasHost === sshHost) return launchZed(request)
     const scope = this.requireProfileScope(request.profileId, request.profileGeneration)
