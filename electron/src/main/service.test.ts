@@ -10,6 +10,7 @@ import { join } from 'node:path'
 import type {
   BulkImportSessionItem,
   BulkImportSessionResult,
+  CanvasRecord,
   ChatReference,
   ClaudePendingInteraction,
   ClaudeRuntimeSnapshot,
@@ -115,6 +116,7 @@ import {
   type ServerUpdateTarget
 } from './server-client'
 import { AppService, mergePolledSessionSummaries, mergeSessionSummaries, sessionOwnedFilesPage } from './service'
+import { CanvasCache } from './canvas-cache'
 import { SettingsStore } from './settings'
 import { PortTunnelManager } from './port-tunnel-manager'
 import type { NotificationPopupRequest } from './notification-popup'
@@ -3692,6 +3694,10 @@ interface FakeClientOptions {
   workspaceDownloadRequest?: (sessionId: string, path: string) => Promise<Response>
   sessionExportRequest?: (sessionId: string, format: string) => Promise<Response>
   canvasRuntimeAsset?: (asset: string) => Promise<string>
+  listCanvases?: AgentServerClient['listCanvases']
+  getCanvas?: AgentServerClient['getCanvas']
+  getCanvasState?: AgentServerClient['getCanvasState']
+  putCanvasState?: AgentServerClient['putCanvasState']
   stream?: AgentServerClient['stream']
   emergencyStream?: (
     expectedServerIdentity: string,
@@ -3879,6 +3885,10 @@ function fakeClient(options: FakeClientOptions = {}) {
     workspaceDownloadRequest: vi.fn(options.workspaceDownloadRequest ?? (async () => new Response('workspace download'))),
     sessionExportRequest: vi.fn(options.sessionExportRequest ?? (async () => new Response('# Chat\n'))),
     canvasRuntimeAsset: vi.fn(options.canvasRuntimeAsset ?? (async () => '')),
+    listCanvases: vi.fn(options.listCanvases ?? (async () => ({ canvases: [] }))),
+    getCanvas: vi.fn(options.getCanvas ?? (async () => { throw new Error('canvas not found') })),
+    getCanvasState: vi.fn(options.getCanvasState ?? (async () => ({ state: {} }))),
+    putCanvasState: vi.fn(options.putCanvasState ?? (async (_sessionId, _name, state) => ({ state }))),
     upload: vi.fn(options.upload ?? (async (_sessionId, path) => ({
       id: `uploaded-${path}`,
       filename: path.split('/').at(-1) ?? path,
@@ -11954,5 +11964,110 @@ describe('history rewind cache surgery', () => {
     expect(cache.events(internals.scope.namespace, 'chat').map(event => event.seq)).toEqual([1, 2])
     expect(internals.timelineIndexes.has(key)).toBe(false)
     expect(cache.session(internals.scope.namespace, 'chat')).toMatchObject({ latest_event_seq: 2 })
+  })
+})
+
+describe('Canvas cache', () => {
+  const theme = { background: '#fff', foreground: '#000', muted: '#666', border: '#ccc', accent: '#06c', kind: 'light' as const }
+  const record = (revision = 1, state: Record<string, unknown> = { filter: 'all' }): CanvasRecord => ({
+    name: 'report', path: '/state/canvases/chat/report.canvas.tsx', revision, updated_at: 't', source: 'source',
+    javascript: `var report = ${revision}`, diagnostics: null, runtime_version: 'v1', state
+  })
+  const listed = (revision = 1, runtimeVersion = 'v1') => async () => ({
+    canvases: [{ name: 'report', path: '/state/canvases/chat/report.canvas.tsx', revision, size: 6, updated_at: 't' }],
+    capability: { runtime_version: runtimeVersion }
+  })
+
+  function canvasService(client: ReturnType<typeof fakeClient>, root: string) {
+    const { settings } = profileSettings()
+    const cache = new LocalCache(':memory:')
+    const service = new AppService({ settings, cache, canvasCache: new CanvasCache(root), clientFactory: () => client as unknown as AgentServerClient })
+    cleanup.push(() => {
+      service.stop()
+      cache.close()
+    })
+    const generation = (service as unknown as { scope: { generation: number } }).scope.generation
+    return { service, page: () => service.canvasPageResponse('a', generation, 'chat', 'report', theme) }
+  }
+
+  function cacheRoot(): string {
+    const root = mkdtempSync(join(tmpdir(), 'agentsdock-canvas-cache-'))
+    cleanup.push(() => rmSync(root, { recursive: true, force: true }))
+    return root
+  }
+
+  const runtimeAsset = async (asset: string) => asset === 'shell.html' ? '<html><!--CANVAS_SCRIPTS--></html>' : 'vendor()'
+
+  it('builds the page from the record the pane received, and after a restart opens it with only the list and state checked', async () => {
+    const root = cacheRoot()
+    const first = fakeClient({ getCanvas: async () => record(), listCanvases: listed(), canvasRuntimeAsset: runtimeAsset })
+    const before = canvasService(first, root)
+
+    await expect(before.service.getCanvas('chat', 'report')).resolves.toEqual(record())
+    const page = await (await before.page()).text()
+    expect(page).toContain(Buffer.from('var report = 1').toString('base64'))
+    // One download of the record for the pane and its page, and of the runtime.
+    expect(first.getCanvas).toHaveBeenCalledTimes(1)
+    expect(first.canvasRuntimeAsset).toHaveBeenCalledTimes(2)
+
+    const second = fakeClient({ getCanvas: async () => record(), listCanvases: listed(), getCanvasState: async () => ({ state: { filter: 'all' } }), canvasRuntimeAsset: runtimeAsset })
+    const after = canvasService(second, root)
+    await expect(after.service.cachedCanvas('chat', 'report')).resolves.toEqual(record())
+    expect(second.listCanvases).not.toHaveBeenCalled()
+    await expect(after.service.getCanvas('chat', 'report')).resolves.toEqual(record())
+    expect(await (await after.page()).text()).toBe(page)
+    expect(second.listCanvases).toHaveBeenCalledTimes(1)
+    expect(second.getCanvasState).toHaveBeenCalledTimes(1)
+    expect(second.getCanvas).not.toHaveBeenCalled()
+    expect(second.canvasRuntimeAsset).not.toHaveBeenCalled()
+  })
+
+  it('downloads the record again for another revision or runtime version, and takes a changed state from the state route', async () => {
+    const getCanvas = vi.fn(async () => record())
+    const listCanvases = vi.fn(listed())
+    const getCanvasState = vi.fn(async () => ({ state: { filter: 'all' } }))
+    const client = fakeClient({ getCanvas, listCanvases, getCanvasState })
+    const { service } = canvasService(client, cacheRoot())
+    await service.getCanvas('chat', 'report')
+
+    listCanvases.mockImplementation(listed(2))
+    getCanvas.mockImplementation(async () => record(2))
+    await expect(service.getCanvas('chat', 'report')).resolves.toEqual(record(2))
+    listCanvases.mockImplementation(listed(2, 'v2'))
+    await service.getCanvas('chat', 'report')
+    expect(getCanvas).toHaveBeenCalledTimes(3)
+
+    getCanvas.mockImplementation(async () => ({ ...record(2), runtime_version: 'v2' }))
+    await service.getCanvas('chat', 'report')
+    getCanvasState.mockImplementation(async () => ({ state: { filter: 'failed runs' } }))
+    await expect(service.getCanvas('chat', 'report')).resolves.toMatchObject({ revision: 2, state: { filter: 'failed runs' } })
+    expect(getCanvas).toHaveBeenCalledTimes(4)
+    await expect(service.cachedCanvas('chat', 'report')).resolves.toMatchObject({ state: { filter: 'failed runs' } })
+  })
+
+  it('keeps the state the page saved for the next open', async () => {
+    const client = fakeClient({ getCanvas: async () => record(), listCanvases: listed() })
+    const { service } = canvasService(client, cacheRoot())
+    await service.getCanvas('chat', 'report')
+
+    await service.putCanvasState('chat', 'report', { filter: 'mine' })
+
+    await expect(service.cachedCanvas('chat', 'report')).resolves.toMatchObject({ revision: 1, state: { filter: 'mine' } })
+  })
+
+  it('asks for the list once when the pane lists the canvases while the open one is checked', async () => {
+    let answer = (_value: Awaited<ReturnType<AgentServerClient['listCanvases']>>) => {}
+    const listCanvases = vi.fn(() => new Promise<Awaited<ReturnType<AgentServerClient['listCanvases']>>>(resolve => { answer = resolve }))
+    const client = fakeClient({ getCanvas: async () => record(), getCanvasState: async () => ({ state: { filter: 'all' } }) })
+    const { service } = canvasService(client, cacheRoot())
+    await service.getCanvas('chat', 'report')
+    Object.assign(client, { listCanvases })
+
+    const opened = Promise.all([service.listCanvases('chat'), service.getCanvas('chat', 'report')])
+    await vi.waitFor(() => expect(client.getCanvasState).toHaveBeenCalledTimes(1))
+    answer(await listed()())
+
+    await expect(opened).resolves.toEqual([await listed()(), record()])
+    expect(listCanvases).toHaveBeenCalledTimes(1)
   })
 })

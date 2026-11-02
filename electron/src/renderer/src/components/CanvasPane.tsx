@@ -103,6 +103,8 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
   const [name, setName] = useState(target.name)
   const [canvases, setCanvases] = useState<CanvasSummary[]>([])
   const [record, setRecord] = useState<CanvasRecord | null>(null)
+  /** Counts the records put on screen; each gets a new page, also when only its state or runtime version differs. */
+  const [pageGeneration, setPageGeneration] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [pageError, setPageError] = useState<string | null>(null)
   const [view, setView] = useState<'preview' | 'source'>('preview')
@@ -155,23 +157,43 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
     }
   }, [session.id])
 
+  const recordLive = useRef<CanvasRecord | null>(null)
+  recordLive.current = record
+  // A record replaces the one on screen only when its page would differ: another revision or runtime version,
+  // or a state that is neither the one the page started from nor the one it holds now (another device changed
+  // it). A check that finds the same canvas reloads nothing and keeps choices made while it ran.
+  const show = useCallback((next: CanvasRecord) => {
+    const shown = recordLive.current
+    const nextState = JSON.stringify(next.state ?? {})
+    if (shown && shown.name === next.name && shown.revision === next.revision && shown.runtime_version === next.runtime_version
+      && (nextState === JSON.stringify(shown.state ?? {}) || nextState === JSON.stringify(stateRef.current))) return
+    recordLive.current = next
+    setRecord(next)
+    setPageGeneration(generation => generation + 1)
+    stateRef.current = next.state ?? {}
+  }, [])
+
   const load = useCallback(async () => {
     setError(null)
     try {
       // A reload must read back the last edit, not the state the server held before the pending PUT.
       await flushSave()
+      // A canvas opened before shows its kept copy at once, while the server is asked whether it is current.
+      if (recordLive.current?.name !== name) {
+        const cached = await window.agentsDock.canvas.cached(session.id, name)
+        if (cached) show(cached)
+      }
       const [list, current] = await Promise.all([
         window.agentsDock.canvas.list(session.id),
         window.agentsDock.canvas.get(session.id, name)
       ])
       setCanvases(list.canvases)
-      setRecord(current)
-      stateRef.current = current.state ?? {}
+      show(current)
     } catch (caught) {
       setRecord(null)
       setError(caught instanceof Error ? caught.message : String(caught))
     }
-  }, [flushSave, name, session.id])
+  }, [flushSave, name, session.id, show])
 
   useEffect(() => { void load() }, [load, reloadToken])
 
@@ -199,8 +221,6 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
 
   // Turns and rewinds can change the canvases: re-list, reload when the open one has a new
   // revision (an agent edit, a comment's Edit), leave when it is gone, and refresh the threads.
-  const revisionLive = useRef<number | null>(null)
-  revisionLive.current = record?.revision ?? null
   useEffect(() => {
     const changed = (event: Event) => {
       if ((event as CustomEvent<{ sessionId?: string }>).detail?.sessionId !== session.id) return
@@ -211,7 +231,7 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
         .catch(() => undefined)
         .then(current => {
           if (current === null) onClose()
-          else if (current === undefined || current.revision !== revisionLive.current) setReloadToken(token => token + 1)
+          else if (current === undefined || current.revision !== recordLive.current?.revision) setReloadToken(token => token + 1)
         })
     }
     window.addEventListener('agentsdock:canvases-changed', changed)
@@ -318,9 +338,10 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
   }, [postToPage])
 
   const src = useMemo(() => {
-    if (!profileId || !record || record.diagnostics || !record.javascript) return null
-    return canvasPageURL({ profileId, profileGeneration, sessionId: session.id, name, theme: hostTheme(), reloadKey: `${record.revision}-${reloadToken}` })
-  }, [name, profileGeneration, profileId, record, reloadToken, session.id])
+    // No page before the chosen canvas's record is here: its page would download the record beside load().
+    if (!profileId || !record || record.name !== name || record.diagnostics || !record.javascript) return null
+    return canvasPageURL({ profileId, profileGeneration, sessionId: session.id, name, theme: hostTheme(), reloadKey: `${pageGeneration}-${reloadToken}` })
+  }, [name, pageGeneration, profileGeneration, profileId, record, reloadToken, session.id])
   // Availability belongs to the page on screen, a new one per src and per return to the preview;
   // a page that never reports (an error page) leaves the toggle off.
   useEffect(() => { setTocAvailable(false) }, [src, view])
@@ -417,9 +438,7 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
     try {
       // Overwriting means saving over whatever revision is current now, after the user confirmed.
       const base = overwrite ? (await window.agentsDock.canvas.get(session.id, name)).revision : sourceDraft.baseRevision
-      const next = await window.agentsDock.canvas.putSource(session.id, name, sourceDraft.text, base)
-      setRecord(next)
-      stateRef.current = next.state ?? {}
+      show(await window.agentsDock.canvas.putSource(session.id, name, sourceDraft.text, base))
       setSourceDraft(null)
     } catch (caught) {
       const message = errorText(caught)

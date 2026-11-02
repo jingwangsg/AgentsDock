@@ -36,7 +36,7 @@ beforeEach(() => {
   // jsdom lacks pointer capture; Chromium provides it.
   Object.defineProperty(HTMLElement.prototype, 'setPointerCapture', { configurable: true, value: vi.fn() })
   const pending = () => new Promise(() => {})
-  vi.stubGlobal('agentsDock', { canvas: { list: vi.fn(pending), get: vi.fn(pending), putState: vi.fn() } })
+  vi.stubGlobal('agentsDock', { canvas: { list: vi.fn(pending), get: vi.fn(pending), cached: vi.fn().mockResolvedValue(null), putState: vi.fn() } })
 })
 afterEach(() => {
   cleanup()
@@ -94,6 +94,7 @@ describe('CanvasPane view toggle', () => {
     vi.stubGlobal('agentsDock', { canvas: {
       list: vi.fn().mockResolvedValue({ canvases: [{ name: 'report', path: record.path }] }),
       get: vi.fn().mockResolvedValue(record),
+      cached: vi.fn().mockResolvedValue(null),
       putState: vi.fn()
     } })
     renderCanvas()
@@ -122,6 +123,7 @@ describe('CanvasPane find', () => {
     vi.stubGlobal('agentsDock', { canvas: {
       list: vi.fn().mockResolvedValue({ canvases: [{ name: 'report', path: compiled.path }] }),
       get: vi.fn().mockResolvedValue(compiled),
+      cached: vi.fn().mockResolvedValue(null),
       putState: vi.fn()
     } })
     renderCanvas()
@@ -263,6 +265,7 @@ describe('CanvasPane comments and source editing', () => {
     const api: Record<string, ReturnType<typeof vi.fn>> = {
       list: vi.fn().mockResolvedValue({ canvases: [{ name: 'report', path: compiled.path, revision: 1 }] }),
       get: vi.fn().mockResolvedValue(compiled),
+      cached: vi.fn().mockResolvedValue(null),
       putState: vi.fn(),
       comments: vi.fn().mockResolvedValue({ threads: [] }),
       ...canvas
@@ -354,6 +357,7 @@ describe('CanvasPane comments and source editing', () => {
     vi.stubGlobal('agentsDock', { canvas: {
       list: vi.fn().mockResolvedValue({ canvases: [] }),
       get: vi.fn().mockResolvedValue({ ...compiled, javascript: '', diagnostics: 'report.tsx(3,1): error TS1005' }),
+      cached: vi.fn().mockResolvedValue(null),
       putState: vi.fn(),
       comments: vi.fn().mockResolvedValue({ threads: [] })
     } })
@@ -373,5 +377,69 @@ describe('CanvasPane comments and source editing', () => {
     expect(drafts['chat-1']).toContain('question about the selected elements')
     expect(drafts['chat-1']).toContain('Question (answer it without modifying the canvas): why?')
     expect(drafts['chat-1']).not.toContain('Requested change')
+  })
+})
+
+describe('CanvasPane kept copy', () => {
+  const kept = { name: 'report', path: '/c/report.canvas.tsx', source: 'src', javascript: 'var a = 1', diagnostics: null, runtime_version: 'v1', state: { filter: 'all' }, revision: 1 }
+
+  function renderKept(checked: Promise<unknown>) {
+    vi.stubGlobal('agentsDock', { canvas: {
+      list: vi.fn().mockResolvedValue({ canvases: [{ name: 'report', path: kept.path, revision: 1 }] }),
+      get: vi.fn(() => checked),
+      cached: vi.fn().mockResolvedValue(kept),
+      putState: vi.fn()
+    } })
+    renderCanvas()
+  }
+
+  const pageAddress = async () => (await screen.findByTitle('Canvas report')).getAttribute('src')
+
+  it('shows the copy from the last open before the server answers, and keeps that page when the server has the same canvas', async () => {
+    let answer = (_value: unknown) => {}
+    renderKept(new Promise(resolve => { answer = resolve }))
+    const shown = await pageAddress()
+    expect(shown).toMatch(/^agentsdock-canvas:\/\/canvas\/profile\/1\/chat-1\/report\/index\.html/)
+
+    answer({ ...kept, state: { ...kept.state } })
+    await waitFor(() => expect(window.agentsDock.canvas.get).toHaveBeenCalled())
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(await pageAddress()).toBe(shown)
+  })
+
+  it('loads a new page for a newer revision', async () => {
+    let answer = (_value: unknown) => {}
+    renderKept(new Promise(resolve => { answer = resolve }))
+    const shown = await pageAddress()
+
+    answer({ ...kept, revision: 2, javascript: 'var a = 2' })
+
+    await waitFor(async () => expect(await pageAddress()).not.toBe(shown))
+  })
+
+  it('keeps the page when the server answers with the choice the page made while the check ran', async () => {
+    let answer = (_value: unknown) => {}
+    renderKept(new Promise(resolve => { answer = resolve }))
+    const shown = await pageAddress()
+    const iframe = screen.getByTitle('Canvas report') as HTMLIFrameElement
+    Object.defineProperty(iframe, 'contentWindow', { configurable: true, value: { postMessage: vi.fn() } })
+    const event = new MessageEvent('message', { data: { source: 'agentsdock-canvas', message: { kind: 'state', key: 'filter', value: 'mine' } } })
+    Object.defineProperty(event, 'source', { value: iframe.contentWindow })
+    window.dispatchEvent(event)
+
+    // The page saved its choice before the server answered: the same page stays.
+    answer({ ...kept, state: { filter: 'mine' } })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(await pageAddress()).toBe(shown)
+  })
+
+  it('loads a new page when the server holds a state neither the page started from nor chose', async () => {
+    let answer = (_value: unknown) => {}
+    renderKept(new Promise(resolve => { answer = resolve }))
+    const shown = await pageAddress()
+
+    answer({ ...kept, state: { filter: 'failed runs' } })
+
+    await waitFor(async () => expect(await pageAddress()).not.toBe(shown))
   })
 })
