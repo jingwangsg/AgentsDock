@@ -231,12 +231,13 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
         .catch(() => undefined)
         .then(current => {
           if (current === null) onClose()
-          else if (current === undefined || current.revision !== recordLive.current?.revision) setReloadToken(token => token + 1)
+          // load(), not a new reloadToken: that would reload the page at once from the kept, outdated copy.
+          else if (current === undefined || current.revision !== recordLive.current?.revision) void load()
         })
     }
     window.addEventListener('agentsdock:canvases-changed', changed)
     return () => window.removeEventListener('agentsdock:canvases-changed', changed)
-  }, [loadComments, name, onClose, session.id])
+  }, [load, loadComments, name, onClose, session.id])
 
   // Flush when the pane switches canvases and when it unmounts, so the last reported change is not dropped.
   useEffect(() => () => { void flushSave() }, [flushSave, name])

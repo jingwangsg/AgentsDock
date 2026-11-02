@@ -433,6 +433,23 @@ describe('CanvasPane kept copy', () => {
     expect(await pageAddress()).toBe(shown)
   })
 
+  it('replaces the page once, with the new revision, when a turn changed the canvas', async () => {
+    renderKept(Promise.resolve(kept))
+    const shown = await pageAddress()
+    await waitFor(() => expect(window.agentsDock.canvas.get).toHaveBeenCalledTimes(1))
+    let answer = (_value: unknown) => {}
+    vi.mocked(window.agentsDock.canvas.list).mockResolvedValue({ canvases: [{ name: 'report', path: kept.path, revision: 2 }] } as never)
+    vi.mocked(window.agentsDock.canvas.get).mockImplementation(() => new Promise(resolve => { answer = resolve }) as never)
+
+    window.dispatchEvent(new CustomEvent('agentsdock:canvases-changed', { detail: { sessionId: 'chat-1' } }))
+    await waitFor(() => expect(window.agentsDock.canvas.get).toHaveBeenCalledTimes(2))
+    // The kept page stays until the new record is here, instead of reloading it as it was.
+    expect(await pageAddress()).toBe(shown)
+
+    answer({ ...kept, revision: 2, javascript: 'var a = 2' })
+    await waitFor(async () => expect(await pageAddress()).not.toBe(shown))
+  })
+
   it('loads a new page when the server holds a state neither the page started from nor chose', async () => {
     let answer = (_value: unknown) => {}
     renderKept(new Promise(resolve => { answer = resolve }))
