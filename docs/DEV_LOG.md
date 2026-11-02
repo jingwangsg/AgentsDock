@@ -1,41 +1,45 @@
 # Public development log
 
-## 2026-11-02 — Rewound Claude chats stop listing ended background agents as running; a message reaches a chat whose directory moved; a symlinked chat directory resumes (server)
+## 2026-11-02 — Claude chats: agents ended by a rewind show as stopped; a moved directory keeps its live process; a symlinked directory resumes (server)
 
-- Editing an earlier message in a Claude chat restarts the chat's Claude
-  process at that point, which ends every background agent the old process
-  still ran. Nothing recorded their end, so the chat kept listing them as
-  running and its header counted them ("3 subagents running" when one was).
-  A rewind now marks those agents stopped ("Stopped when the chat was
-  rewound"). The list is rebuilt from the chat's history, so agents that an
-  earlier rewind ended also show as stopped once the server is updated.
-- When a Claude chat's working directory was moved or deleted (here another
-  chat renamed the git worktree it ran in), the next message switched to a
-  fallback directory. That skipped the resume, and while the chat's process
-  still ran background tasks the message was refused: "Claude SDK could not
-  start: N background task(s) are still running on this chat's Claude
-  process; the new model, effort or runtime applies after they finish or
-  after Stop." A chat whose process still runs in that directory now keeps
-  it, and the message goes to that process, steered into the running turn or
-  as the next turn, with the conversation and its background tasks intact.
-  Without such a process the fallback is unchanged.
+- Editing an earlier message in a Claude chat ends the chat's Claude process,
+  and the next message starts a new one from the edited point. Background
+  agents the old process still ran ended with it, but nothing recorded that,
+  so the chat kept listing them as running and its header counted them
+  ("3 subagents running" when one was). A rewind now marks them stopped
+  ("Stopped when the chat was rewound"). The list is rebuilt from the chat's
+  history, so agents that an earlier rewind ended also show as stopped once
+  the server is updated.
+- When a Claude chat's working directory was moved or deleted (for example,
+  another chat renamed the git worktree it ran in), the next message switched
+  to a fallback directory. That skipped the resume, and while the chat's
+  process still ran background tasks the message was refused: "Claude SDK
+  could not start: N background task(s) are still running on this chat's
+  Claude process; the new model, effort or runtime applies after they finish
+  or after Stop." A chat now keeps its directory while its live process,
+  started there with the same settings, can take the message. The message goes
+  to that process, steered into the running turn or as the next turn, with the
+  conversation and its background tasks intact. Opening the "/" command list
+  and the MCP panel follow the same rule, so they no longer replace that
+  process. Otherwise the fallback is unchanged.
 - Claude records the directory it runs in with symlinks resolved, but the
   server matched a chat's transcript against the chat's directory as given. A
-  chat whose directory is a symlink (macOS `/tmp`, or the old path of a moved
-  worktree pointed at its new location) therefore started each new Claude
-  process without the conversation ("Claude resume skipped: provider session
-  … is not available for cwd …"). The resume lookup now also accepts the
-  resolved directory.
+  chat whose directory path goes through a symlink (macOS `/tmp`, or a moved
+  worktree's old path symlinked to its new location) therefore started each
+  new Claude process without the conversation ("Claude resume skipped:
+  provider session … is not available for cwd …"), and editing an earlier
+  message in it could not find the transcript. Both lookups now also accept
+  the resolved directory.
 
 ```text
-Change and expected user behavior: background agents ended by a rewind show as stopped; a message reaches a Claude chat whose directory moved while its process still runs there; a chat whose directory is a symlink resumes its conversation.
+Change and expected user behavior: background agents ended by a rewind show as stopped; a message reaches a Claude chat whose directory moved while its process still runs there; a chat whose directory path goes through a symlink resumes its conversation.
 Source commit / app build / server version: branch fix/stale-subagents-and-vanished-cwd; no client build; server 1.0.7-beta.11.
-Test surface: two isolated servers on this Mac (main and the branch) with the real Claude CLI; the subagent list folded from a copy of a real chat's event log.
-Actions exercised and observed outcomes: a chat ran `sleep 777` in the background, its directory was renamed, then "Reply with only the word PONG." was sent. Main: cwd_fallback to the home directory, "Claude resume skipped", then "Claude SDK could not start: 1 background task(s) are still running …" and a failed turn. Branch: the message was steered into the running turn and the reply was PONG, with no fallback. The event log of a chat with two rewinds folded to 2 running subagents on main and 0 on the branch, both "Stopped when the chat was rewound". A chat whose cwd was a symlink was asked to remember a word, the server was restarted, and it was asked for the word: main skipped the resume and answered that it had no word; the branch resumed and answered PELICAN.
-Real boundaries exercised; any mocked/stubbed boundaries: HTTP turn API, the Claude CLI through the Agent SDK, a real event log. The desktop and mobile apps were not exercised; they show the server's subagent list.
-Focused regression / typecheck / production build: a rewind in the subagent snapshot (a history reload leaves agents alone; the next process's agents stay running), live_cwd on the SDK manager, the turn directory and steer match for a moved directory, resume through a symlinked directory; all 8 server shards.
-Remaining limitations or blocked acceptance: the hub and remote servers run the previous code until they are updated. A chat whose directory is gone and that has no live process still falls back to another directory and starts without the conversation.
-Availability: source only; remote servers need a server update.
+Test surface: two isolated servers on this Mac (main and the branch) with the real Claude CLI; desktop build 138 against each; the subagent list folded from a copy of a real chat's event log.
+Actions exercised and observed outcomes: (1) A chat started a background agent that ran `sleep 240`; a message with another effort ended that turn and was refused while the agent ran; then that message was edited (rewind). Main: the subagent list and the desktop timeline kept "1 subagent · 1 running" although the agent's processes were gone; branch: "1 subagent · 1 stopped". (2) A chat ran `sleep 777` in the background, its directory was renamed, then "Reply with only the word PONG." was sent. Main: cwd_fallback to the home directory, "Claude resume skipped", then "Claude SDK could not start: 1 background task(s) are still running …" and a failed turn; branch: the message was steered into the running turn and the reply was PONG, with no fallback. (3) A chat whose cwd was a symlink was asked to remember a word, the server was restarted so that the next message needed a new Claude process, and it was asked for the word: main skipped the resume and answered that it had no word; the branch resumed and answered PELICAN. (4) The event log of a real chat with two rewinds folded to 2 running subagents on main and 0 on the branch.
+Real boundaries exercised; any mocked/stubbed boundaries: HTTP turn and rewind APIs, a server restart, the Claude CLI through the Agent SDK, the desktop timeline, a real event log. Mobile was not exercised; it shows the same server subagent list. Editing a message in a symlinked chat (the rewind's transcript lookup) was not exercised.
+Focused regression / typecheck / production build: tests for a rewind in the subagent snapshot (a history reload leaves agents alone; the next process's agents stay running), the turn directory and steer match for a moved directory (the same settings keep it; other settings or no live process fall back), resume through a symlinked directory; all 8 server shards.
+Remaining limitations or blocked acceptance: the hub and remote servers run the previous code until they are updated. A chat whose directory is gone and that has no live process, or whose message changes its settings, still falls back to another directory and starts without the conversation. If an idle process is evicted between choosing the directory and starting the turn, that turn fails once and the next one falls back.
+Availability: source only; the hub and remote servers need a server update.
 ```
 
 ## 2026-11-02 — SSH aliases only for oci@, aws@ and osmo@ servers (hub, desktop)

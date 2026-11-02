@@ -1920,18 +1920,6 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.manager.evict("chat-1"))
         self.assertFalse(self.manager.is_loaded("chat-1"))
 
-    async def test_live_cwd_names_the_directory_of_the_connected_process(self) -> None:
-        supervisor = await self.manager.get("chat-1", options={"cwd": "/work/repo"}, configuration_key="a")
-        self.assertIsNone(self.manager.live_cwd("chat-1"))
-
-        handle = await supervisor.start_run("Prompt", run_id="run-1")
-        self.assertEqual(self.manager.live_cwd("chat-1"), "/work/repo")
-        await self.factory.clients[0].emit({"type": "result", "result": "done"})
-        await handle.wait_result()
-
-        self.assertTrue(await self.manager.evict("chat-1"))
-        self.assertIsNone(self.manager.live_cwd("chat-1"))
-
     async def test_connect_failure_is_safe_to_fallback(self) -> None:
         self.factory.connect_error = RuntimeError("SDK unavailable")
         with self.assertRaises(ClaudeSDKUnavailable) as raised:

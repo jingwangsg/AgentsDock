@@ -2691,19 +2691,32 @@ def existing_cwd(requested: str | None) -> str:
     return "/tmp"
 
 
-def claude_sdk_turn_cwd(session_id: str, requested: str) -> str:
-    """The directory a Claude SDK turn of this chat runs in: its own, else existing_cwd's fallback.
+def claude_sdk_turn_cwd(session_id: str, sess: dict[str, Any], manifest_path: Path) -> str:
+    """existing_cwd of the chat's directory, except that a chat keeps a directory that was moved or
+    deleted while its live Claude process, started there with this configuration, can take the turn.
 
-    A chat whose directory is gone (another chat moved or removed it, say) keeps it while its live
-    process still runs there. That process holds the conversation and any background tasks; another
-    directory would replace it and start without the conversation or, while background tasks run,
-    refuse the message.
+    The directory is part of claude_sdk_configuration_key, so any other directory makes the manager
+    replace that process: the new one starts without the conversation, or, while background tasks
+    run, the message is refused. A process the turn replaces anyway could not start in a missing
+    directory, so that turn gets the fallback.
     """
+    requested = str(sess.get("cwd") or DEFAULT_CWD)
     cwd = existing_cwd(requested)
     path = str(Path(requested).expanduser())
-    if cwd != path and CLAUDE_SDK_MANAGER is not None and CLAUDE_SDK_MANAGER.live_cwd(session_id) == path:
-        return path
-    return cwd
+    if cwd == path or CLAUDE_SDK_MANAGER is None:
+        return cwd
+    live = next((snapshot for snapshot in CLAUDE_SDK_MANAGER.snapshots() if snapshot.chat_id == session_id), None)
+    if live is None or live.closed or not live.connected:
+        return cwd
+    try:
+        # The key build_claude_sdk_options computes, without its side effects on sess.
+        key = claude_sdk_configuration_key(
+            sess, path, claude_sdk_cli_path(agent_runner_env(session_id)),
+            session_system_prompt(session_id, sess, manifest_path),
+        )
+    except Exception:  # noqa: BLE001 - the turn's own setup reports the error
+        return cwd
+    return path if key == live.configuration_key else cwd
 
 
 def validated_opencode_cwd(
@@ -23817,7 +23830,7 @@ def queued_claude_runtime_matches_active(
     if selected.get("effort") is not None:
         session["effort"] = selected.get("effort")
     try:
-        cwd = claude_sdk_turn_cwd(session_id, str(session.get("cwd") or DEFAULT_CWD))
+        cwd = claude_sdk_turn_cwd(session_id, session, codex_manifest_path(session_id))
         cli_path = claude_sdk_cli_path(agent_runner_env(session_id))
         configuration_key = claude_sdk_configuration_key(
             session,
@@ -33824,12 +33837,17 @@ def _build_claude_subagent_snapshot_locked(session_id: str, limit: int) -> dict[
                     continue
 
                 if event_type == "history_rewound" and event.get("provider_rewind") in {"claude_fork", "claude_reset"}:
-                    # A Claude rewind evicts the chat's process (perform_rewind), and with it every
-                    # background agent that process still ran; no frame ever reports their end.
-                    for state in states.values():
-                        if state["status"] in {"starting", "running"}:
-                            state["status"] = "stopped"
-                            note(state, event, "Stopped when the chat was rewound")
+                    # A Claude rewind (provider_rewind set) evicts the chat's process in perform_rewind, and
+                    # with it every agent that process still ran; no frame reports their end. The chat is
+                    # idle at a rewind, so every agent still active belonged to that process. A history
+                    # reload writes history_rewound without provider_rewind and keeps the process. Read
+                    # here rather than written at rewind time, so chats rewound before this was added are
+                    # corrected too.
+                    for state in list(states.values()):
+                        if state["status"] not in {"starting", "running"}:
+                            continue
+                        state["status"] = "stopped"
+                        note(state, event, "Stopped when the chat was rewound")
                     continue
 
                 if event_type == "claude_subagents_stopped":
@@ -48538,8 +48556,8 @@ def claude_transcript_matches_cwd(path: Path, cwd: str) -> bool:
     """Validate a provider transcript using Claude's recorded cwd metadata."""
 
     expected_cwd = str(Path(cwd).expanduser())
-    # Claude records the directory it runs in with symlinks resolved, so a cwd that is a symlink
-    # (macOS /tmp, the old path of a moved worktree) matches the transcripts of its target.
+    # Claude records the directory it runs in with symlinks resolved, so a cwd whose path goes through
+    # a symlink (macOS /tmp, the old path of a moved worktree) matches the transcripts of its target.
     expected_cwds = {expected_cwd, os.path.realpath(expected_cwd)}
     for region in bounded_claude_transcript_regions(path):
         for raw_line in region.splitlines():
@@ -63665,6 +63683,9 @@ async def discover_session_provider_commands(
                 "OpenCode local skills require the chat working directory to be available.",
             )
             return provider_command_snapshot(fallback_empty, support), fallback_empty
+    elif backend == BACKEND_CLAUDE:
+        # The same directory a turn would use, so reading commands never replaces the live process.
+        cwd = claude_sdk_turn_cwd(session_id, session, codex_manifest_path(session_id))
     else:
         cwd = existing_cwd(requested_cwd)
     fallback_empty = empty_provider_command_inventory(
@@ -67167,7 +67188,7 @@ async def run_claude_sdk(
     """Run Claude on one persistent, chat-owned Agent SDK process."""
 
     requested_cwd = str(sess.get("cwd") or DEFAULT_CWD)
-    cwd = claude_sdk_turn_cwd(session_id, requested_cwd)
+    cwd = claude_sdk_turn_cwd(session_id, sess, manifest_path)
     resume_provider_id, resume_skip_message = resolve_claude_resume_provider(
         sess,
         cwd,
@@ -92591,7 +92612,7 @@ async def manage_claude_mcp(
                 SERVER_MAINTENANCE_SESSIONS.add(session_id)
                 maintenance_reserved = True
 
-            cwd = existing_cwd(str(session.get("cwd") or DEFAULT_CWD))
+            cwd = claude_sdk_turn_cwd(session_id, session, codex_manifest_path(session_id))
             try:
                 options, configuration_key, _cli_path = build_claude_sdk_options(
                     session_id,

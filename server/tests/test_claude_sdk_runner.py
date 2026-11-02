@@ -6939,25 +6939,31 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-    def test_a_chat_whose_directory_is_gone_keeps_it_while_its_live_process_runs_there(self) -> None:
+    def test_a_chat_whose_directory_is_gone_keeps_it_while_its_live_process_can_take_the_turn(self) -> None:
         gone = str(Path(self.cwd) / "moved-away")
+        self.assertFalse(Path(gone).exists())
         self.session["cwd"] = gone
+        manifest = Path(self.cwd) / ".manifest.json"
+        fallback = agent_server.existing_cwd(gone)
+        live = types.SimpleNamespace(chat_id="chat-claude", configuration_key=f"claude-opus:{gone}", connected=True, closed=False)
         manager = FakeClaudeManager()
-        manager.live_cwd = Mock(return_value=gone)  # type: ignore[attr-defined]
-        agent_server.CLAUDE_SDK_MANAGER = manager  # type: ignore[assignment]
-        self.assertEqual(agent_server.claude_sdk_turn_cwd("chat-claude", gone), gone)
-        # A queued message still steers into the turn that process runs.
-        selected = {"client_capabilities": [agent_server.CLAUDE_SDK_INTERACTIVE_CLIENT_CAPABILITY]}
-        with patch.object(agent_server, "claude_sdk_configuration_key", side_effect=lambda _session, cwd, *_: f"key:{cwd}"), \
+        manager.snapshots = Mock(return_value=[live])  # type: ignore[attr-defined]
+        agent_server.CLAUDE_SDK_MANAGER = manager
+        # A key of model and directory: it matches the live process only with the model and directory it started with.
+        with patch.object(agent_server, "claude_sdk_configuration_key", side_effect=lambda session, cwd, *_: f"{session['model']}:{cwd}"), \
                 patch.object(agent_server, "claude_sdk_cli_path", return_value="/usr/bin/claude"), \
                 patch.object(agent_server, "session_system_prompt", return_value="prompt"):
-            self.assertTrue(agent_server.queued_claude_runtime_matches_active("chat-claude", selected, {"configuration_key": f"key:{gone}"}))
+            self.assertEqual(agent_server.claude_sdk_turn_cwd("chat-claude", self.session, manifest), gone)
+            # A queued message still steers into the turn that process runs.
+            selected = {"client_capabilities": [agent_server.CLAUDE_SDK_INTERACTIVE_CLIENT_CAPABILITY]}
+            self.assertTrue(agent_server.queued_claude_runtime_matches_active("chat-claude", selected, {"configuration_key": live.configuration_key}))
 
-        # Without a process there, or with one elsewhere, the turn uses a directory that exists.
-        for live in (None, self.cwd):
-            manager.live_cwd.return_value = live
-            self.assertEqual(agent_server.claude_sdk_turn_cwd("chat-claude", gone), agent_server.existing_cwd(gone))
-        self.assertNotEqual(agent_server.existing_cwd(gone), gone)
+            # A turn that replaces the process anyway (another model here), or a chat without a live process,
+            # gets a directory that exists: a new process cannot start in a missing one.
+            self.assertNotEqual(fallback, gone)
+            self.assertEqual(agent_server.claude_sdk_turn_cwd("chat-claude", {**self.session, "model": "claude-sonnet"}, manifest), fallback)
+            manager.snapshots.return_value = []
+            self.assertEqual(agent_server.claude_sdk_turn_cwd("chat-claude", self.session, manifest), fallback)
 
     def test_pidless_sdk_turn_is_reported_as_active(self) -> None:
         snapshot = agent_server.active_process_snapshot(
