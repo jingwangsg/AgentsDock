@@ -40,7 +40,9 @@ async function compile(source) {
     stdin: { contents: source, loader: 'tsx', sourcefile: 'artifact.canvas.tsx' },
     bundle: true, write: false, format: 'iife', globalName: 'CanvasModule',
     jsx: 'automatic', platform: 'browser', target: 'safari15',
-    sourcemap: 'inline', logLevel: 'silent',
+    // No source map: inline, it repeated the source in base64, 40% of a gzipped Canvas download, and only
+    // DevTools reads it; the bundle is not minified, so it stays readable there.
+    logLevel: 'silent',
     plugins: [{ name: 'canvas-imports', setup(build) {
       build.onResolve({ filter: /.*/ }, args => {
         if (!Object.hasOwn(modules, args.path)) return { errors: [{ text: 'Unsupported Canvas import: ' + args.path }] };
