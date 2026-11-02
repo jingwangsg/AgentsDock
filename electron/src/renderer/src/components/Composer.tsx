@@ -2,7 +2,7 @@
 import { t, getLocale } from '@shared/i18n'
 import { isSharedChatCollaborator } from '@shared/chat-shares'
 import { useLocale } from '../lib/i18n'
-import { forwardRef, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { forwardRef, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent, type ReactNode } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import * as Tooltip from '@radix-ui/react-tooltip'
@@ -43,11 +43,11 @@ import {
 import { captureWorkspaceScope, getWorkspacePreference, setWorkspacePreference } from '../lib/workspace-preferences'
 import {
   canonicalizeLocalRouteHints,
+  chatIdTokens,
   chatMentionTrigger,
   chatReferenceCopyText,
   chatReferenceDisplayText,
   chatReferenceLabel,
-  chatReferenceTokens,
   currentRouteHintReference,
   exactQueuedDeliverySkipAvailable,
   exactQueuedPeerDeliverySkipAvailable,
@@ -631,8 +631,9 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
   const [workingDirectoryOpen, setWorkingDirectoryOpen] = useState(false)
   // The @ span "Create new agent" was picked from; the new-agent dialog's confirm inserts the chip there.
   const [newAgentTrigger, setNewAgentTrigger] = useState<ChatMentionTrigger | null>(null)
-  // A paste whose tokens name no chat this composer lists yet: the draft it left and their span, until the hub's chat list arrives.
-  const [pastedTokens, setPastedTokens] = useState<{ sessionId: string; draft: string; start: number; end: number } | null>(null)
+  // A paste whose id tokens name no chat this composer lists yet, kept until the hub's chat list arrives:
+  // the draft the paste left and the span it inserted.
+  const [pasteAwaitingHub, setPasteAwaitingHub] = useState<{ sessionId: string; draft: string; start: number; end: number } | null>(null)
   useEffect(() => {
     providerCommandRequestRef.current += 1
     providerCommandBindingRef.current = null
@@ -750,7 +751,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
   // One hub request each time the @ picker opens or a paste waits for it, never per keystroke.
   // Until it answers (or when a server is unreachable) the picker lists this server's chats.
   useEffect(() => {
-    if ((!mentionOpen && !pastedTokens) || !crossServerAvailable) return
+    if ((!mentionOpen && !pasteAwaitingHub) || !crossServerAvailable) return
     const scope = captureWorkspaceScope(useAppStore.getState())
     if (!scope) return
     let current = true
@@ -762,7 +763,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
       })
       .catch(() => undefined)
     return () => { current = false }
-  }, [crossServerAvailable, crossServerKey, mentionOpen, pastedTokens])
+  }, [crossServerAvailable, crossServerKey, mentionOpen, pasteAwaitingHub])
   const crossServerMention = useMemo<CrossServerMention | null>(() => {
     if (!crossServerAvailable || crossServerSnapshot?.key !== crossServerKey) return null
     const local = crossServerSnapshot.servers.find(server => server.server_identity === serverIdentity)
@@ -1727,6 +1728,8 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
     setDraft(nextText)
     storeReferences(nextReferences.chatReferences)
     storeTeamReferences(nextReferences.teamReferences)
+    // An edit leaves a paste no longer as it was, so its id tokens stop waiting for the hub's list.
+    setPasteAwaitingHub(null)
     const commandMatch = matchComposerCommands(nextText, caret, allComposerCommands, commandAvailable)
     const rawCommandTrigger = composerCommandTrigger(nextText, caret)
     const waitForProviderCommands = Boolean(
@@ -1848,7 +1851,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
       setWorkingDirectoryOpen(true)
     }
   }
-  // `trigger` is the picker's @ span, or a pasted token's (chipPastedTokens).
+  // `trigger` is the picker's @ span, or a pasted id token's (chipIdTokens).
   const chooseMention = (target: ChatMentionCandidate, trigger = mention) => {
     if (!trigger || !crossChatSupported) return
     const action: ChatReferenceAction = 'route'
@@ -1955,41 +1958,56 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
     setMention(null)
     setMentionCandidates([])
   }
-  // Each @sess_… token in draft[start, end), which only a paste puts there, becomes the chip the @ picker
-  // inserts for its chat: this server's chats first, then other servers', through the picker's checks.
-  // A token the picker does not list stays as typed. Returns where the pasted span now ends.
-  const chipPastedTokens = (start: number, end: number, crossServer: CrossServerMention | null) => {
-    const candidates = currentMentionCandidates({ kind: '@', start, end: start, query: '' }, selectedId!, supportedTargetBackends, crossChatSupported, crossServer, false)
+  // Each id token in draft[start, end), the span a paste inserted, becomes the chip the @ picker inserts for
+  // its chat, through the picker's checks: this server's chats first, then other servers'. A token for a chat
+  // the picker does not list stays as text. Returns the span's new end and whether such a token is left.
+  const chipIdTokens = (start: number, end: number, crossServer: CrossServerMention | null) => {
+    const draftBefore = draftRef.current
+    // An empty query lists every chat the picker offers, in its order.
+    const candidates = currentMentionCandidates({ kind: '@', start, end: start, query: '' }, selectedId!, supportedTargetBackends, crossChatSupported, crossServer, /* newAgentSupported */ false)
     let shift = 0
     let unresolved = false
-    for (const token of chatReferenceTokens(draftRef.current, start, end)) {
-      const target = candidates.find(candidate => (
-        candidate.kind === 'local' ? candidate.session.id : candidate.kind === 'remote' ? candidate.chat.id : null
-      ) === token.sessionId)
+    for (const token of chatIdTokens(draftRef.current, start, end)) {
+      const target = candidates.find(candidate => (candidate.kind === 'local' && candidate.session.id === token.sessionId)
+        || (candidate.kind === 'remote' && candidate.chat.id === token.sessionId))
       if (!target) {
         unresolved = true
         continue
       }
-      const length = draftRef.current.length
+      // chooseMention rewrites draftRef at once; the tokens after this one move by the change in length.
+      const lengthBefore = draftRef.current.length
       chooseMention(target, { kind: '@', start: token.start + shift, end: token.end + shift, query: '' })
-      shift += draftRef.current.length - length
+      shift += draftRef.current.length - lengthBefore
     }
+    // chooseMention closes only the @ picker; the @@ and / palettes must follow the new text, as after typing.
+    if (draftRef.current !== draftBefore) updateComposerDraft(draftRef.current, end + shift)
     return { end: end + shift, unresolved }
   }
   useEffect(() => {
-    if (!pastedTokens || !crossServerMention) return
-    setPastedTokens(null)
-    // Only into the paste as it was left: same chat and text, still focused with the caret after it.
+    if (!pasteAwaitingHub || !crossServerMention) return
+    setPasteAwaitingHub(null)
+    // Chipping moves the caret and focuses the composer, so it runs only on the paste as it was left:
+    // the same chat and text, the composer focused, the caret right after the paste.
     const textarea = textareaRef.current
     if (
       !textarea || textarea !== document.activeElement
-      || pastedTokens.sessionId !== selectedId || pastedTokens.draft !== draftRef.current
+      || pasteAwaitingHub.sessionId !== selectedId || pasteAwaitingHub.draft !== draftRef.current
       || textarea.selectionStart !== textarea.selectionEnd
-      || composerDisplayToSource(projectTeamMessageComposer(draftRef.current), textarea.selectionEnd) !== pastedTokens.end
+      || composerDisplayToSource(projectTeamMessageComposer(draftRef.current), textarea.selectionEnd) !== pasteAwaitingHub.end
     ) return
-    const chipped = chipPastedTokens(pastedTokens.start, pastedTokens.end, crossServerMention)
-    if (draftRef.current !== pastedTokens.draft) pendingCaretRef.current = chipped.end
-  }, [crossServerMention, pastedTokens])
+    const chipped = chipIdTokens(pasteAwaitingHub.start, pasteAwaitingHub.end, crossServerMention)
+    // chooseMention left the caret after the last chip; it belongs after the paste.
+    if (draftRef.current !== pasteAwaitingHub.draft) pendingCaretRef.current = chipped.end
+  }, [crossServerMention, pasteAwaitingHub])
+  // The selection goes to the clipboard with each whole chip as its id token; false leaves the native copy.
+  const copyIdTokens = (event: ClipboardEvent<HTMLTextAreaElement>): boolean => {
+    const { selectionStart: start, selectionEnd: end, value } = event.currentTarget
+    const copied = chatReferenceCopyText(value, displayedReferenceSet.chatReferences, start, end)
+    if (copied === value.slice(start, end)) return false
+    event.preventDefault()
+    event.clipboardData.setData('text/plain', copied)
+    return true
+  }
   const chooseTeamMention = (candidate: TeamMentionCandidate) => {
     if (!teamMention || !teamMentionsSupported) return
     const duplicate = teamReferencesRef.current.some(reference => (
@@ -2135,11 +2153,8 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
           onCut={event => {
             const { selectionStart: start, selectionEnd: end, value } = event.currentTarget
             nativeEditSelectionRef.current = { source: draftRef.current, start, end }
-            const copied = chatReferenceCopyText(value, displayedReferenceSet.chatReferences, start, end)
-            if (copied === value.slice(start, end)) return
-            // The clipboard takes the chips as tokens, so the cut is applied here, as the edit from typing is.
-            event.preventDefault()
-            event.clipboardData.setData('text/plain', copied)
+            if (!copyIdTokens(event)) return
+            // Writing the clipboard cancelled the native cut, so its deletion is applied here as a typed edit is.
             const edit = applyTeamMessageComposerEdit(
               projectTeamMessageComposer(draftRef.current), value.slice(0, start) + value.slice(end), start, start, nativeEditSelectionRef.current
             )
@@ -2147,13 +2162,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
             pendingCaretRef.current = edit.selectionStart
             updateComposerDraft(edit.source, edit.selectionStart)
           }}
-          onCopy={event => {
-            const { selectionStart: start, selectionEnd: end, value } = event.currentTarget
-            const copied = chatReferenceCopyText(value, displayedReferenceSet.chatReferences, start, end)
-            if (copied === value.slice(start, end)) return
-            event.preventDefault()
-            event.clipboardData.setData('text/plain', copied)
-          }}
+          onCopy={copyIdTokens}
           onFocus={() => {
             if (paletteBlurTimerRef.current !== null) {
               window.clearTimeout(paletteBlurTimerRef.current)
@@ -2320,21 +2329,27 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
             nativeEditSelectionRef.current = { source: draftRef.current, start, end }
             // Line breaks as the textarea stores them.
             const pasted = event.clipboardData.getData('text/plain').replace(/\r\n?/gu, '\n')
-            if (!crossChatSupported || !chatReferenceTokens(pasted).length) return
-            // The text lands where a native paste puts it; then its chat ids become chips.
+            // An @ typed just before a pasted chat id begins its id token.
+            const typedAt = value[start - 1] === '@' ? 1 : 0
+            if (!crossChatSupported || !chatIdTokens(`${typedAt ? '@' : ''}${pasted}`).length) return
+            // The text lands where a native paste puts it; then its id tokens become chips.
             event.preventDefault()
             const edit = applyTeamMessageComposerEdit(
               projectTeamMessageComposer(draftRef.current), value.slice(0, start) + pasted + value.slice(end),
               start + pasted.length, start + pasted.length, nativeEditSelectionRef.current
             )
             nativeEditSelectionRef.current = null
+            const draftBefore = draftRef.current
             updateComposerDraft(edit.source, edit.selectionStart)
-            const pastedStart = edit.selectionStart - pasted.length
-            const chipped = chipPastedTokens(pastedStart, edit.selectionStart, crossServerMention)
-            pendingCaretRef.current = chipped.end
+            const pasteStart = edit.selectionStart - pasted.length - typedAt
+            const chipped = chipIdTokens(pasteStart, edit.selectionStart, crossServerMention)
+            // chooseMention left the caret after the last chip; it belongs after the paste. Only a changed draft
+            // renders the caret into place, so a paste of the selected text itself collapses it here.
+            if (draftRef.current === draftBefore) event.currentTarget.setSelectionRange(start + pasted.length, start + pasted.length)
+            else pendingCaretRef.current = chipped.end
             // Chats on other servers are known once the hub's list arrives; the effect above then chips their tokens.
             if (chipped.unresolved && crossServerAvailable && !crossServerMention) {
-              setPastedTokens({ sessionId: session.id, draft: draftRef.current, start: pastedStart, end: chipped.end })
+              setPasteAwaitingHub({ sessionId: selectedId!, draft: draftRef.current, start: pasteStart, end: chipped.end })
             }
           }}
         />

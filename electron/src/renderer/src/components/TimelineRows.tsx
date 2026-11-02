@@ -89,10 +89,12 @@ function Message({ item, sessionId, profileScope, pinned, rewindIdle, checkpoint
     window.dispatchEvent(new CustomEvent('agentsdock:pins-changed', { detail: sessionId }))
   }
   const copy = async () => {
-    // A chip copies as its chat's id, which a paste turns back into that chat's chip.
-    await window.agentsDock.native.writeClipboard(role === 'user'
-      ? events.map(part => chatReferenceCopyText(messageText(part), parseStoredChatReferences(inlineTimelineChatReferences(part), messageText(part), sessionId)).trim()).filter(Boolean).join('\n\n')
-      : text)
+    // A chip copies as its id token, which a paste turns back into the chip; parts join as in messageItemText.
+    const copied = role !== 'user' ? text : events.map(part => {
+      const partText = messageText(part)
+      return chatReferenceCopyText(partText, parseStoredChatReferences(inlineTimelineChatReferences(part), partText, sessionId)).trim()
+    }).filter(Boolean).join('\n\n')
+    await window.agentsDock.native.writeClipboard(copied)
     setCopied(true)
     window.setTimeout(() => setCopied(false), 1200)
   }
@@ -207,7 +209,7 @@ function selectTimelineChatReference(reference: ChatReference): void {
 }
 
 /**
- * A selection copied within one user bubble carries each whole chip as its token, as the Copy button
+ * A selection copied within one user bubble carries each whole chip as its id token, as the Copy button
  * does. The text is the browser's own serialization of the selection, read while those chips' text
  * nodes hold their tokens; the text and the selection are put back before anything repaints.
  */
@@ -215,7 +217,7 @@ function copySelectionWithChatTokens(event: ClipboardEvent<HTMLElement>): void {
   const selection = window.getSelection()
   const range = selection?.rangeCount === 1 ? selection.getRangeAt(0) : null
   if (!selection || !range || !event.currentTarget.contains(range.startContainer) || !event.currentTarget.contains(range.endContainer)) return
-  const chips = [...event.currentTarget.querySelectorAll<HTMLElement>('[data-chat-token]')].filter(chip => {
+  const wholeChips = [...event.currentTarget.querySelectorAll<HTMLElement>('[data-chat-token]')].filter(chip => {
     if (chip.childNodes.length !== 1 || !(chip.firstChild instanceof Text)) return false
     const selected = document.createRange()
     selected.selectNodeContents(chip)
@@ -223,21 +225,25 @@ function copySelectionWithChatTokens(event: ClipboardEvent<HTMLElement>): void {
     if (range.compareBoundaryPoints(Range.END_TO_END, selected) < 0) selected.setEnd(range.endContainer, range.endOffset)
     return selected.toString() === chip.textContent
   })
-  if (!chips.length) return
+  if (!wholeChips.length) return
   const { anchorNode, anchorOffset, focusNode, focusOffset } = selection
   // A selection edge inside a chip's text would move when that text changes, so it is held just outside the chip.
-  const whole = range.cloneRange()
-  if (chips[0].contains(whole.startContainer)) whole.setStartBefore(chips[0])
-  if (chips[chips.length - 1].contains(whole.endContainer)) whole.setEndAfter(chips[chips.length - 1])
+  const widened = range.cloneRange()
+  if (wholeChips[0].contains(widened.startContainer)) widened.setStartBefore(wholeChips[0])
+  if (wholeChips[wholeChips.length - 1].contains(widened.endContainer)) widened.setEndAfter(wholeChips[wholeChips.length - 1])
   selection.removeAllRanges()
-  selection.addRange(whole)
-  const labels = chips.map(chip => (chip.firstChild as Text).data)
-  chips.forEach(chip => { (chip.firstChild as Text).data = chip.dataset.chatToken! })
+  selection.addRange(widened)
+  const labels = wholeChips.map(chip => (chip.firstChild as Text).data)
+  wholeChips.forEach(chip => { (chip.firstChild as Text).data = chip.dataset.chatToken! })
   const copied = selection.toString()
-  chips.forEach((chip, index) => { (chip.firstChild as Text).data = labels[index] })
+  // Rich editors read the HTML copy, which keeps the message's formatting.
+  const html = document.createElement('div')
+  html.append(widened.cloneContents())
+  wholeChips.forEach((chip, index) => { (chip.firstChild as Text).data = labels[index] })
   if (anchorNode && focusNode) selection.setBaseAndExtent(anchorNode, anchorOffset, focusNode, focusOffset)
   event.preventDefault()
   event.clipboardData.setData('text/plain', copied)
+  event.clipboardData.setData('text/html', html.innerHTML)
 }
 
 

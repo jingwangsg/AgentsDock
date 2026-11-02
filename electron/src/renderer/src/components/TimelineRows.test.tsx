@@ -761,6 +761,7 @@ describe('timeline pin state', () => {
     selection.selectAllChildren(paragraph)
     expect(fireEvent.copy(chip, { clipboardData: { setData } })).toBe(false)
     expect(setData).toHaveBeenCalledWith('text/plain', tokens)
+    expect(setData).toHaveBeenCalledWith('text/html', expect.stringContaining(`>@${alpha}</span>`))
     // The chips' text and the selection are as they were.
     expect(chip).toHaveTextContent(/^@Renamed target$/)
     expect(selection.toString()).toBe('Ask @Renamed target and @Launch · gpu-box now.')
@@ -768,7 +769,7 @@ describe('timeline pin state', () => {
     // A chip the selection cuts copies as its text.
     selection.setBaseAndExtent(chip.firstChild!, 3, paragraph, paragraph.childNodes.length)
     fireEvent.copy(chip, { clipboardData: { setData } })
-    expect(setData).toHaveBeenLastCalledWith('text/plain', `named target and @${launch} now.`)
+    expect(setData).toHaveBeenCalledWith('text/plain', `named target and @${launch} now.`)
     expect(selection.toString()).toBe('named target and @Launch · gpu-box now.')
   })
 

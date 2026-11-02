@@ -55,10 +55,10 @@ import {
 } from '../lib/composer-commands'
 import { atomicComposerReferenceEdit, caretOutsideComposerReferences, insertTeamReference, MAX_TEAM_REFERENCES, reconcileTeamReferences, teamMentionTrigger, teamMessagesAvailable, teamReferenceContractSupported, validTeamReferences, type TeamMentionCandidate, type TeamMentionTrigger } from '../lib/team-references'
 import {
+  chatIdTokens,
   chatMentionAction,
   chatMentionTrigger,
   chatReferenceLabel,
-  chatReferenceTokens,
   chatReferenceWithAction,
   insertChatReference,
   insertCrossServerChatReference,
@@ -230,8 +230,9 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
   const [runtimeSheetSection, setRuntimeSheetSection] = useState<'model' | 'reasoning' | null>(null)
   const [goalEditorOpen, setGoalEditorOpen] = useState(false)
   const [newAgentSheet, setNewAgentSheet] = useState<NewAgentSheetState | null>(null)
-  // A paste whose chat ids name no chat this composer lists yet: the draft it left and their span, until the hub's chat list arrives.
-  const [pastedTokens, setPastedTokens] = useState<{ draft: string; start: number; end: number } | null>(null)
+  // A paste whose id tokens name no chat this composer lists yet, kept until the hub's chat list arrives:
+  // the draft the paste left and the span it inserted.
+  const [pasteAwaitingHub, setPasteAwaitingHub] = useState<{ draft: string; start: number; end: number } | null>(null)
   const providerCommandBindingRef = useRef<BoundProviderCommand | null>(null)
   const providerCommandRequestRef = useRef(0)
   const { promptText, textPromptDialog } = useTextPrompt()
@@ -250,9 +251,9 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
   const field = useChipTextField(inputRef, draft.length)
   const selectionRef = field.selectionRef
   const pendingCaretRef = useRef<number | null>(null)
-  // The native text of the last edit and the draft it left. Android repeats a paste's text change
-  // after the composer made chips of its chat ids; diffed as an edit, the repeat would undo them.
-  const lastNativeEditRef = useRef<{ nativeText: string; draft: string } | null>(null)
+  // The native text of a paste that made chips, and the draft it left. Android repeats that text change
+  // after the chips are made; diffed as an edit, the repeat would undo them.
+  const chippedPasteRef = useRef<{ nativeText: string; draft: string } | null>(null)
   const restoreInputAfterPickerRef = useRef(false)
   const dismissedMentionStartRef = useRef<number | null>(null)
   const attachmentSendGuardedRef = useRef(false)
@@ -281,7 +282,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
   const newAgentSupported = crossChatSupported && newAgentBackends.length > 0
   const chatPickerVisible = !welcome && pickerTrigger != null && pickerTrigger.kind !== '@@'
   // The new-agent sheet lists the other servers too, so the request outlives the picker.
-  const crossServer = useCrossServerTargets(chatPickerVisible || newAgentSheet !== null, sessionId, pastedTokens)
+  const crossServer = useCrossServerTargets(chatPickerVisible || newAgentSheet !== null, sessionId, pasteAwaitingHub)
   const referenceSupported = useCallback((reference: ChatReference): boolean => {
     // Paired through the hub at send time; its target lives on another server.
     if (reference.target_kind === 'cross_server') return crossServerAvailable
@@ -423,7 +424,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
     pendingTeamPicker.current = null
     pendingNewAgent.current = false
     setNewAgentSheet(null)
-    setPastedTokens(null)
+    setPasteAwaitingHub(null)
     restoreInputAfterPickerRef.current = false
     dismissedMentionStartRef.current = null
     if (mentionOpenTimer.current) clearTimeout(mentionOpenTimer.current)
@@ -486,15 +487,16 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
     else show()
   }, [activeProfileId, profileGeneration, sessionId, crossChatSupported])
 
-  // Each @sess_… token in text[start, end), which only a paste puts there, becomes the chip the @ picker
-  // inserts for its chat: this server's chats first, then other servers' from the hub's list. A token
-  // the picker does not list, or would refuse (already chosen, a limit reached), stays as typed.
-  const chipPastedTokens = useCallback((text: string, start: number, end: number, chatReferences: ChatReference[], teamReferences: TeamReference[], servers: CrossServerTargets | null) => {
+  // Each id token in text[start, end), the span a paste inserted, becomes the chip the @ picker inserts for
+  // its chat: this server's chats first, then other servers' from the hub's list. A token for a chat the
+  // picker does not list stays as text, and so does one it would refuse (already chosen, a limit reached,
+  // a title beginning with @): a paste gets no alert for that, while the picker's would interrupt typing.
+  const chipIdTokens = useCallback((text: string, start: number, end: number, chatReferences: ChatReference[], teamReferences: TeamReference[], servers: CrossServerTargets | null) => {
     const state = useAppStore.getState()
     const routeSnapshot = state.agentRoutesBySession?.[sessionId]
     let shift = 0
     let unresolved = false
-    for (const token of chatReferenceTokens(text, start, end)) {
+    for (const token of chatIdTokens(text, start, end)) {
       const local = state.sessions.find(candidate => candidate.id === token.sessionId && candidate.id !== sessionId && !candidate.archived && supportedTargetBackends.includes(candidate.backend))
       const remote = local ? undefined : servers?.servers.flatMap(server => server.chats
         .filter(chat => chat.id === token.sessionId && chat.cross_chat_handoff_supported)
@@ -503,10 +505,12 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
         unresolved = true
         continue
       }
-      if (chatReferences.length >= MAX_CHAT_REFERENCES || chatReferences.some(reference => remote
+      // The checks chooseTarget and chooseCrossServerTarget make.
+      const chosen = chatReferences.some(reference => remote
         ? reference.target_kind === 'cross_server' && reference.session_id === remote.chat.id && reference.target_server_identity === remote.server.server_identity
         : reference.session_id === token.sessionId && reference.action === 'route')
-        || (local && routeSnapshot && routeCapacityReached(routeSnapshot.routes, routeSnapshot.max_routes, chatReferences, local.id))) continue
+      const routesFull = Boolean(local && routeSnapshot && routeCapacityReached(routeSnapshot.routes, routeSnapshot.max_routes, chatReferences, local.id))
+      if (chatReferences.length >= MAX_CHAT_REFERENCES || chosen || routesFull) continue
       const trigger = { kind: '@' as const, start: token.start + shift, end: token.end + shift, query: '' }
       let inserted: InsertChatReferenceResult
       try {
@@ -527,18 +531,24 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
   const updateComposerDraft = useCallback((nativeText: string) => {
     if (!composerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) return
     const previousDraft = draftRef.current
-    if (lastNativeEditRef.current?.nativeText === nativeText && lastNativeEditRef.current.draft === previousDraft) return
+    if (chippedPasteRef.current?.nativeText === nativeText && chippedPasteRef.current.draft === previousDraft) return
+    let pasteStart = -1
+    let chipped = false
     let unresolved = false
-    const { text, start, caret, chatReferences: nextReferences, teamReferences: nextTeamReferences } = field.edit(previousDraft, nativeText, referencesRef.current, teamReferencesRef.current, edited => {
-      // A paste arrives here as a text change; typing never inserts a whole token at once.
-      if (!crossChatSupported || !edited.text.slice(edited.start, edited.caret).includes('@sess_')) return edited
-      const chipped = chipPastedTokens(edited.text, edited.start, edited.caret, edited.chatReferences, edited.teamReferences, crossServer)
-      unresolved = chipped.unresolved
-      return { ...edited, text: chipped.text, caret: chipped.end, chatReferences: chipped.chatReferences, teamReferences: chipped.teamReferences }
+    const { text, caret, chatReferences: nextReferences, teamReferences: nextTeamReferences } = field.edit(previousDraft, nativeText, referencesRef.current, teamReferencesRef.current, edited => {
+      // An @ typed just before a pasted chat id begins its id token.
+      const from = edited.text[edited.start - 1] === '@' ? edited.start - 1 : edited.start
+      // A paste arrives here as a text change; typing never inserts a whole id token at once.
+      if (!crossChatSupported || !edited.text.slice(from, edited.caret).includes('@sess_')) return edited
+      const result = chipIdTokens(edited.text, from, edited.caret, edited.chatReferences, edited.teamReferences, crossServer)
+      pasteStart = from
+      chipped = result.text !== edited.text
+      unresolved = result.unresolved
+      return { ...edited, text: result.text, caret: result.end, chatReferences: result.chatReferences, teamReferences: result.teamReferences }
     })
     // Chats on other servers are known once the hub's list arrives; the effect below then chips their tokens.
-    setPastedTokens(unresolved && crossServerAvailable && !crossServer ? { draft: text, start, end: caret } : null)
-    lastNativeEditRef.current = { nativeText, draft: text }
+    setPasteAwaitingHub(unresolved && crossServerAvailable && !crossServer ? { draft: text, start: pasteStart, end: caret } : null)
+    chippedPasteRef.current = chipped ? { nativeText, draft: text } : null
     draftRef.current = text
     referencesRef.current = nextReferences
     teamReferencesRef.current = nextTeamReferences
@@ -550,26 +560,29 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
     setTeamReferencesForSession(sessionId, nextTeamReferences, profileGeneration)
     const trigger = teamMentionTrigger(text, caret, nextReferences, nextTeamReferences) ?? chatMentionTrigger(text, caret, nextReferences)
     discoverMention(trigger)
-  }, [activeProfileId, chipPastedTokens, crossChatSupported, crossServer, crossServerAvailable, discoverMention, field, profileGeneration, sessionId, setChatReferencesForSession, setTeamReferencesForSession, setSessionDraft])
+  }, [activeProfileId, chipIdTokens, crossChatSupported, crossServer, crossServerAvailable, discoverMention, field, profileGeneration, sessionId, setChatReferencesForSession, setTeamReferencesForSession, setSessionDraft])
 
   useEffect(() => {
-    if (!pastedTokens || !crossServer) return
-    setPastedTokens(null)
-    // Only into the paste as it was left: the same text, the caret still after it.
+    if (!pasteAwaitingHub || !crossServer) return
+    setPasteAwaitingHub(null)
+    // Only into the paste as it was left: the same text, the caret still after it, and no @ picker open or
+    // about to open, whose span in this text chipping would move.
     const selection = selectionRef.current
     if (
-      !composerScopeIsCurrent(activeProfileId, profileGeneration, sessionId) || pastedTokens.draft !== draftRef.current
-      || selection.start !== pastedTokens.end || selection.end !== pastedTokens.end
+      !composerScopeIsCurrent(activeProfileId, profileGeneration, sessionId) || pasteAwaitingHub.draft !== draftRef.current
+      || selection.start !== pasteAwaitingHub.end || selection.end !== pasteAwaitingHub.end
+      || pickerTriggerRef.current || mentionOpenTimer.current
     ) return
-    const chipped = chipPastedTokens(draftRef.current, pastedTokens.start, pastedTokens.end, referencesRef.current, teamReferencesRef.current, crossServer)
+    const chipped = chipIdTokens(draftRef.current, pasteAwaitingHub.start, pasteAwaitingHub.end, referencesRef.current, teamReferencesRef.current, crossServer)
     if (chipped.text === draftRef.current) return
-    // The native field keeps its caret's distance from the end of the text, which is after the paste.
+    // React Native keeps the caret's distance from the end when JS replaces the text; the caret was
+    // after the paste, so it lands at chipped.end.
     draftRef.current = chipped.text
     field.reset(chipped.end)
     setSessionDraft(sessionId, chipped.text, profileGeneration)
     storeReferences(chipped.chatReferences)
     storeTeamReferences(chipped.teamReferences)
-  }, [crossServer, pastedTokens])
+  }, [crossServer, pasteAwaitingHub])
 
   const finishTargetPickerDismissal = useCallback(() => {
     if (!restoreInputAfterPickerRef.current) return
@@ -1543,20 +1556,23 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
  */
 function useChipTextField(inputRef: RefObject<TextInput | null>, initialCaret: number) {
   const selectionRef = useRef<ComposerSelection>({ start: initialCaret, end: initialCaret })
-  // After an edit removes a chip whole, or makes chips of pasted chat ids, React Native applies the new text keeping
-  // the native caret's distance from the end, and a selection command can reach
-  // the field before that text does. Android reports the IME's caret in the cut
-  // text (the echo), then the applied caret once the new text lands; the caret is
-  // moved to the chip's place only then. iOS reports no selection for text set
-  // from JS, so the next text change replaces this and the next tap clears it.
+  // After an edit removes a chip whole, or makes chips of pasted id tokens, React
+  // Native applies the new text keeping the native caret's distance from the end,
+  // and a selection command can reach the field before that text does. Android
+  // reports the IME's caret in the edited text (the echo), then the applied caret
+  // once the new text lands; the caret is moved to the chip's place only then.
+  // iOS reports no selection for text set from JS, so the next text change
+  // replaces this and the next tap clears it.
   const removedChipCaretRef = useRef<{ echo: number; applied: number; caret: number } | null>(null)
   const edit = useCallback((
     previousText: string, nativeText: string, chatReferences: readonly ChatReference[], teamReferences: readonly TeamReference[],
+    // Runs before the caret bookkeeping below, which must see the text the field will hold.
     chipTokens = (edited: ReturnType<typeof atomicComposerReferenceEdit>) => edited,
   ) => {
     const edited = atomicComposerReferenceEdit(previousText, nativeText, selectionRef.current, chatReferences, teamReferences)
     const result = chipTokens(edited)
     const appliedCaret = Math.max(0, result.text.length - (nativeText.length - result.nativeCaret))
+    // After chipping, the field first reports its caret in the pasted text (the echo), even when the carets match.
     removedChipCaretRef.current = appliedCaret === result.caret && result.text === edited.text ? null : { echo: result.nativeCaret, applied: appliedCaret, caret: result.caret }
     selectionRef.current = { start: result.caret, end: result.caret }
     return result
@@ -1679,8 +1695,11 @@ function ChatReferenceShelf({ sessionId, references, referenceSupported, onChang
   </View>
 }
 
-/** The hub's chat list as the @ picker and the new-agent sheet show it, read from the hub each time `open` turns true, and for each `pasted` that waits for it. */
-export function useCrossServerTargets(open: boolean, sourceSessionId: string, pasted: object | null = null): CrossServerTargets | null {
+/**
+ * The hub's chat list as the @ picker and the new-agent sheet show it, read from the hub each time `open`
+ * turns true. `pasted` is a paste waiting for the list; each paste is a new object and starts a new read.
+ */
+export function useCrossServerTargets(open: boolean, sourceSessionId: string, pasted: object | null): CrossServerTargets | null {
   const profileId = useAppStore(state => state.activeProfileId)
   const generation = useAppStore(state => state.profileGeneration)
   const connected = useAppStore(state => state.connected && !state.connecting && !state.switchingProfileId && !state.workspaceAdopting)

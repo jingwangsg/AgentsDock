@@ -565,7 +565,7 @@ test('a chat on another server becomes a tagged chip that is paired through the 
   }finally{await act(async()=>renderer.unmount())}
 })
 
-test('pasted chat ids become the chips the picker inserts: this server\'s at once, another server\'s once the hub lists it',async()=>{
+test('pasted id tokens become the chips the picker inserts: this server\'s at once, another server\'s once the hub lists it',async()=>{
   const local='sess_0123456789abcdef',remote='sess_fedcba9876543210',unknown='sess_00000000000000aa'
   resetCrossServer({patch:{sessions:[{id:'chat',title:'Mobile',backend:'codex'},{...targetSession(local),title:'Alpha renamed'}],agentRoutesBySession:{chat:{routes:[],max_routes:16}}}})
   fixture.crossServer={servers:[{server_identity:'local-server',name:'mac_mini',chats:[]},{server_identity:'l40-server',name:'osmo_dev_l40',chats:[remoteChat(remote,'Launch')]}]}
@@ -598,7 +598,7 @@ test('pasted chat ids become the chips the picker inserts: this server\'s at onc
   }finally{await act(async()=>renderer.unmount())}
 })
 
-test('a pasted chat id stays as typed when the chat is already a chip, or the paste was edited before the hub answered',async()=>{
+test('a pasted id token stays as text when the chat is already a chip, or the paste was edited before the hub answered',async()=>{
   const local='sess_0123456789abcdef',remote='sess_fedcba9876543210'
   resetCrossServer({patch:{sessions:[{id:'chat',title:'Mobile',backend:'codex'},{...targetSession(local),title:'Alpha'}],agentRoutesBySession:{chat:{routes:[],max_routes:16}}}})
   fixture.crossServer={servers:[{server_identity:'local-server',name:'mac_mini',chats:[]},{server_identity:'l40-server',name:'osmo_dev_l40',chats:[remoteChat(remote,'Launch')]}]}
@@ -609,6 +609,35 @@ test('a pasted chat id stays as typed when the chat is already a chip, or the pa
     await type(renderer,`@Alpha @${local} @${remote}!`)
     await act(async()=>hub.resolve(fixture.crossServer))
     assert.equal(store.getState().drafts.chat,`@Alpha @${local} @${remote}!`)
+    assert.deepEqual(store.getState().chatReferencesBySession.chat.map(reference=>reference.session_id),[local])
+  }finally{await act(async()=>renderer.unmount())}
+})
+
+test('a paste waiting for the hub list stays as text when an @ picker opens for a mention after it',async()=>{
+  const remote='sess_fedcba9876543210'
+  resetCrossServer()
+  fixture.crossServer={servers:[{server_identity:'local-server',name:'mac_mini',chats:[]},{server_identity:'l40-server',name:'osmo_dev_l40',chats:[remoteChat(remote,'Launch')]}]}
+  const hub=deferred();fixture.client.crossServerChats=()=>{fixture.crossServerReads++;return hub.promise}
+  const renderer=await render()
+  try{
+    await type(renderer,`Ask @${remote} and @Chat t`)
+    await act(async()=>hub.resolve(fixture.crossServer))
+    assert.equal(store.getState().drafts.chat,`Ask @${remote} and @Chat t`,'The picker about to open holds a span of this text')
+    await act(async()=>new Promise(resolve=>setTimeout(resolve,280)))
+    await click(renderer,'chat-target-target')
+    assert.equal(store.getState().drafts.chat,`Ask @${remote} and @Chat target `)
+    assert.deepEqual(store.getState().chatReferencesBySession.chat.map(reference=>[reference.session_id,reference.source_text_start]),[['target',31]])
+  }finally{await act(async()=>renderer.unmount())}
+})
+
+test('an @ typed just before a pasted chat id becomes part of its chip',async()=>{
+  const local='sess_0123456789abcdef'
+  resetRoutes({sessions:[{id:'chat',title:'Mobile',backend:'codex'},{...targetSession(local),title:'Alpha'}],agentRoutesBySession:{chat:{routes:[],max_routes:16}}})
+  const renderer=await render()
+  try{
+    await type(renderer,'Ask @')
+    await type(renderer,`Ask @${local}`)
+    assert.equal(store.getState().drafts.chat,'Ask @Alpha ')
     assert.deepEqual(store.getState().chatReferencesBySession.chat.map(reference=>reference.session_id),[local])
   }finally{await act(async()=>renderer.unmount())}
 })
@@ -643,6 +672,20 @@ test('a picked chat is one block inside the input and Backspace at its end remov
     assert.deepEqual(fixture.selections,[])
     await select(renderer,3)
     assert.deepEqual(fixture.selections,[[4,4]],'The caret lands where the chip began')
+  }finally{await act(async()=>renderer.unmount())}
+})
+
+test('a change whose text repeats an earlier one is still applied unless that one made chips of a paste',async()=>{
+  const reference={session_id:'target',display_title_snapshot:'Chat target',source_text_start:4,source_text_end:16,action:'route',grant_intent:true}
+  resetRoutes({drafts:{chat:'Ask @Chat target now'},chatReferencesBySession:{chat:[reference]}})
+  const renderer=await render()
+  try{
+    await select(renderer,16)
+    await type(renderer,'Ask @Chat targe now')
+    assert.equal(store.getState().drafts.chat,'Ask now','Backspace at the chip removes it')
+    // A paste that happens to give the field the same text as the Backspace did.
+    await type(renderer,'Ask @Chat targe now')
+    assert.equal(store.getState().drafts.chat,'Ask @Chat targe now')
   }finally{await act(async()=>renderer.unmount())}
 })
 

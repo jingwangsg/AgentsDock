@@ -19,7 +19,7 @@ import { normalizeSecurePeerJoinTarget } from '@shared/secure-peer'
 import { DEFAULT_SERVER_URL } from '@shared/server-url'
 import { openInZedInput } from '@shared/ssh-host-alias'
 import type { AgentFile, ChatReference, TeamReference } from '@shared/types'
-import { chatReferenceCopyToken, chatReferenceDisplayText, liveChatReferenceTitle, parseStoredChatReferences } from '../lib/chat-references'
+import { chatIdToken, chatReferenceDisplayText, liveChatReferenceTitle, parseStoredChatReferences } from '../lib/chat-references'
 import { saveAgentFile } from '../lib/file-actions'
 import { parseStoredTeamReferences, teamReferenceText } from '../lib/team-references'
 import { openTeamMessageLink, parseTeamMessageLink } from '../lib/team-message-links'
@@ -255,7 +255,7 @@ export const MarkdownContent = memo(function MarkdownContent({
         const chatTitle = (referenceIndex === null ? '' : chatTitles[referenceIndex]) || marker.reference.display_title_snapshot
         const label = `${marker.displayText.startsWith('@@') ? '@@' : '@'}${chatTitle}`
         // What a selection copy puts in place of the label (TimelineRows' copySelectionWithChatTokens).
-        const token = chatReferenceCopyToken(marker.reference) ?? undefined
+        const token = chatIdToken(marker.reference) ?? undefined
         const remote = marker.reference.target_kind === 'secure_peer'
         const title = insideMarkdownLink
           ? `${label} · Route hint inside link text`
