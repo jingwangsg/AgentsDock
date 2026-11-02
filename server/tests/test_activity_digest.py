@@ -139,6 +139,24 @@ class WindowBoundsTests(unittest.TestCase):
 
         self.assertEqual(self.bounds(now, since="30m"), (SINCE, UNTIL, "window"))
 
+    def test_a_window_that_divides_an_hour_ends_at_its_slot_and_any_other_ends_now(self):
+        now = datetime(2026, 10, 12, 20, 7, 49, tzinfo=timezone.utc)
+        hour = now.replace(minute=0, second=0)
+
+        # A bare number is minutes.
+        self.assertEqual(self.bounds(now, since="30"), (SINCE, UNTIL, "window"))
+        self.assertEqual(self.bounds(now, since="1h"), (hour - timedelta(hours=1), hour, "window"))
+        self.assertEqual(self.bounds(now, since="45m"), (now - timedelta(minutes=45), now, "window"))
+        # Longer than an hour, chats are read as deeply as for the daily report.
+        self.assertEqual(self.bounds(now, since="12h"), (now - timedelta(hours=12), now, "day"))
+        self.assertEqual(self.bounds(now, since="1d"), (now - timedelta(days=1), now, "day"))
+
+    def test_since_rejects_other_units_zero_and_more_than_a_day(self):
+        now = datetime(2026, 10, 12, 20, 7, 49, tzinfo=timezone.utc)
+        for invalid in ("7x", "0m", "d", "", "2d", "1000000d"):
+            with self.subTest(since=invalid), self.assertRaisesRegex(ValueError, "run --day for each day"):
+                self.bounds(now, since=invalid)
+
     def test_day_is_local_midnight_to_midnight(self):
         since, until, mode = self.bounds(SINCE, day="2026-10-13")
 
@@ -339,6 +357,63 @@ class DigestOutputTests(unittest.TestCase):
         self.assertIn("more lines left out to fit the output limit", output)
         self.assertIn("「short one」", output)
 
+
+    def test_search_lists_each_matching_chat_once_newest_first_without_excluded_chats(self):
+        self.responses.update({
+            "/api/admin/remote-servers": {"servers": [{"id": "r1", "name": "gpu-box"}]},
+            # The query each server receives comes back in its snippet.
+            "/api/search": lambda query: {"results": [
+                {"session_id": "sess_ops", "ts": "2026-10-30T21:42:24Z", "role": "user", "match_count": 3, "snippet": f"please {query['q']} the cluster"},
+                {"session_id": "sess_digest", "ts": "2026-11-02T14:00:00Z", "role": "user", "match_count": 1, "snippet": "restart"},
+            ]},
+            "/api/sessions": {"sessions": [{"id": "sess_ops", "title": "Cluster request", "folder": "ops"}, {"id": "sess_digest", "title": "Digest"}]},
+            "/api/remote/r1/api/search": {"results": [
+                {"session_id": "sess_train", "ts": "2026-10-31T05:44:00Z", "role": "assistant", "match_count": 1, "snippet": "after the restart"},
+            ]},
+            "/api/remote/r1/api/sessions": {"sessions": [{"id": "sess_train", "title": "Training run", "folder": "runs"}]},
+        })
+
+        output = self.run_digest("--search", "restart", "--exclude", "sess_digest")
+
+        self.assertIn("Servers: local hub: 1 chats with matches; gpu-box: 1 chats with matches", output)
+        self.assertLess(
+            output.index("## Training run · gpu-box · folder runs · sess_train"),
+            output.index("## Cluster request · local hub · folder ops · sess_ops"),
+        )
+        self.assertIn("- 2026-10-31 05:42 user, 3 matching messages, newest: please restart the cluster", output)
+        self.assertNotIn("Digest", output)
+        self.assertNotIn("READ_ERRORS", output)
+        self.assertNotIn("NO_MATCHES", output)
+
+    def test_search_reports_a_server_it_could_not_ask_instead_of_no_matches(self):
+        self.responses.update({
+            "/api/admin/remote-servers": {"servers": [{"id": "r1", "name": "gpu-box"}]},
+            "/api/search": {"results": []},
+            "/api/sessions": {"sessions": []},
+            "/api/remote/r1/api/search": TimeoutError("timed out"),
+        })
+
+        output = self.run_digest("--search", "restart")
+
+        self.assertIn("gpu-box: unreachable (timed out)", output)
+        self.assertIn("READ_ERRORS", output)
+        self.assertNotIn("NO_MATCHES", output)
+        # With every server answering, no match is a fact.
+        self.responses["/api/admin/remote-servers"] = {"servers": []}
+        self.assertIn("NO_MATCHES", self.run_digest("--search", "restart"))
+
+    def test_search_drops_the_words_at_a_snippet_cut_that_may_hide_a_secret(self):
+        self.responses["/api/search"] = {"results": [
+            {"session_id": "sess_ops", "ts": "2026-10-30T21:42:24Z", "role": "user", "match_count": 1,
+             "snippet": "…ssword: hunter2xyz then restart the cluster sk-abcdefghijklmnop…"},
+        ]}
+        self.responses["/api/sessions"] = {"sessions": [{"id": "sess_ops", "title": "Cluster request"}]}
+
+        output = self.run_digest("--search", "restart")
+
+        self.assertIn("newest: … then restart the cluster …", output)
+        self.assertNotIn("hunter2xyz", output)
+        self.assertNotIn("sk-abc", output)
 
 if __name__ == "__main__":
     unittest.main()

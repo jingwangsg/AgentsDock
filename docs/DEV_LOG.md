@@ -1,37 +1,45 @@
 # Public development log
 
-## 2026-11-02 — Copied @chat mentions paste back as mentions (desktop, Android, iOS)
+## 2026-11-02 — Activity digest: search across chats, and --since in hours (server script)
 
-- An @chat mention in the composer refers to a chat by its id and shows the
-  chat's title. Copying kept only the text "@Title", so a paste gave plain
-  text and the mention was lost.
-- Copying now puts each whole mention on the clipboard as the chat's session
-  id, `@sess_<16 hex>`. This applies to text copied or cut in the desktop
-  composer, the Copy button of a sent message (desktop and phones), and text
-  selected inside a sent message on the desktop. A mention cut by the edge of
-  the selection, a secure-peer route and an unsent "New agent" mention copy
-  as their text.
-- Pasting into a composer turns each `@sess_…` into the mention the @ picker
-  inserts for that chat, under the chat's current title: a chat on the same
-  server first, otherwise a chat on another server under the hub. When the
-  hub's chat list is not loaded yet, the composer requests it once and
-  converts the remaining ids if the pasted text is still as it was left. An id
-  the app does not list stays as text. Ids are resolved only in the app and
-  only in pasted text; the server is not asked.
-- An @ followed by a whole chat id no longer opens the @ picker. Android sends
-  a paste's text change twice; the second one no longer removes the mentions
-  the first one made.
-- No server or protocol change: older apps and servers keep working.
+- The digest assistant's script `server/scripts/activity_digest.py` gains
+  `--search TEXT`. It asks the local hub and each visible remote through
+  their `/api/search` (the app's sidebar search) and prints one line per
+  matching chat, newest match first: title, server, folder, chat id, the time
+  and role of the newest match, how many messages match, and a redacted
+  snippet, within 20 KB. A message matches when every word of the text starts
+  a word in it; archived chats and tool calls are not searched. This finds
+  which chat did something in any part of the history; before, the assistant
+  could only read a time window, and a week does not fit the output Codex
+  hands the model.
+- When a server cannot be asked, the search prints READ_ERRORS and does not
+  claim that nothing matches, because that server's chats were not searched.
+  Snippets are cut by the server before the script redacts them, so the
+  script drops the words at each cut, where a split key name can hide a value.
+- `--since` takes minutes, hours or days up to one day (`45m`, `12h`, `1d`)
+  and rejects anything else with a usage error instead of a Python traceback;
+  longer periods are read one `--day` at a time. A window that divides an
+  hour (the half-hourly job's `30m`, or `1h`) still ends at its last whole
+  slot, and the scheduled digests are unchanged. Any other window now ends at
+  the current time and reads each chat as deeply as the daily report; before,
+  every window ended at its last whole slot counted from 1970, which for a day
+  is 08:00 in Shanghai.
+- The digest assistant chat's rules, part of its configuration on the hub and
+  not code, now separate scheduled runs from the user's questions. Scheduled
+  runs stay read-only and run only the digest command; a question the user
+  asks in the chat may use other read-only commands such as `--search`, and
+  the user can ask it to change the digest script.
 
 ```text
-Change and expected user behavior: a whole @chat mention copies as @sess_<id>; pasting such an id makes the mention the @ picker makes, under the chat's current title.
-Source commit / app build / server version: branch feat/mention-id-clipboard; desktop build 139, Android sideload 84; no server change.
-Test surface: the branch's desktop build (electron-vite out/, isolated user data) against an isolated server acting as hub for a second isolated server (registered remote, test-only ssh); Android emulator agentsdock_fold with the branch's JS in a copy of APK 83; iPad simulator (iOS 27.0) running the Oct 27 Debug binary with the branch's JS from Metro; both phones against another isolated server.
-Actions exercised and observed outcomes: desktop: picked two chats into a draft, Cmd+A Cmd+C put "Ask @sess_… and @sess_… please reply OK only." on the system clipboard; after renaming one chat, a paste into another chat's composer showed both chips under the current titles; Cut emptied the composer and put the ids on the clipboard, a paste restored the chips; the sent turn carried both references (route, grant intent) and the server created both routes; the message's Copy button, a scripted selection and a mouse-drag selection in the bubble copied the ids, and a selection starting inside a chip copied that chip as text. A chip for a chat on the remote, pasted into a newly opened composer, became "@Remote launch · gpu-box" once the hub list arrived; sending paired the chats (POST /api/cross-server/pairs 200) and the turn carried the cross-server reference. Android: Ctrl+V of an id string made chips under the current titles, left an unknown id as text and opened no picker; sent; Copy full text gave the ids. iPad: the same with Cmd+V and Copy full text.
-Real boundaries exercised; any mocked/stubbed boundaries: system clipboards (Mac pasteboard, emulator clipboard synced to the Mac, simulator pasteboard), the apps' production transport and server authorization, the hub's cross-server list and pairing, real Codex turns on throwaway chats. Stubbed: ssh between the isolated hub and remote (a local TCP forward).
-Focused regression / typecheck / production build: copy text, id parser and picker trigger tests on both platforms; desktop Composer tests (copy, cut, paste, hub list arriving later, paste edited before it arrives, duplicate) and TimelineRows tests (Copy button, bubble selection); mobile composer tests (paste, repeated Android change event, picker closed, duplicate, edited paste) and the Copy button; full desktop vitest, mobile tests, both typechecks, electron-vite build.
-Remaining limitations or blocked acceptance: text copied from the phone composer's or timeline's native selection keeps titles (the native copy cannot be intercepted); the queued-message editors do not convert ids; the iPad check used an older Debug binary with current JS.
-Availability: desktop build 139 and Android sideload 84 (local packages); no server update required.
+Change and expected user behavior: the digest assistant can find which chat did something and read windows of up to a day; scheduled digests are unchanged.
+Source commit / app build / server version: branch feat/digest-search; no client build; no server update.
+Test surface: the script against the running hub (GET requests only), and unit tests with a fake hub.
+Actions exercised and observed outcomes: `--search` for a node name, with `--exclude` for the two chats where the question was asked, listed the two chats that handled it (the hub and one remote) with their match counts, and printed READ_ERRORS for one remote that was down; `--since 7d` printed the usage error.
+Real boundaries exercised; any mocked/stubbed boundaries: the hub's and a remote's /api/search and /api/sessions through the hub proxy. Windows longer than an hour ran only in unit tests, since a live read loads every chat on every remote. The assistant answering a question under its new rules was not exercised.
+Focused regression / typecheck / production build: tests for --since units, slots and limits, and for search order, match counts, exclusions, an unreachable remote and cut snippets; test_activity_digest. Window bounds before and after for --since 30m and --day, at 106,000 times including slot edges, were identical, and the digest output tests pass unchanged.
+Remaining limitations or blocked acceptance: each server returns at most its 100 newest matching chats; a word inside a longer run of Chinese characters is not found; a long --since window keeps the digest's output limit.
+Availability: source only; no server update; the next digest run after the merge uses it.
+```
 
 ## 2026-11-02 — Claude chats: agents ended by a rewind show as stopped; a moved directory keeps its live process; a symlinked directory resumes (server)
 
