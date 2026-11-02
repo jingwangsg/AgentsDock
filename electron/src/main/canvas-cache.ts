@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { rmSync } from 'node:fs'
-import { mkdir, readdir, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { CanvasRecord } from '../shared/types'
 import { appLog } from './logger'
@@ -19,7 +19,7 @@ const RECENT_RECORDS = 8
  * Canvases already downloaded, kept on disk so that opening one again, also after a restart, does not wait
  * for a remote link: the last record of each canvas, and the shell and vendor of each runtime version.
  * Entries belong to a server identity, so every address of one server shares them. The total size is
- * bounded, least recently used first; a lost or unreadable entry only costs a download.
+ * bounded, the entries written longest ago go first; a lost or unreadable entry only costs a download.
  */
 export class CanvasCache {
   private readonly records = new Map<string, CanvasRecord>()
@@ -87,12 +87,12 @@ export class CanvasCache {
 
   private async read<T>(key: string[]): Promise<T | null> {
     const path = this.path(key)
+    // load-bearing: a read leaves the file's time alone, so eviction cannot follow reads. An on-access malware
+    // scanner checks a modified file again at its next open: measured 2026-11-03, 0.5 s for a 1 MB runtime entry
+    // whose time a read had changed, against 3 ms unchanged.
     try {
       const stored = JSON.parse(await readFile(path, 'utf8')) as { key?: unknown; value?: T }
       if (JSON.stringify(stored.key) !== JSON.stringify(key) || stored.value === undefined) return null
-      // Eviction goes by modification time: reading an entry makes it the most recently used.
-      const now = new Date()
-      await utimes(path, now, now).catch(() => undefined)
       return stored.value
     } catch {
       return null

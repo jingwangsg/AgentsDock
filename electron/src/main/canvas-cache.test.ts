@@ -54,23 +54,21 @@ describe('CanvasCache', () => {
     expect(await new CanvasCache(root).record('server-a', 'chat', 'report')).toBeNull()
   })
 
-  it('removes the least recently used entries beyond its size limit', async () => {
+  it('removes the entries written longest ago beyond its size limit', async () => {
     const root = cacheRoot()
     const big = 'x'.repeat(4000)
     const cache = new CanvasCache(root, 10_000)
     await cache.putRecord('server-a', 'chat', 'old', { ...record(1, big), name: 'old' })
-    await cache.putRecord('server-a', 'chat', 'read', { ...record(1, big), name: 'read' })
     const past = new Date(Date.now() - 60_000)
     for (const file of files(root)) utimesSync(file, past, past)
-    // Reading from disk makes an entry recent again; a new instance has nothing in memory.
-    expect(await new CanvasCache(root).record('server-a', 'chat', 'read')).not.toBeNull()
+    await cache.putRecord('server-a', 'chat', 'newer', { ...record(1, big), name: 'newer' })
 
-    await cache.putRecord('server-a', 'chat', 'new', { ...record(1, big), name: 'new' })
+    await cache.putRecord('server-a', 'chat', 'newest', { ...record(1, big), name: 'newest' })
 
     const reread = new CanvasCache(root)
     expect(await reread.record('server-a', 'chat', 'old')).toBeNull()
-    expect(await reread.record('server-a', 'chat', 'read')).not.toBeNull()
-    expect(await reread.record('server-a', 'chat', 'new')).not.toBeNull()
+    expect(await reread.record('server-a', 'chat', 'newer')).not.toBeNull()
+    expect(await reread.record('server-a', 'chat', 'newest')).not.toBeNull()
   })
 
   it('forgets every entry of a removed server profile', async () => {
