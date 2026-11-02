@@ -6939,6 +6939,32 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    def test_a_chat_whose_directory_is_gone_keeps_it_while_its_live_process_can_take_the_turn(self) -> None:
+        gone = str(Path(self.cwd) / "moved-away")
+        self.assertFalse(Path(gone).exists())
+        self.session["cwd"] = gone
+        manifest = Path(self.cwd) / ".manifest.json"
+        fallback = agent_server.existing_cwd(gone)
+        live = types.SimpleNamespace(chat_id="chat-claude", configuration_key=f"claude-opus:{gone}", connected=True, closed=False)
+        manager = FakeClaudeManager()
+        manager.snapshots = Mock(return_value=[live])  # type: ignore[attr-defined]
+        agent_server.CLAUDE_SDK_MANAGER = manager
+        # A key of model and directory: it matches the live process only with the model and directory it started with.
+        with patch.object(agent_server, "claude_sdk_configuration_key", side_effect=lambda session, cwd, *_: f"{session['model']}:{cwd}"), \
+                patch.object(agent_server, "claude_sdk_cli_path", return_value="/usr/bin/claude"), \
+                patch.object(agent_server, "session_system_prompt", return_value="prompt"):
+            self.assertEqual(agent_server.claude_sdk_turn_cwd("chat-claude", self.session, manifest), gone)
+            # A queued message still steers into the turn that process runs.
+            selected = {"client_capabilities": [agent_server.CLAUDE_SDK_INTERACTIVE_CLIENT_CAPABILITY]}
+            self.assertTrue(agent_server.queued_claude_runtime_matches_active("chat-claude", selected, {"configuration_key": live.configuration_key}))
+
+            # A turn that replaces the process anyway (another model here), or a chat without a live process,
+            # gets a directory that exists: a new process cannot start in a missing one.
+            self.assertNotEqual(fallback, gone)
+            self.assertEqual(agent_server.claude_sdk_turn_cwd("chat-claude", {**self.session, "model": "claude-sonnet"}, manifest), fallback)
+            manager.snapshots.return_value = []
+            self.assertEqual(agent_server.claude_sdk_turn_cwd("chat-claude", self.session, manifest), fallback)
+
     def test_pidless_sdk_turn_is_reported_as_active(self) -> None:
         snapshot = agent_server.active_process_snapshot(
             "chat-claude",
