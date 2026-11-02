@@ -97,7 +97,8 @@ type ComposerReferenceSpan = Pick<ChatReference, 'source_text_start' | 'source_t
  * desktop's Backspace does. Text inserted into a chip (autocorrect) stays and
  * revokes only that chip, as typing inside one does on the desktop. Text typed
  * right before or after a chip keeps it.
- * `nativeCaret` is where the native field's caret sits after its own change.
+ * `nativeCaret` is where the native field's caret sits after its own change;
+ * text[start, caret) is the text the change inserted.
  */
 export function atomicComposerReferenceEdit(
   previousText: string,
@@ -105,7 +106,7 @@ export function atomicComposerReferenceEdit(
   previousSelection: { start: number; end: number },
   chatReferences: readonly ChatReference[],
   teamReferences: readonly TeamReference[],
-): { text: string; caret: number; nativeCaret: number; chatReferences: ChatReference[]; teamReferences: TeamReference[] } {
+): { text: string; start: number; caret: number; nativeCaret: number; chatReferences: ChatReference[]; teamReferences: TeamReference[] } {
   // The shortest change: shared prefix, then a shared suffix that may not overlap it.
   const limit = Math.min(previousText.length, nextText.length)
   let prefix = 0
@@ -144,7 +145,7 @@ export function atomicComposerReferenceEdit(
     if (reference.source_text_start >= end) return [{ ...reference, source_text_start: reference.source_text_start + delta, source_text_end: reference.source_text_end + delta }]
     return []
   })
-  return { text, caret: start + inserted.length, nativeCaret, chatReferences: shift(chatReferences), teamReferences: validTeamReferences(text, shift(teamReferences)) }
+  return { text, start, caret: start + inserted.length, nativeCaret, chatReferences: shift(chatReferences), teamReferences: validTeamReferences(text, shift(teamReferences)) }
 }
 
 /**

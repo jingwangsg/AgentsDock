@@ -68,7 +68,7 @@ test('"Create new agent" creates its chat in the chosen working directory on eit
 test('composer edits reconcile grants and sends only validated references', () => {
   assert.match(composer, /const previousDraft = draftRef\.current/)
   assert.match(composer, /atomicComposerReferenceEdit\(previousText, nativeText, selectionRef\.current/)
-  assert.match(composer, /field\.edit\(previousDraft, nativeText, referencesRef\.current, teamReferencesRef\.current\)/)
+  assert.match(composer, /field\.edit\(previousDraft, nativeText, referencesRef\.current, teamReferencesRef\.current, edited => \{/)
   assert.match(composer, /chatMentionTrigger\(text, caret, nextReferences\)/)
   assert.match(composer, /setChatReferencesForSession\(sessionId, nextReferences, profileGeneration\)/)
   assert.match(composer, /const currentDraft = consumeComposer \? currentState\.drafts\[sessionId\] \?\? draftRef\.current : ''/)

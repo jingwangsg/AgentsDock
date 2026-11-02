@@ -565,6 +565,54 @@ test('a chat on another server becomes a tagged chip that is paired through the 
   }finally{await act(async()=>renderer.unmount())}
 })
 
+test('pasted chat ids become the chips the picker inserts: this server\'s at once, another server\'s once the hub lists it',async()=>{
+  const local='sess_0123456789abcdef',remote='sess_fedcba9876543210',unknown='sess_00000000000000aa'
+  resetCrossServer({patch:{sessions:[{id:'chat',title:'Mobile',backend:'codex'},{...targetSession(local),title:'Alpha renamed'}],agentRoutesBySession:{chat:{routes:[],max_routes:16}}}})
+  fixture.crossServer={servers:[{server_identity:'local-server',name:'mac_mini',chats:[]},{server_identity:'l40-server',name:'osmo_dev_l40',chats:[remoteChat(remote,'Launch')]}]}
+  const hub=deferred();fixture.client.crossServerChats=()=>{fixture.crossServerReads++;return hub.promise}
+  const renderer=await render()
+  try{
+    await type(renderer,'Ask ')
+    assert.equal(fixture.crossServerReads,0)
+    // A paste arrives as a text change, which Android repeats with the same text once the ids are chips.
+    await type(renderer,`Ask @${remote} and @${local}\nor @${unknown} now`)
+    await type(renderer,`Ask @${remote} and @${local}\nor @${unknown} now`)
+    const pasted=`Ask @${remote} and @Alpha renamed\nor @${unknown} now`
+    const localChip={session_id:local,display_title_snapshot:'Alpha renamed',source_text_start:pasted.indexOf('@Alpha'),source_text_end:pasted.indexOf('\nor'),action:'route',grant_intent:true}
+    assert.equal(store.getState().drafts.chat,pasted)
+    assert.deepEqual(store.getState().chatReferencesBySession.chat,[localChip])
+    assert.equal(fixture.crossServerReads,1,'The paste reads the hub list once')
+    await act(async()=>new Promise(resolve=>setTimeout(resolve,280)))
+    assert.equal(renderer.root.findAllByType('Modal').length,0,'The pasted @s open no chat picker')
+    await act(async()=>hub.resolve(fixture.crossServer))
+    const chipped=`Ask @Launch · osmo_dev_l40 and @Alpha renamed\nor @${unknown} now`
+    const shift=chipped.length-pasted.length
+    assert.equal(store.getState().drafts.chat,chipped)
+    assert.deepEqual(store.getState().chatReferencesBySession.chat,[
+      {session_id:remote,display_title_snapshot:'Launch · osmo_dev_l40',source_text_start:4,source_text_end:26,action:'route',target_kind:'cross_server',target_server_identity:'l40-server'},
+      {...localChip,source_text_start:localChip.source_text_start+shift,source_text_end:localChip.source_text_end+shift},
+    ])
+    // Sent like a picked chip: the hub pairs the chats under the chip's title first.
+    await click(renderer,'chat-send')
+    assert.deepEqual(fixture.pairs,[{source_server_identity:'local-server',source_session_id:'chat',target_server_identity:'l40-server',target_session_id:remote,target_label:'Launch'}])
+  }finally{await act(async()=>renderer.unmount())}
+})
+
+test('a pasted chat id stays as typed when the chat is already a chip, or the paste was edited before the hub answered',async()=>{
+  const local='sess_0123456789abcdef',remote='sess_fedcba9876543210'
+  resetCrossServer({patch:{sessions:[{id:'chat',title:'Mobile',backend:'codex'},{...targetSession(local),title:'Alpha'}],agentRoutesBySession:{chat:{routes:[],max_routes:16}}}})
+  fixture.crossServer={servers:[{server_identity:'local-server',name:'mac_mini',chats:[]},{server_identity:'l40-server',name:'osmo_dev_l40',chats:[remoteChat(remote,'Launch')]}]}
+  const hub=deferred();fixture.client.crossServerChats=()=>hub.promise
+  const renderer=await render()
+  try{
+    await type(renderer,`@${local} @${local} @${remote}`)
+    await type(renderer,`@Alpha @${local} @${remote}!`)
+    await act(async()=>hub.resolve(fixture.crossServer))
+    assert.equal(store.getState().drafts.chat,`@Alpha @${local} @${remote}!`)
+    assert.deepEqual(store.getState().chatReferencesBySession.chat.map(reference=>reference.session_id),[local])
+  }finally{await act(async()=>renderer.unmount())}
+})
+
 // iOS (this fixture's platform) moves the caret out of a chip one frame later: wait for that frame.
 const nextFrame=()=>new Promise(resolve=>requestAnimationFrame(()=>resolve()))
 const select=async(renderer,caret)=>act(async()=>{byID(renderer,'chat-composer-input')[0].props.onSelectionChange({nativeEvent:{selection:{start:caret,end:caret}}});await nextFrame()})

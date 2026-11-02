@@ -735,6 +735,43 @@ describe('timeline pin state', () => {
     await waitFor(() => expect(selectSession).toHaveBeenCalledWith('chat-2'))
   })
 
+  it('copies a user message\'s chips as their chat ids, from the Copy button and from a selection in the bubble', async () => {
+    const alpha = 'sess_0123456789abcdef'
+    const launch = 'sess_fedcba9876543210'
+    useAppStore.setState({ sessions: [{ id: 'chat-1', title: 'Chat', backend: 'codex' }, { id: alpha, title: 'Renamed target', backend: 'codex' }] })
+    const prompt = 'Ask @Training and @Launch · gpu-box now.'
+    const event: Event = {
+      id: 'copy-turn-start', session_id: 'chat-1', seq: 14, type: 'turn_started', ts: '2026-08-27T14:31:00Z', prompt,
+      chat_references: [
+        { session_id: alpha, display_title_snapshot: 'Training', source_text_start: 4, source_text_end: 13, action: 'route' },
+        { session_id: launch, display_title_snapshot: 'Launch · gpu-box', source_text_start: 18, source_text_end: 35, action: 'route', target_kind: 'cross_server', target_server_identity: 'srv-l40' }
+      ]
+    }
+    const item: MessageItem = { kind: 'message', id: 'copy-turn', key: 'copy-turn', seq: 14, event, events: [event], role: 'user', files: [] }
+    const { container } = render(<TimelineRowView item={item} sessionId="chat-1" onFindFile={() => {}} pinnedItemIds={new Set()} />)
+    const tokens = `Ask @${alpha} and @${launch} now.`
+
+    fireEvent.click(screen.getByTitle('Copy full message'))
+    await waitFor(() => expect(writeClipboard).toHaveBeenCalledWith(tokens))
+
+    const paragraph = container.querySelector('.message-parts p')!
+    const chip = screen.getByRole('link', { name: 'Route hint for Renamed target' })
+    const selection = window.getSelection()!
+    const setData = vi.fn()
+    selection.selectAllChildren(paragraph)
+    expect(fireEvent.copy(chip, { clipboardData: { setData } })).toBe(false)
+    expect(setData).toHaveBeenCalledWith('text/plain', tokens)
+    // The chips' text and the selection are as they were.
+    expect(chip).toHaveTextContent(/^@Renamed target$/)
+    expect(selection.toString()).toBe('Ask @Renamed target and @Launch · gpu-box now.')
+
+    // A chip the selection cuts copies as its text.
+    selection.setBaseAndExtent(chip.firstChild!, 3, paragraph, paragraph.childNodes.length)
+    fireEvent.copy(chip, { clipboardData: { setData } })
+    expect(setData).toHaveBeenLastCalledWith('text/plain', `named target and @${launch} now.`)
+    expect(selection.toString()).toBe('named target and @Launch · gpu-box now.')
+  })
+
   it('renders structured Team Network people and server inboxes as distinct inline references', () => {
     const prompt = 'Tell @@Pat then notify @@Atlas now.'
     const patStart = prompt.indexOf('@@Pat')

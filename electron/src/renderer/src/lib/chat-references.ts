@@ -209,6 +209,41 @@ export function liveChatReferenceTitle(
   return title && !title.startsWith('@') && !/[\u0000-\u001f\u007f]/.test(title) ? title : reference.display_title_snapshot
 }
 
+// The session ids AgentsServer issues. A copied chip carries only its chat's id; the paste
+// that turns it back into a chip shows that chat's title at the time.
+const CHAT_SESSION_ID = /^sess_[0-9a-f]{16}$/u
+const CHAT_REFERENCE_TOKEN = /@(sess_[0-9a-f]{16})(?![0-9A-Za-z_])/gu
+
+/** How a chip copies: `@<session id>`. Secure-peer routes and the new-agent placeholder name no chat (null): they copy as their text. */
+export function chatReferenceCopyToken(reference: Pick<ChatReference, 'session_id'>): string | null {
+  return CHAT_SESSION_ID.test(reference.session_id) ? `@${reference.session_id}` : null
+}
+
+/** text[start, end) as copied: each whole chip in it as its token, a chip cut by either end as its text. */
+export function chatReferenceCopyText(text: string, references: readonly ChatReference[], start = 0, end = text.length): string {
+  let copied = ''
+  let cursor = start
+  for (const reference of [...references].sort((left, right) => left.source_text_start - right.source_text_start)) {
+    const token = chatReferenceCopyToken(reference)
+    if (!token || reference.source_text_start < cursor || reference.source_text_end > end) continue
+    copied += `${text.slice(cursor, reference.source_text_start)}${token}`
+    cursor = reference.source_text_end
+  }
+  return `${copied}${text.slice(cursor, end)}`
+}
+
+/** The `@sess_…` tokens inside text[start, end) that stand where a chip could: not glued to the text before or after them. */
+export function chatReferenceTokens(text: string, start = 0, end = text.length): Array<{ start: number; end: number; sessionId: string }> {
+  return [...text.matchAll(CHAT_REFERENCE_TOKEN)].flatMap(match => {
+    const tokenStart = match.index
+    const tokenEnd = tokenStart + match[0].length
+    const previous = tokenStart > 0 ? text[tokenStart - 1] : ''
+    return tokenStart >= start && tokenEnd <= end && (!previous || /\s|[([{]/u.test(previous))
+      ? [{ start: tokenStart, end: tokenEnd, sessionId: match[1] }]
+      : []
+  })
+}
+
 export function supportedCrossChatTargetBackends(health: Health | null | undefined): Backend[] {
   if (!crossChatHandoffsAvailable(health)) return []
   const advertised = health?.capabilities?.cross_chat_handoffs_v1?.supported_target_backends
@@ -239,7 +274,9 @@ export function chatMentionTrigger(
     const absolute = lineStart + at
     const previous = absolute > 0 ? text[absolute - 1] : ''
     const query = text.slice(absolute + 1, safeCaret)
-    if (!insideResolvedReference(absolute) && (!previous || /\s|[([{]/u.test(previous)) && !query.includes('\n')) {
+    // A whole chat id after the @ is a pasted token left as text, not a mention being typed.
+    const chatId = /^sess_[0-9a-f]{16}(?![0-9A-Za-z_])/u.test(text.slice(absolute + 1, absolute + 23))
+    if (!insideResolvedReference(absolute) && !chatId && (!previous || /\s|[([{]/u.test(previous)) && !query.includes('\n')) {
       candidates.push({ kind: '@', start: absolute, end: safeCaret, query })
     }
     break

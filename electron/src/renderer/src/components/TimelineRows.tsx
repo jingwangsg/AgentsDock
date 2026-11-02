@@ -2,7 +2,7 @@ import { getLocale, t } from '@shared/i18n'
 import { useLocale } from '../lib/i18n'
 import { legacyOutgoingDeliveryStatus, outgoingDeliveryStatus } from '../lib/cross-chat-delivery-status'
 import { timelineCount, timelineEventLabel, timelineStatusLabel } from '../lib/timeline-labels'
-import { memo, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useId, useMemo, useRef, useState, type ClipboardEvent } from 'react'
 import { AlertTriangle, Bot, Check, ChevronRight, Clock3, Code2, Copy, FileText, History, LoaderCircle, MessageSquareShare, Pencil, Pin, RotateCcw, Siren, Sparkles, Square, TerminalSquare, Wrench, X } from 'lucide-react'
 import { compactToolOutputPreview } from '@shared/event-compaction'
 import { readableToolInput, readableValue } from '../lib/tool-input'
@@ -18,7 +18,7 @@ import { reasoningItemKey } from '../lib/timeline-reasoning-stream'
 import { useReasoningDisplay } from '../lib/reasoning-display'
 import { formatDuration, formatTime, titleCase } from '../lib/format'
 import { requirePinnedItemsScope } from '../lib/pinned-items'
-import { exactQueuedDeliverySkipAvailable, liveChatReferenceTitle } from '../lib/chat-references'
+import { chatReferenceCopyText, exactQueuedDeliverySkipAvailable, liveChatReferenceTitle, parseStoredChatReferences } from '../lib/chat-references'
 import { liveChatTitle } from '../lib/live-chat-title'
 import { isSubagentActive, subagentDisplayName, subagentLogText, subagentStatusLabel, subagentsForRun, type SubagentActivity, type SubagentStatus } from '../lib/subagents'
 import { useAppStore } from '../store/app-store'
@@ -88,7 +88,14 @@ function Message({ item, sessionId, profileScope, pinned, rewindIdle, checkpoint
     await window.agentsDock.pins.put(requirePinnedItemsScope(profileScope), pinItem)
     window.dispatchEvent(new CustomEvent('agentsdock:pins-changed', { detail: sessionId }))
   }
-  const copy = async () => { await window.agentsDock.native.writeClipboard(text); setCopied(true); window.setTimeout(() => setCopied(false), 1200) }
+  const copy = async () => {
+    // A chip copies as its chat's id, which a paste turns back into that chat's chip.
+    await window.agentsDock.native.writeClipboard(role === 'user'
+      ? events.map(part => chatReferenceCopyText(messageText(part), parseStoredChatReferences(inlineTimelineChatReferences(part), messageText(part), sessionId)).trim()).filter(Boolean).join('\n\n')
+      : text)
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 1200)
+  }
   // A steer (a message sent while the agent worked) can be edited only where the server rewinds to steers.
   const canEditTurn = role === 'user' && !item.pending && rewindIdle && Boolean(item.runId) && (!isNativeSteerEvent(primary) || steerRewindSupported)
   const canRestoreCheckpoint = canEditTurn && checkpointRestoreSupported && Boolean(item.checkpointCommit)
@@ -110,7 +117,7 @@ function Message({ item, sessionId, profileScope, pinned, rewindIdle, checkpoint
           {canEditTurn && <button type="button" title={t('timeline.rewind.editTurn')} onClick={() => useAppStore.getState().beginEditingTurn(sessionId, item.runId!, primary.prompt ?? text, primary.seq, files)}><Pencil size={12} /></button>}
           {canRestoreCheckpoint && <button type="button" title={t('timeline.rewind.restoreCheckpoint')} onClick={() => window.dispatchEvent(new CustomEvent('agentsdock:confirm-restore-checkpoint', { detail: { sessionId, runId: item.runId, files } }))}><RotateCcw size={12} /></button>}
         </header>
-        <div className="message-parts">
+        <div className="message-parts" onCopy={role === 'user' ? copySelectionWithChatTokens : undefined}>
           {events.map(part => <MarkdownContent
             key={part.id}
             text={messageText(part)}
@@ -197,6 +204,40 @@ function inlineTimelineChatReferences(event: Event): ChatReference[] {
 function selectTimelineChatReference(reference: ChatReference): void {
   if (reference.target_kind !== undefined) return
   runTimelineAction(useAppStore.getState().selectSession(reference.session_id))
+}
+
+/**
+ * A selection copied within one user bubble carries each whole chip as its token, as the Copy button
+ * does. The text is the browser's own serialization of the selection, read while those chips' text
+ * nodes hold their tokens; the text and the selection are put back before anything repaints.
+ */
+function copySelectionWithChatTokens(event: ClipboardEvent<HTMLElement>): void {
+  const selection = window.getSelection()
+  const range = selection?.rangeCount === 1 ? selection.getRangeAt(0) : null
+  if (!selection || !range || !event.currentTarget.contains(range.startContainer) || !event.currentTarget.contains(range.endContainer)) return
+  const chips = [...event.currentTarget.querySelectorAll<HTMLElement>('[data-chat-token]')].filter(chip => {
+    if (chip.childNodes.length !== 1 || !(chip.firstChild instanceof Text)) return false
+    const selected = document.createRange()
+    selected.selectNodeContents(chip)
+    if (range.compareBoundaryPoints(Range.START_TO_START, selected) > 0) selected.setStart(range.startContainer, range.startOffset)
+    if (range.compareBoundaryPoints(Range.END_TO_END, selected) < 0) selected.setEnd(range.endContainer, range.endOffset)
+    return selected.toString() === chip.textContent
+  })
+  if (!chips.length) return
+  const { anchorNode, anchorOffset, focusNode, focusOffset } = selection
+  // A selection edge inside a chip's text would move when that text changes, so it is held just outside the chip.
+  const whole = range.cloneRange()
+  if (chips[0].contains(whole.startContainer)) whole.setStartBefore(chips[0])
+  if (chips[chips.length - 1].contains(whole.endContainer)) whole.setEndAfter(chips[chips.length - 1])
+  selection.removeAllRanges()
+  selection.addRange(whole)
+  const labels = chips.map(chip => (chip.firstChild as Text).data)
+  chips.forEach(chip => { (chip.firstChild as Text).data = chip.dataset.chatToken! })
+  const copied = selection.toString()
+  chips.forEach((chip, index) => { (chip.firstChild as Text).data = labels[index] })
+  if (anchorNode && focusNode) selection.setBaseAndExtent(anchorNode, anchorOffset, focusNode, focusOffset)
+  event.preventDefault()
+  event.clipboardData.setData('text/plain', copied)
 }
 
 

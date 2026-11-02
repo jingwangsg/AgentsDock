@@ -19,7 +19,7 @@ import { normalizeSecurePeerJoinTarget } from '@shared/secure-peer'
 import { DEFAULT_SERVER_URL } from '@shared/server-url'
 import { openInZedInput } from '@shared/ssh-host-alias'
 import type { AgentFile, ChatReference, TeamReference } from '@shared/types'
-import { chatReferenceDisplayText, liveChatReferenceTitle, parseStoredChatReferences } from '../lib/chat-references'
+import { chatReferenceCopyToken, chatReferenceDisplayText, liveChatReferenceTitle, parseStoredChatReferences } from '../lib/chat-references'
 import { saveAgentFile } from '../lib/file-actions'
 import { parseStoredTeamReferences, teamReferenceText } from '../lib/team-references'
 import { openTeamMessageLink, parseTeamMessageLink } from '../lib/team-message-links'
@@ -254,6 +254,8 @@ export const MarkdownContent = memo(function MarkdownContent({
         }
         const chatTitle = (referenceIndex === null ? '' : chatTitles[referenceIndex]) || marker.reference.display_title_snapshot
         const label = `${marker.displayText.startsWith('@@') ? '@@' : '@'}${chatTitle}`
+        // What a selection copy puts in place of the label (TimelineRows' copySelectionWithChatTokens).
+        const token = chatReferenceCopyToken(marker.reference) ?? undefined
         const remote = marker.reference.target_kind === 'secure_peer'
         const title = insideMarkdownLink
           ? `${label} · Route hint inside link text`
@@ -261,11 +263,11 @@ export const MarkdownContent = memo(function MarkdownContent({
           ? `${label} · Secure route on paired server`
           : `${label} · Route hint`
         if (insideMarkdownLink) {
-          return <span className={className} title={title}>{label}</span>
+          return <span className={className} title={title} data-chat-token={token}>{label}</span>
         }
         // Only a chat on this server can be opened from its chip.
         if (marker.reference.target_kind !== undefined || !onChatReferenceClick) {
-          return <span className={className} title={title} aria-label={title}>{label}</span>
+          return <span className={className} title={title} aria-label={title} data-chat-token={token}>{label}</span>
         }
         const activate = (event: MouseEvent<HTMLElement> | KeyboardEvent<HTMLElement>) => {
           event.preventDefault()
@@ -278,6 +280,7 @@ export const MarkdownContent = memo(function MarkdownContent({
           tabIndex={0}
           title={title}
           aria-label={t("ui.MarkdownContent.route_hint_for_0284c82", { "chat": chatTitle }, uiLocale)}
+          data-chat-token={token}
           onClick={activate}
           onKeyDown={event => {
             if (event.key === 'Enter' || event.key === ' ') activate(event)

@@ -224,25 +224,25 @@ test('a deletion cutting into a chip removes the whole chip, its reference and o
   const monitor = chip(draft, 'training monitor · nv_gb300')
   const end = monitor.source_text_end
   // Android Backspace at the chip's end arrives as a text change, not a key.
-  assert.deepEqual(atomicComposerReferenceEdit(draft, `${draft.slice(0, end - 1)}${draft.slice(end)}`, caretAt(end), [monitor], []), { text: 'Ask now', caret: 4, nativeCaret: end - 1, chatReferences: [], teamReferences: [] })
-  assert.deepEqual(atomicComposerReferenceEdit('Ask @Mac', 'Ask @Ma', caretAt(8), [chip('Ask @Mac', 'Mac')], []), { text: 'Ask', caret: 3, nativeCaret: 7, chatReferences: [], teamReferences: [] })
+  assert.deepEqual(atomicComposerReferenceEdit(draft, `${draft.slice(0, end - 1)}${draft.slice(end)}`, caretAt(end), [monitor], []), { text: 'Ask now', start: 4, caret: 4, nativeCaret: end - 1, chatReferences: [], teamReferences: [] })
+  assert.deepEqual(atomicComposerReferenceEdit('Ask @Mac', 'Ask @Ma', caretAt(8), [chip('Ask @Mac', 'Mac')], []), { text: 'Ask', start: 3, caret: 3, nativeCaret: 7, chatReferences: [], teamReferences: [] })
   // A selected range keeps its neighbouring spaces, as on the desktop.
-  assert.deepEqual(atomicComposerReferenceEdit('Ask @Mac now', 'Ask @Mow', { start: 6, end: 10 }, [chip('Ask @Mac now', 'Mac')], []), { text: 'Ask ow', caret: 4, nativeCaret: 6, chatReferences: [], teamReferences: [] })
+  assert.deepEqual(atomicComposerReferenceEdit('Ask @Mac now', 'Ask @Mow', { start: 6, end: 10 }, [chip('Ask @Mac now', 'Mac')], []), { text: 'Ask ow', start: 4, caret: 4, nativeCaret: 6, chatReferences: [], teamReferences: [] })
 })
 
 test('text inserted into a chip (autocorrect) stays as typed and revokes only that chip', () => {
   const mac = { ...reference, display_name_snapshot: 'Mac Studio', source_text_end: 12 }
   const atlas = chip('@@Mac Studio altered @Atlas', 'Atlas')
-  assert.deepEqual(atomicComposerReferenceEdit('@@Mac Studio altered @Atlas', '@@Mac StXdio altered @Atlas', { start: 8, end: 9 }, [atlas], [mac]), { text: '@@Mac StXdio altered @Atlas', caret: 9, nativeCaret: 9, chatReferences: [atlas], teamReferences: [] })
+  assert.deepEqual(atomicComposerReferenceEdit('@@Mac Studio altered @Atlas', '@@Mac StXdio altered @Atlas', { start: 8, end: 9 }, [atlas], [mac]), { text: '@@Mac StXdio altered @Atlas', start: 8, caret: 9, nativeCaret: 9, chatReferences: [atlas], teamReferences: [] })
 })
 
 test('text typed right before or after a chip keeps it, even when the characters repeat', () => {
   const mac = chip('@Mac now', 'Mac')
-  assert.deepEqual(atomicComposerReferenceEdit('@Mac now', '@@Mac now', caretAt(0), [mac], []), { text: '@@Mac now', caret: 1, nativeCaret: 1, chatReferences: [{ ...mac, source_text_start: 1, source_text_end: 5 }], teamReferences: [] })
+  assert.deepEqual(atomicComposerReferenceEdit('@Mac now', '@@Mac now', caretAt(0), [mac], []), { text: '@@Mac now', start: 0, caret: 1, nativeCaret: 1, chatReferences: [{ ...mac, source_text_start: 1, source_text_end: 5 }], teamReferences: [] })
   assert.deepEqual(atomicComposerReferenceEdit('@Mac', '@Macc', caretAt(4), [mac], []).chatReferences, [mac])
   // Backspace after the trailing "c" removes only that "c"; at the chip's end it removes the chip.
-  assert.deepEqual(atomicComposerReferenceEdit('@Macc', '@Mac', caretAt(5), [mac], []), { text: '@Mac', caret: 4, nativeCaret: 4, chatReferences: [mac], teamReferences: [] })
-  assert.deepEqual(atomicComposerReferenceEdit('@Macc', '@Mac', caretAt(4), [mac], []), { text: 'c', caret: 0, nativeCaret: 3, chatReferences: [], teamReferences: [] })
+  assert.deepEqual(atomicComposerReferenceEdit('@Macc', '@Mac', caretAt(5), [mac], []), { text: '@Mac', start: 4, caret: 4, nativeCaret: 4, chatReferences: [mac], teamReferences: [] })
+  assert.deepEqual(atomicComposerReferenceEdit('@Macc', '@Mac', caretAt(4), [mac], []), { text: 'c', start: 0, caret: 0, nativeCaret: 3, chatReferences: [], teamReferences: [] })
 })
 
 test('without chips the caret follows the change, and a stale selection falls back to the plain diff', () => {
@@ -257,10 +257,10 @@ test('removing one of two same-titled chips keeps the other chat, not a text mat
   const second = chip(draft, 'Build', 'second', 1)
   const team = { ...reference, display_name_snapshot: 'Atlas', source_text_start: 0, source_text_end: 7 }
   const result = atomicComposerReferenceEdit(draft, `@Buil${draft.slice(6)}`, caretAt(6), [first, second], [])
-  assert.deepEqual(result, { text: '@Build go', caret: 0, nativeCaret: 5, chatReferences: [{ ...second, source_text_start: 0, source_text_end: 6 }], teamReferences: [] })
+  assert.deepEqual(result, { text: '@Build go', start: 0, caret: 0, nativeCaret: 5, chatReferences: [{ ...second, source_text_start: 0, source_text_end: 6 }], teamReferences: [] })
   const mixed = `@@Atlas ${draft}`
   const shifted = atomicComposerReferenceEdit(mixed, `@@Atla ${draft}`, caretAt(7), [chip(mixed, 'Build', 'first', 8)], [team])
-  assert.deepEqual(shifted, { text: draft, caret: 0, nativeCaret: 6, chatReferences: [first], teamReferences: [] })
+  assert.deepEqual(shifted, { text: draft, start: 0, caret: 0, nativeCaret: 6, chatReferences: [first], teamReferences: [] })
 })
 
 test('one step in from a chip edge crosses it; a tap or drag lands on the nearer edge', () => {

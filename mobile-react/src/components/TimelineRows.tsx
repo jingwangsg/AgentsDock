@@ -24,6 +24,7 @@ import {
   providerInteractionAuditSummary,
   rowText,
 } from '../lib/timeline'
+import { chatReferenceCopyText } from '../lib/chat-references'
 import { formatDateTime, messageText } from '../lib/format'
 import { canQueryScheduledJobHistory } from '../lib/job-history'
 import { isImportedProviderInterruption } from '../lib/provider-origin'
@@ -179,7 +180,8 @@ function MessageRowView({ row, sessionId, fontScale }: { row: Extract<TimelineRo
   }, [feedback])
   const copyFullText = async () => {
     try {
-      await Clipboard.setStringAsync(full)
+      // A chip copies as its chat's id, which a paste turns back into that chat's chip.
+      await Clipboard.setStringAsync(inlineRoutes ? chatReferenceCopyText(inlineRoutes.text, inlineRoutes.references) : full)
       setFeedback('Copied')
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => undefined)
       void AccessibilityInfo.announceForAccessibility('Copied full message')

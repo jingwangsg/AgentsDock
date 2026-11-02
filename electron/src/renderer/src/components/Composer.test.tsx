@@ -6431,6 +6431,133 @@ describe('Composer', () => {
     expect(useAppStore.getState().chatReferencesBySession['chat-1']).toEqual([])
   })
 
+  it('copies whole chips as their chat ids, and a cut removes them as typing would', () => {
+    const alpha = 'sess_0123456789abcdef'
+    const launch = 'sess_fedcba9876543210'
+    const draft = 'Ask @Alpha plan and @Launch · gpu-box now'
+    const local: ChatReference = { session_id: alpha, display_title_snapshot: 'Alpha plan', source_text_start: 4, source_text_end: 15, action: 'route', grant_intent: true }
+    const remote: ChatReference = { session_id: launch, display_title_snapshot: 'Launch · gpu-box', source_text_start: 20, source_text_end: 37, action: 'route', target_kind: 'cross_server', target_server_identity: 'srv-l40' }
+    useAppStore.setState({
+      sessions: [{ id: 'chat-1', title: 'Chat', backend: 'codex' }, { id: alpha, title: 'Alpha plan', backend: 'claude' }],
+      health: { ok: true, capabilities: { cross_chat_handoffs_v1: durableComposerCapability() } },
+      drafts: { 'chat-1': draft },
+      chatReferencesBySession: { 'chat-1': [local, remote] }
+    })
+    render(<Composer />)
+    const editor = screen.getByPlaceholderText('Message') as HTMLTextAreaElement
+    const setData = vi.fn()
+
+    editor.setSelectionRange(0, draft.length)
+    expect(fireEvent.copy(editor, { clipboardData: { setData } })).toBe(false)
+    expect(setData).toHaveBeenCalledWith('text/plain', `Ask @${alpha} and @${launch} now`)
+    // A chip cut by the selection copies natively, as its text.
+    editor.setSelectionRange(6, 24)
+    expect(fireEvent.copy(editor, { clipboardData: { setData } })).toBe(true)
+    expect(setData).toHaveBeenCalledTimes(1)
+
+    editor.setSelectionRange(0, 16)
+    expect(fireEvent.cut(editor, { clipboardData: { setData } })).toBe(false)
+    expect(setData).toHaveBeenLastCalledWith('text/plain', `Ask @${alpha} `)
+    expect(editor).toHaveValue('and @Launch · gpu-box now')
+    expect(editor.selectionStart).toBe(0)
+    expect(useAppStore.getState().chatReferencesBySession['chat-1']).toEqual([{ ...remote, source_text_start: 4, source_text_end: 21 }])
+  })
+
+  it('pastes chat ids as the chips the picker inserts: this server first, then other servers once the hub lists them', async () => {
+    const alpha = 'sess_0123456789abcdef'
+    const launch = 'sess_fedcba9876543210'
+    const unknown = 'sess_00000000000000aa'
+    let answer: (snapshot: CrossServerChatsSnapshot) => void = () => undefined
+    const chats = vi.fn(() => new Promise<CrossServerChatsSnapshot>(resolve => { answer = resolve }))
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
+        agentRoutes: { list: vi.fn().mockResolvedValue({ routes: [], max_routes: null }) },
+        crossServer: { chats, pair: vi.fn() }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      activeProfileId: 'profile-a', profileGeneration: 7, connected: true,
+      profiles: [{ id: 'profile-a', name: 'Hub', serverIdentity: 'server-a' } as PublicServerProfile],
+      sessions: [{ id: 'chat-1', title: 'Chat', backend: 'codex' }, { id: alpha, title: 'Alpha renamed', backend: 'claude' }],
+      health: { ok: true, capabilities: {
+        cross_chat_handoffs_v1: durableComposerCapability(),
+        cross_server_mail_v1: { available: true, required: false, message: '', action: null }
+      } }
+    })
+    const user = userEvent.setup()
+    render(<Composer />)
+    const editor = screen.getByPlaceholderText('Message') as HTMLTextAreaElement
+
+    // Text without a chat id pastes natively.
+    expect(fireEvent.paste(editor, { clipboardData: { files: [], getData: () => 'plain' } })).toBe(true)
+    expect(chats).not.toHaveBeenCalled()
+
+    await user.type(editor, 'Ask ')
+    expect(fireEvent.paste(editor, { clipboardData: { files: [], getData: () => `@${alpha} and @${launch}\r\nor @${unknown} now` } })).toBe(false)
+    expect(editor).toHaveValue(`Ask @Alpha renamed and @${launch}\nor @${unknown} now`)
+    // The pasted @s are no mention being typed: the picker stays closed.
+    expect(screen.queryByRole('listbox', { name: 'Chats' })).not.toBeInTheDocument()
+    expect(useAppStore.getState().chatReferencesBySession['chat-1']).toEqual([
+      { session_id: alpha, display_title_snapshot: 'Alpha renamed', source_text_start: 4, source_text_end: 18, action: 'route', grant_intent: true }
+    ])
+    expect(chats).toHaveBeenCalledTimes(1)
+
+    await act(async () => answer({ servers: [
+      { server_identity: 'server-a', name: '', chats: [] },
+      { server_identity: 'srv-l40', name: 'gpu-box', chats: [{ id: launch, title: 'Launch', folder: 'Lab', backend: 'claude', cross_chat_handoff_supported: true }] }
+    ] }))
+    const value = `Ask @Alpha renamed and @Launch · gpu-box\nor @${unknown} now`
+    expect(editor).toHaveValue(value)
+    expect(editor.selectionStart).toBe(value.length)
+    expect(useAppStore.getState().chatReferencesBySession['chat-1']).toEqual([
+      { session_id: alpha, display_title_snapshot: 'Alpha renamed', source_text_start: 4, source_text_end: 18, action: 'route', grant_intent: true },
+      { session_id: launch, display_title_snapshot: 'Launch · gpu-box', source_text_start: 23, source_text_end: 40, action: 'route', target_kind: 'cross_server', target_server_identity: 'srv-l40' }
+    ])
+
+    // A chat already in the message is not added twice; its id stays as typed.
+    fireEvent.paste(editor, { clipboardData: { files: [], getData: () => ` @${alpha}` } })
+    expect(editor).toHaveValue(`${value} @${alpha}`)
+    expect(useAppStore.getState().chatReferencesBySession['chat-1']).toHaveLength(2)
+    expect(useAppStore.getState().error).toMatch(/already selected for Alpha renamed/)
+  })
+
+  it('leaves a pasted id as typed when the paste was edited before the hub listed its chat', async () => {
+    const launch = 'sess_fedcba9876543210'
+    let answer: (snapshot: CrossServerChatsSnapshot) => void = () => undefined
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
+        agentRoutes: { list: vi.fn().mockResolvedValue({ routes: [], max_routes: null }) },
+        crossServer: { chats: vi.fn(() => new Promise<CrossServerChatsSnapshot>(resolve => { answer = resolve })), pair: vi.fn() }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      activeProfileId: 'profile-a', profileGeneration: 7, connected: true,
+      profiles: [{ id: 'profile-a', name: 'Hub', serverIdentity: 'server-a' } as PublicServerProfile],
+      health: { ok: true, capabilities: {
+        cross_chat_handoffs_v1: durableComposerCapability(),
+        cross_server_mail_v1: { available: true, required: false, message: '', action: null }
+      } }
+    })
+    const user = userEvent.setup()
+    render(<Composer />)
+    const editor = screen.getByPlaceholderText('Message') as HTMLTextAreaElement
+
+    await user.click(editor)
+    fireEvent.paste(editor, { clipboardData: { files: [], getData: () => `@${launch}` } })
+    expect(screen.queryByRole('listbox', { name: 'Chats' })).not.toBeInTheDocument()
+    await user.type(editor, '!')
+    await act(async () => answer({ servers: [
+      { server_identity: 'server-a', name: '', chats: [] },
+      { server_identity: 'srv-l40', name: 'gpu-box', chats: [{ id: launch, title: 'Launch', folder: 'Lab', backend: 'claude', cross_chat_handoff_supported: true }] }
+    ] }))
+    expect(editor).toHaveValue(`@${launch}!`)
+    expect(useAppStore.getState().chatReferencesBySession['chat-1'] ?? []).toEqual([])
+  })
+
   it('never downgrades a stored request-reply reference on a v1 server', () => {
     useAppStore.setState({
       sessions: [
