@@ -2691,6 +2691,21 @@ def existing_cwd(requested: str | None) -> str:
     return "/tmp"
 
 
+def claude_sdk_turn_cwd(session_id: str, requested: str) -> str:
+    """The directory a Claude SDK turn of this chat runs in: its own, else existing_cwd's fallback.
+
+    A chat whose directory is gone (another chat moved or removed it, say) keeps it while its live
+    process still runs there. That process holds the conversation and any background tasks; another
+    directory would replace it and start without the conversation or, while background tasks run,
+    refuse the message.
+    """
+    cwd = existing_cwd(requested)
+    path = str(Path(requested).expanduser())
+    if cwd != path and CLAUDE_SDK_MANAGER is not None and CLAUDE_SDK_MANAGER.live_cwd(session_id) == path:
+        return path
+    return cwd
+
+
 def validated_opencode_cwd(
     requested: str | None,
     *,
@@ -23802,7 +23817,7 @@ def queued_claude_runtime_matches_active(
     if selected.get("effort") is not None:
         session["effort"] = selected.get("effort")
     try:
-        cwd = existing_cwd(str(session.get("cwd") or DEFAULT_CWD))
+        cwd = claude_sdk_turn_cwd(session_id, str(session.get("cwd") or DEFAULT_CWD))
         cli_path = claude_sdk_cli_path(agent_runner_env(session_id))
         configuration_key = claude_sdk_configuration_key(
             session,
@@ -33806,6 +33821,15 @@ def _build_claude_subagent_snapshot_locked(session_id: str, limit: int) -> dict[
                             continue
                         state["status"] = terminal_status
                         note(state, event, activity)
+                    continue
+
+                if event_type == "history_rewound" and event.get("provider_rewind") in {"claude_fork", "claude_reset"}:
+                    # A Claude rewind evicts the chat's process (perform_rewind), and with it every
+                    # background agent that process still ran; no frame ever reports their end.
+                    for state in states.values():
+                        if state["status"] in {"starting", "running"}:
+                            state["status"] = "stopped"
+                            note(state, event, "Stopped when the chat was rewound")
                     continue
 
                 if event_type == "claude_subagents_stopped":
@@ -67140,7 +67164,7 @@ async def run_claude_sdk(
     """Run Claude on one persistent, chat-owned Agent SDK process."""
 
     requested_cwd = str(sess.get("cwd") or DEFAULT_CWD)
-    cwd = existing_cwd(requested_cwd)
+    cwd = claude_sdk_turn_cwd(session_id, requested_cwd)
     resume_provider_id, resume_skip_message = resolve_claude_resume_provider(
         sess,
         cwd,

@@ -4358,6 +4358,16 @@ class ClaudeSDKSupervisorManager:
             return 0
         return supervisor.inflight_task_count
 
+    def live_cwd(self, chat_id: str) -> str | None:
+        """The directory the chat's connected process was started in."""
+
+        supervisor = self._supervisors.get(str(chat_id))
+        if supervisor is None or supervisor.closed or not supervisor.connected:
+            return None
+        options = supervisor.options
+        cwd = options.get("cwd") if isinstance(options, dict) else getattr(options, "cwd", None)
+        return str(cwd) if cwd else None
+
     def inflight_tasks(self, chat_id: str) -> list[tuple[str, str, str]]:
         """(task id, task type, description) of each task behind inflight_task_count."""
 
