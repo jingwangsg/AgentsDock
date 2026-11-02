@@ -57,7 +57,7 @@ test('timeline messages retain an explicit full-message copy action', () => {
     timelineRows.indexOf('function MessageRowView'),
     timelineRows.indexOf('function mergeTraceEvents'),
   )
-  assert.match(timelineRows, /await Clipboard\.setStringAsync\(full\)/)
+  assert.match(timelineRows, /await Clipboard\.setStringAsync\(inlineRoutes \? chatReferenceCopyText\(inlineRoutes\.text, inlineRoutes\.references\) : full\)/)
   assert.match(timelineRows, /label="Copy full text"/)
   assert.match(timelineRows, /announceForAccessibility\('Copied full message'\)/)
   assert.doesNotMatch(messageRow, /onLongPress/, 'card gestures must not compete with native selection')

@@ -1,5 +1,38 @@
 # Public development log
 
+## 2026-11-02 — Copied @chat mentions paste back as mentions (desktop, Android, iOS)
+
+- An @chat mention in the composer refers to a chat by its id and shows the
+  chat's title. Copying kept only the text "@Title", so a paste gave plain
+  text and the mention was lost.
+- Copying now puts each whole mention on the clipboard as the chat's session
+  id, `@sess_<16 hex>`. This applies to text copied or cut in the desktop
+  composer, the Copy button of a sent message (desktop and phones), and text
+  selected inside a sent message on the desktop. A mention cut by the edge of
+  the selection, a secure-peer route and an unsent "New agent" mention copy
+  as their text.
+- Pasting into a composer turns each `@sess_…` into the mention the @ picker
+  inserts for that chat, under the chat's current title: a chat on the same
+  server first, otherwise a chat on another server under the hub. When the
+  hub's chat list is not loaded yet, the composer requests it once and
+  converts the remaining ids if the pasted text is still as it was left. An id
+  the app does not list stays as text. Ids are resolved only in the app and
+  only in pasted text; the server is not asked.
+- An @ followed by a whole chat id no longer opens the @ picker. Android sends
+  a paste's text change twice; the second one no longer removes the mentions
+  the first one made.
+- No server or protocol change: older apps and servers keep working.
+
+```text
+Change and expected user behavior: a whole @chat mention copies as @sess_<id>; pasting such an id makes the mention the @ picker makes, under the chat's current title.
+Source commit / app build / server version: branch feat/mention-id-clipboard; desktop build 139, Android sideload 84; no server change.
+Test surface: the branch's desktop build (electron-vite out/, isolated user data) against an isolated server acting as hub for a second isolated server (registered remote, test-only ssh); Android emulator agentsdock_fold with the branch's JS in a copy of APK 83; iPad simulator (iOS 27.0) running the Oct 27 Debug binary with the branch's JS from Metro; both phones against another isolated server.
+Actions exercised and observed outcomes: desktop: picked two chats into a draft, Cmd+A Cmd+C put "Ask @sess_… and @sess_… please reply OK only." on the system clipboard; after renaming one chat, a paste into another chat's composer showed both chips under the current titles; Cut emptied the composer and put the ids on the clipboard, a paste restored the chips; the sent turn carried both references (route, grant intent) and the server created both routes; the message's Copy button, a scripted selection and a mouse-drag selection in the bubble copied the ids, and a selection starting inside a chip copied that chip as text. A chip for a chat on the remote, pasted into a newly opened composer, became "@Remote launch · gpu-box" once the hub list arrived; sending paired the chats (POST /api/cross-server/pairs 200) and the turn carried the cross-server reference. Android: Ctrl+V of an id string made chips under the current titles, left an unknown id as text and opened no picker; sent; Copy full text gave the ids. iPad: the same with Cmd+V and Copy full text.
+Real boundaries exercised; any mocked/stubbed boundaries: system clipboards (Mac pasteboard, emulator clipboard synced to the Mac, simulator pasteboard), the apps' production transport and server authorization, the hub's cross-server list and pairing, real Codex turns on throwaway chats. Stubbed: ssh between the isolated hub and remote (a local TCP forward).
+Focused regression / typecheck / production build: copy text, id parser and picker trigger tests on both platforms; desktop Composer tests (copy, cut, paste, hub list arriving later, paste edited before it arrives, duplicate) and TimelineRows tests (Copy button, bubble selection); mobile composer tests (paste, repeated Android change event, picker closed, duplicate, edited paste) and the Copy button; full desktop vitest, mobile tests, both typechecks, electron-vite build.
+Remaining limitations or blocked acceptance: text copied from the phone composer's or timeline's native selection keeps titles (the native copy cannot be intercepted); the queued-message editors do not convert ids; the iPad check used an older Debug binary with current JS.
+Availability: desktop build 139 and Android sideload 84 (local packages); no server update required.
+
 ## 2026-11-02 — Claude chats: agents ended by a rewind show as stopped; a moved directory keeps its live process; a symlinked directory resumes (server)
 
 - Editing an earlier message in a Claude chat ends the chat's Claude process,

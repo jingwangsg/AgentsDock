@@ -2,7 +2,9 @@ import assert from 'node:assert/strict'
 import type { Backend, ChatReference, Health, NewAgentSettings } from '../types'
 import {
   chatMentionAction,
+  chatIdTokens,
   chatMentionTrigger,
+  chatReferenceCopyText,
   chatReferenceWithAction,
   chatReferencesEqual,
   crossChatCapabilityVersion,
@@ -299,5 +301,28 @@ assert.deepEqual(validChatReferences(newAgentText, [{ ...newAgentBase, grant_int
 assert.deepEqual(validChatReferences(newAgentText, [{ ...newAgentBase, new_agent: undefined }], 'source-chat'), [])
 assert.deepEqual(validChatReferences(newAgentText, [{ ...newAgentBase, session_id: 'sess_real' }], 'source-chat'), [])
 assert.deepEqual(validChatReferences(newAgentText, [{ ...newAgentBase, target_server_identity: 'srv-l40' }], 'source-chat'), [])
+
+// A chip copies as its id token; a secure-peer route and the new-agent placeholder copy as their text.
+// A paste finds id tokens that begin where a chip may and end at a word boundary.
+const alphaId = 'sess_0123456789abcdef'
+const launchId = 'sess_fedcba9876543210'
+const copyDraft = 'Ask @Alpha plan and @Launch · gpu-box now'
+const copyReferences: ChatReference[] = [
+  { session_id: alphaId, display_title_snapshot: 'Alpha plan', source_text_start: 4, source_text_end: 15, action: 'route', grant_intent: true },
+  { session_id: launchId, display_title_snapshot: 'Launch · gpu-box', source_text_start: 20, source_text_end: 37, action: 'route', target_kind: 'cross_server', target_server_identity: 'srv-l40' },
+]
+assert.equal(chatReferenceCopyText(copyDraft, copyReferences), `Ask @${alphaId} and @${launchId} now`)
+assert.equal(chatReferenceCopyText(copyDraft, [{ ...copyReferences[0], session_id: NEW_AGENT_REFERENCE_ID, target_kind: 'new_agent' }]), copyDraft)
+assert.equal(chatReferenceCopyText(copyDraft, [{ ...copyReferences[0], session_id: '22e7bb2e-3b47-4be7-89fc-2cecd90f4434', target_kind: 'secure_peer' }]), copyDraft)
+// After a bracket, after a letter, followed by a digit, after another @, and on a new line.
+const pastedIds = `(@${alphaId}) x@${launchId} @${alphaId}0 @@${alphaId} \n@${launchId}`
+const lastToken = { start: pastedIds.lastIndexOf('@'), end: pastedIds.length, sessionId: launchId }
+assert.deepEqual(chatIdTokens(pastedIds), [{ start: 1, end: 23, sessionId: alphaId }, lastToken])
+assert.deepEqual(chatIdTokens(pastedIds, 2), [lastToken])
+assert.deepEqual(chatIdTokens(pastedIds, 0, pastedIds.length - 1), [{ start: 1, end: 23, sessionId: alphaId }])
+assert.deepEqual(chatIdTokens(`@${alphaId.toUpperCase()} @sess_0123`), [])
+// An id token left as text opens no @ picker; a partial chat id still searches.
+assert.equal(chatMentionTrigger(`ask @${alphaId} now`, 30), null)
+assert.deepEqual(chatMentionTrigger('ask @sess_0123', 14), { kind: '@', start: 4, end: 14, query: 'sess_0123' })
 
 console.log('cross-chat reference regressions passed')

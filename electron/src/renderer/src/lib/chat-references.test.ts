@@ -4,8 +4,10 @@ import {
   agentCrossChatRoutesAvailable,
   agentCrossChatRoutesSupported,
   canonicalizeLocalRouteHints,
+  chatIdTokens,
   chatMentionAction,
   chatMentionTrigger,
+  chatReferenceCopyText,
   chatReferenceDisplayText,
   chatReferenceText,
   currentRouteHintReference,
@@ -620,5 +622,55 @@ describe('liveChatReferenceTitle', () => {
   it('keeps the sent title when the current one would not pass as a chip', () => {
     expect(liveChatReferenceTitle(reference, titleSource([{ id: 'source', title: 'Source' }, { id: 'alpha', title: '@ops' }]), 'source')).toBe('New agent')
     expect(liveChatReferenceTitle(reference, titleSource([{ id: 'source', title: 'Source' }, { id: 'alpha', title: 'a\u0000b' }]), 'source')).toBe('New agent')
+  })
+})
+
+describe('id tokens for copy and paste', () => {
+  const local = 'sess_0123456789abcdef'
+  const remote = 'sess_fedcba9876543210'
+  const text = 'Ask @Alpha plan and @Launch · gpu-box now'
+  const references = [
+    { session_id: local, display_title_snapshot: 'Alpha plan', source_text_start: 4, source_text_end: 15, action: 'route' as const, grant_intent: true as const },
+    { session_id: remote, display_title_snapshot: 'Launch · gpu-box', source_text_start: 20, source_text_end: 37, action: 'route' as const, target_kind: 'cross_server' as const, target_server_identity: 'srv-l40' }
+  ]
+
+  it('copies each whole chip as its id token and a chip cut by the selection as its text', () => {
+    expect(chatReferenceCopyText(text, references)).toBe(`Ask @${local} and @${remote} now`)
+    expect(chatReferenceCopyText(text, references, 4, 15)).toBe(`@${local}`)
+    expect(chatReferenceCopyText(text, references, 6, 24)).toBe('lpha plan and @Lau')
+    expect(chatReferenceCopyText(text, references, 0, 19)).toBe(`Ask @${local} and`)
+  })
+
+  it('copies a secure-peer route and the new-agent placeholder as their text', () => {
+    const peer = { ...references[0], session_id: '22e7bb2e-3b47-4be7-89fc-2cecd90f4434', target_kind: 'secure_peer' as const }
+    const created = { ...references[0], session_id: NEW_AGENT_REFERENCE_ID, target_kind: 'new_agent' as const }
+    expect(chatReferenceCopyText(text, [peer])).toBe(text)
+    expect(chatReferenceCopyText(text, [created])).toBe(text)
+  })
+
+  it('finds id tokens inside the range that begin where a chip may and end at a word boundary', () => {
+    // After a bracket, after a letter, followed by a digit, after another @, and on a new line.
+    const pasted = `(@${local}) x@${remote} @${local}0 @@${local} \n@${remote}`
+    const last = { start: pasted.lastIndexOf('@'), end: pasted.length, sessionId: remote }
+    expect(chatIdTokens(pasted)).toEqual([{ start: 1, end: 23, sessionId: local }, last])
+    expect(chatIdTokens(pasted, 2)).toEqual([last])
+    expect(chatIdTokens(pasted, 0, pasted.length - 1)).toEqual([{ start: 1, end: 23, sessionId: local }])
+    expect(chatIdTokens(`@${local.toUpperCase()} @sess_0123`)).toEqual([])
+  })
+
+  it('opens no @ picker for an id token left as text, while a partial chat id still searches', () => {
+    expect(chatMentionTrigger(`ask @${local}`, 26)).toBeNull()
+    expect(chatMentionTrigger(`ask @${local} now`, 30)).toBeNull()
+    expect(chatMentionTrigger('ask @sess_0123', 14)).toEqual({ kind: '@', start: 4, end: 14, query: 'sess_0123' })
+    expect(chatMentionTrigger(`ask @${local}0`, 27)).toEqual({ kind: '@', start: 4, end: 27, query: `${local}0` })
+  })
+
+  it('turns a copied draft back into the chips the picker inserts, under the chats\' current titles', () => {
+    const copied = chatReferenceCopyText(text, references)
+    const [first, second] = chatIdTokens(copied)
+    // The later token first, so the earlier one's offsets stay valid.
+    const once = insertChatReference(copied, { kind: '@', start: second.start, end: second.end, query: '' }, { id: remote, title: 'Launch renamed' }, 'route', { grantIntent: true })
+    const twice = insertChatReference(once.text, { kind: '@', start: first.start, end: first.end, query: '' }, { id: local, title: 'Alpha plan' }, 'route', { grantIntent: true })
+    expect(twice.text).toBe('Ask @Alpha plan and @Launch renamed now')
   })
 })

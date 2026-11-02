@@ -96,6 +96,20 @@ for (const backend of ['codex', 'claude']) for (const theme of ['dark', 'light']
   } finally { await act(async () => renderer.unmount()) }
 })
 
+test('Copy full text on a user message carries each chip as its chat id', async () => {
+  const local = 'sess_0123456789abcdef', remote = 'sess_fedcba9876543210'
+  const prompt = 'Ask @Training and @Launch · gpu-box now.'
+  const message = event({ id: 'user-1', imported: false, run_id: 'run-1', prompt, chat_references: [
+    { session_id: local, display_title_snapshot: 'Training', source_text_start: 4, source_text_end: 13, action: 'route' },
+    { session_id: remote, display_title_snapshot: 'Launch · gpu-box', source_text_start: 18, source_text_end: 35, action: 'route', target_kind: 'cross_server', target_server_identity: 'srv-l40' },
+  ] })
+  const renderer = await render(rows([message])[0])
+  try {
+    await press(renderer, 'message-copy-user-1')
+    assert.equal(fixture.copied, `Ask @${local} and @${remote} now.`)
+  } finally { await act(async () => renderer.unmount()) }
+})
+
 test('Source request opens and closes and resets when FlashList recycles another delivery', async () => {
   const renderer = await render(rows([event()])[0])
   try {
