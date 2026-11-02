@@ -48538,6 +48538,9 @@ def claude_transcript_matches_cwd(path: Path, cwd: str) -> bool:
     """Validate a provider transcript using Claude's recorded cwd metadata."""
 
     expected_cwd = str(Path(cwd).expanduser())
+    # Claude records the directory it runs in with symlinks resolved, so a cwd that is a symlink
+    # (macOS /tmp, the old path of a moved worktree) matches the transcripts of its target.
+    expected_cwds = {expected_cwd, os.path.realpath(expected_cwd)}
     for region in bounded_claude_transcript_regions(path):
         for raw_line in region.splitlines():
             if not raw_line or len(raw_line) > CLAUDE_TRANSCRIPT_CWD_LINE_BYTES:
@@ -48547,7 +48550,7 @@ def claude_transcript_matches_cwd(path: Path, cwd: str) -> bool:
             except (json.JSONDecodeError, UnicodeDecodeError):
                 continue
             recorded_cwd = event.get("cwd") if isinstance(event, dict) else None
-            if recorded_cwd and str(Path(str(recorded_cwd)).expanduser()) == expected_cwd:
+            if recorded_cwd and str(Path(str(recorded_cwd)).expanduser()) in expected_cwds:
                 return True
     return False
 

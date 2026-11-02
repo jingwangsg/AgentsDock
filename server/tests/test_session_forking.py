@@ -446,6 +446,28 @@ class ForkSessionFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(resolved)
         self.assertIn("is not available for cwd", warning or "")
 
+    def test_claude_resume_finds_a_transcript_recorded_in_the_target_of_a_symlinked_cwd(self) -> None:
+        # The chat still names a moved worktree's old path, now a symlink to the new one; Claude ran
+        # there and recorded the resolved path under that path's project directory.
+        provider_id = "claude-provider-symlinked-cwd"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            target = root / "code" / "n2_dev"
+            target.mkdir(parents=True)
+            old_path = root / "code" / "n2_integration"
+            old_path.symlink_to(target)
+            projects_root = root / "claude-projects"
+            transcript = projects_root / str(target).replace("/", "-") / f"{provider_id}.jsonl"
+            transcript.parent.mkdir(parents=True)
+            transcript.write_text(json.dumps({"type": "user", "sessionId": provider_id, "cwd": str(target)}) + "\n")
+            session = {"backend": agent_server.BACKEND_CLAUDE, "claude_session_id": provider_id}
+
+            with patch.object(agent_server, "CLAUDE_PROJECTS_ROOT", projects_root):
+                self.assertFalse(agent_server.claude_resume_file_for_cwd(provider_id, str(old_path)).exists())
+                resolved = agent_server.resolve_claude_resume_provider(session, str(old_path))
+
+        self.assertEqual(resolved, (provider_id, None))
+
     def test_validated_claude_fork_identity_drives_sdk_and_print_fork_flags(
         self,
     ) -> None:

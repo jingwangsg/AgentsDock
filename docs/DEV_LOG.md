@@ -1,6 +1,6 @@
 # Public development log
 
-## 2026-11-02 — Rewound Claude chats stop listing ended background agents as running; a message reaches a chat whose directory moved (server)
+## 2026-11-02 — Rewound Claude chats stop listing ended background agents as running; a message reaches a chat whose directory moved; a symlinked chat directory resumes (server)
 
 - Editing an earlier message in a Claude chat restarts the chat's Claude
   process at that point, which ends every background agent the old process
@@ -19,14 +19,21 @@
   it, and the message goes to that process, steered into the running turn or
   as the next turn, with the conversation and its background tasks intact.
   Without such a process the fallback is unchanged.
+- Claude records the directory it runs in with symlinks resolved, but the
+  server matched a chat's transcript against the chat's directory as given. A
+  chat whose directory is a symlink (macOS `/tmp`, or the old path of a moved
+  worktree pointed at its new location) therefore started each new Claude
+  process without the conversation ("Claude resume skipped: provider session
+  … is not available for cwd …"). The resume lookup now also accepts the
+  resolved directory.
 
 ```text
-Change and expected user behavior: background agents ended by a rewind show as stopped; a message reaches a Claude chat whose directory moved while its process still runs there.
+Change and expected user behavior: background agents ended by a rewind show as stopped; a message reaches a Claude chat whose directory moved while its process still runs there; a chat whose directory is a symlink resumes its conversation.
 Source commit / app build / server version: branch fix/stale-subagents-and-vanished-cwd; no client build; server 1.0.7-beta.11.
 Test surface: two isolated servers on this Mac (main and the branch) with the real Claude CLI; the subagent list folded from a copy of a real chat's event log.
-Actions exercised and observed outcomes: a chat ran `sleep 777` in the background, its directory was renamed, then "Reply with only the word PONG." was sent. Main: cwd_fallback to the home directory, "Claude resume skipped", then "Claude SDK could not start: 1 background task(s) are still running …" and a failed turn. Branch: the message was steered into the running turn and the reply was PONG, with no fallback. The event log of a chat with two rewinds folded to 2 running subagents on main and 0 on the branch, both "Stopped when the chat was rewound".
+Actions exercised and observed outcomes: a chat ran `sleep 777` in the background, its directory was renamed, then "Reply with only the word PONG." was sent. Main: cwd_fallback to the home directory, "Claude resume skipped", then "Claude SDK could not start: 1 background task(s) are still running …" and a failed turn. Branch: the message was steered into the running turn and the reply was PONG, with no fallback. The event log of a chat with two rewinds folded to 2 running subagents on main and 0 on the branch, both "Stopped when the chat was rewound". A chat whose cwd was a symlink was asked to remember a word, the server was restarted, and it was asked for the word: main skipped the resume and answered that it had no word; the branch resumed and answered PELICAN.
 Real boundaries exercised; any mocked/stubbed boundaries: HTTP turn API, the Claude CLI through the Agent SDK, a real event log. The desktop and mobile apps were not exercised; they show the server's subagent list.
-Focused regression / typecheck / production build: a rewind in the subagent snapshot (a history reload leaves agents alone; the next process's agents stay running), live_cwd on the SDK manager, the turn directory and steer match for a moved directory; all 8 server shards.
+Focused regression / typecheck / production build: a rewind in the subagent snapshot (a history reload leaves agents alone; the next process's agents stay running), live_cwd on the SDK manager, the turn directory and steer match for a moved directory, resume through a symlinked directory; all 8 server shards.
 Remaining limitations or blocked acceptance: the hub and remote servers run the previous code until they are updated. A chat whose directory is gone and that has no live process still falls back to another directory and starts without the conversation.
 Availability: source only; remote servers need a server update.
 ```
