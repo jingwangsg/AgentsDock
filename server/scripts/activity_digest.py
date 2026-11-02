@@ -9,6 +9,12 @@ in the app: the server may catch the chat up with its provider transcript.
 
   activity_digest.py --since 30m --exclude <digest chat id>
   activity_digest.py --day yesterday --exclude <digest chat id>
+  activity_digest.py --since 7d --exclude <digest chat id>
+  activity_digest.py --search "gb300 exclude" --exclude <digest chat id>
+
+--search prints the chats whose timelines contain the text, newest match
+first, with each server's own search; it answers "which chat did X", which a
+long --since window cannot fit into the output limit.
 
 The user's messages are turns without a purpose that were not imported from
 a provider transcript: typed, queued or steered. Scheduled job runs, mailbox
@@ -39,6 +45,9 @@ LIMITS = {
     "window": {"pages": 2, "quote_chars": 800, "result_chars": 600, "output_bytes": 20_000},
     "day": {"pages": 8, "quote_chars": 300, "result_chars": 160, "output_bytes": 32_000},
 }
+# --search: matches asked from each server, characters kept per match, and
+# UTF-8 bytes printed in total, under the same Codex limit.
+SEARCH_LIMITS = {"results": 40, "snippet_chars": 300, "output_bytes": 20_000}
 # Values of secret-named keys (key: value, key=value, "key": "value",
 # --key value, where the name may continue only after _ or -, so tokenizer
 # and max_tokens are left alone), Bearer tokens, URL credentials, tokens
@@ -266,10 +275,18 @@ def render_chat(session: dict, server: str, digest: dict, limits: dict) -> list[
 
 def window_bounds(args: argparse.Namespace, now: datetime) -> tuple[datetime, datetime, str]:
     if args.since:
-        seconds = int(args.since.removesuffix("m")) * 60
-        # End at the last whole slot (:00 or :30 for 30m), so a run that
-        # starts late still covers the window next to the previous run's.
-        until = datetime.fromtimestamp(now.timestamp() // seconds * seconds, timezone.utc)
+        match = re.fullmatch(r"(\d+)([mhd]?)", args.since)
+        if not match or not int(match[1]):
+            raise ValueError(f"--since {args.since}: use a number of minutes, hours or days, e.g. 30m, 12h or 7d")
+        seconds = int(match[1]) * {"": 60, "m": 60, "h": 3600, "d": 86400}[match[2]]
+        # A window that divides an hour ends at its last whole slot (:00 or
+        # :30 for 30m), so a run that starts late still covers the window next
+        # to the previous run's. A longer one ends now: the last whole slot of
+        # a week can be days ago.
+        if 3600 % seconds == 0:
+            until = datetime.fromtimestamp(now.timestamp() // seconds * seconds, timezone.utc)
+        else:
+            until = now
         return until - timedelta(seconds=seconds), until, "window"
     day = now.astimezone(TZ).date() - timedelta(days=1) if args.day == "yesterday" else date.fromisoformat(args.day)
     since = datetime.combine(day, time(), tzinfo=TZ)
@@ -277,15 +294,71 @@ def window_bounds(args: argparse.Namespace, now: datetime) -> tuple[datetime, da
     return since.astimezone(timezone.utc), until.astimezone(timezone.utc), "day"
 
 
+def print_search(hub: Hub, servers: list[tuple[str, str]], notes: list[str], complete: bool, query: str, exclude: list[str]) -> int:
+    """Print the chats whose timelines contain `query`, grouped by chat, the newest match first."""
+    hits = []
+    for server, prefix in servers:
+        try:
+            results = hub.get(f"{prefix}/api/search", q=query, limit=SEARCH_LIMITS["results"]).get("results") or []
+            sessions = {session["id"]: session for session in hub.get(f"{prefix}/api/sessions").get("sessions") or []}
+        except Exception as exc:
+            notes.append(f"{server}: unreachable ({error_text(exc)})")
+            if not prefix:
+                complete = False
+            continue
+        # Run chats are left out as in the digest: the owner chat reports each run.
+        results = [
+            result for result in results
+            if result["session_id"] not in exclude and not sessions.get(result["session_id"], {}).get("scheduled_job_run")
+        ]
+        notes.append(f"{server}: {len(results)} matches")
+        hits += [(parse_ts(result["ts"]), server, sessions.get(result["session_id"], {"id": result["session_id"]}), result) for result in results]
+
+    print(f"# AgentsDock search “{clip(query, 80)}”, newest first (Asia/Shanghai)")
+    print("Servers: " + "; ".join(notes))
+    if not complete:
+        print("READ_ERRORS: some reads failed (see Servers), so matches may be missing.")
+    if not hits:
+        print("NO_MATCHES: no chat timeline contains this text.")
+        return 0
+    chats: dict[tuple[str, str], list] = {}
+    for at, server, session, result in sorted(hits, key=lambda hit: hit[0], reverse=True):
+        chats.setdefault((server, session["id"]), [server, session, []])[2].append((at, result))
+    budget = SEARCH_LIMITS["output_bytes"]
+    blocks = []
+    for server, session, matches in chats.values():
+        lines = [f"## {clip(session.get('title') or session['id'], 80)} · {server} · folder {session.get('folder') or '-'} · {session['id']}"]
+        lines += [
+            f"- {at.astimezone(TZ):%Y-%m-%d %H:%M} {result.get('role') or '-'}: {clip(result.get('snippet'), SEARCH_LIMITS['snippet_chars'])}"
+            for at, result in matches
+        ]
+        block = "\n".join(lines)
+        budget -= len(block.encode()) + 2
+        if budget < 0 and blocks:
+            blocks.append(f"({len(chats) - len(blocks)} more chats left out to fit the output limit)")
+            break
+        blocks.append(block)
+    print("\n\n".join(blocks))
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     when = parser.add_mutually_exclusive_group(required=True)
-    when.add_argument("--since", help="the last whole window of N minutes, e.g. 30m")
+    when.add_argument("--since", help="the last N minutes, hours or days, e.g. 30m, 12h, 7d")
     when.add_argument("--day", help="yesterday or YYYY-MM-DD, in Asia/Shanghai")
+    when.add_argument("--search", help="text to find in the chats' timelines (at least 2 characters)")
     parser.add_argument("--exclude", action="append", default=[], help="chat id to leave out (repeatable)")
     args = parser.parse_args()
 
-    since, until, mode = window_bounds(args, datetime.now(timezone.utc))
+    if args.search is not None:
+        if len(args.search.strip()) < 2:
+            parser.error("--search needs at least 2 characters")
+    else:
+        try:
+            since, until, mode = window_bounds(args, datetime.now(timezone.utc))
+        except ValueError as exc:
+            parser.error(str(exc))
     hub = Hub(*read_hub(ENV_FILE))
     servers = [("local hub", "")]
     notes = []
@@ -296,6 +369,8 @@ def main() -> int:
     except Exception as exc:
         notes.append(f"remote list unreadable ({error_text(exc)})")
         complete = False
+    if args.search is not None:
+        return print_search(hub, servers, notes, complete, args.search.strip(), args.exclude)
 
     sections = []
     for server, prefix in servers:

@@ -1,5 +1,38 @@
 # Public development log
 
+## 2026-11-02 — Activity digest: search across chats and longer windows (server script)
+
+- The digest assistant's script `server/scripts/activity_digest.py` gains
+  `--search TEXT`. It asks the local hub and each visible remote for chat
+  timelines that contain the text (the search the app's sidebar uses) and
+  prints the matching chats with title, server, folder and id, grouped by
+  chat with the newest match first, within the digest's output limit. Run
+  chats of standalone jobs and `--exclude` chats are left out. This answers
+  "which chat did X", which a long `--since` window cannot fit into the
+  output Codex hands the model.
+- `--since` accepts hours and days (`12h`, `7d`) besides minutes, and rejects
+  anything else with a usage error instead of a Python traceback. A window
+  that divides an hour still ends at its last whole slot, so the half-hourly
+  job's `30m` is unchanged; a longer window now ends at the current time.
+  Before, every window ended at its last whole slot counted from 1970, so
+  `--since 10080m` (a week) could end days before the run.
+- The digest assistant chat's rules (its own configuration on the hub, not
+  code) now separate scheduled runs from the user's questions. Scheduled runs
+  stay read-only and run only the digest command; a question the user asks in
+  the chat may use other read-only commands such as `--search`, and the user
+  can ask it to change the digest script.
+
+```text
+Change and expected user behavior: the digest assistant can find which chat did something and read longer windows; scheduled digests are unchanged.
+Source commit / app build / server version: branch feat/digest-search; no client build; the jobs run the script from the main checkout, so it applies after the merge without a server restart.
+Test surface: the script against the running hub (GET requests only), and unit tests with a fake hub.
+Actions exercised and observed outcomes: `--search worker123`, leaving out two chats that quote the question, found the cluster request chat on the local hub and the related chat on a remote in 3 s and listed one unreachable remote; `--since 7x` printed the usage error.
+Real boundaries exercised; any mocked/stubbed boundaries: the hub's and a remote's /api/search and /api/sessions through the hub proxy. The long-window bounds ran only in unit tests, since a live week-long read loads every remote.
+Focused regression / typecheck / production build: tests for --since units and long windows, and for search grouping, order, exclusions and an unreachable remote; test_activity_digest.
+Remaining limitations or blocked acceptance: the search finds what each server's timeline search finds; a long --since window keeps the digest's output limit, so a busy week is listed only in part.
+Availability: main checkout after the merge; the next digest run uses it.
+```
+
 ## 2026-11-02 — Copied @chat mentions paste back as mentions (desktop, Android, iOS)
 
 - An @chat mention in the composer refers to a chat by its id and shows the

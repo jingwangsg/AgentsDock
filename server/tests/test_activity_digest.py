@@ -139,6 +139,16 @@ class WindowBoundsTests(unittest.TestCase):
 
         self.assertEqual(self.bounds(now, since="30m"), (SINCE, UNTIL, "window"))
 
+    def test_hours_and_days_end_now_and_minutes_need_no_unit(self):
+        now = datetime(2026, 10, 12, 20, 7, 49, tzinfo=timezone.utc)
+
+        self.assertEqual(self.bounds(now, since="7d"), (now - timedelta(days=7), now, "window"))
+        self.assertEqual(self.bounds(now, since="12h"), (now - timedelta(hours=12), now, "window"))
+        self.assertEqual(self.bounds(now, since="30"), (SINCE, UNTIL, "window"))
+        for invalid in ("7x", "0m", "d"):
+            with self.assertRaisesRegex(ValueError, "e.g. 30m, 12h or 7d"):
+                self.bounds(now, since=invalid)
+
     def test_day_is_local_midnight_to_midnight(self):
         since, until, mode = self.bounds(SINCE, day="2026-10-13")
 
@@ -222,6 +232,39 @@ class DigestOutputTests(unittest.TestCase):
 
         self.assertIn("NO_ACTIVITY", output)
         self.assertNotIn("## ", output)
+
+    def test_search_groups_matches_by_chat_newest_first_without_run_chats_or_excluded_chats(self):
+        self.responses.update({
+            "/api/admin/remote-servers": {"servers": [{"id": "r1", "name": "oci_dev"}, {"id": "r2", "name": "gone"}]},
+            "/api/search": lambda query: {"results": [
+                {"session_id": "sess_cluster", "ts": "2026-10-30T21:42:24Z", "role": "user", "snippet": f"再重启一个 {query['q']} worker123"},
+                {"session_id": "sess_cluster", "ts": "2026-10-30T23:35:49Z", "role": "assistant", "snippet": "已排除 7.252.41.122"},
+                {"session_id": "sess_run", "ts": "2026-10-31T00:00:00Z", "role": "assistant", "snippet": "exclude"},
+                {"session_id": "sess_digest", "ts": "2026-11-02T14:00:00Z", "role": "user", "snippet": "exclude"},
+            ]},
+            "/api/sessions": {"sessions": [
+                {"id": "sess_cluster", "title": "OCI 512 GB300 集群申请", "folder": "rea"},
+                {"id": "sess_run", "title": "Run", "scheduled_job_run": {"job_id": "job_1"}},
+                {"id": "sess_digest", "title": "Digest"},
+            ]},
+            "/api/remote/r1/api/search": {"results": [
+                {"session_id": "sess_remote", "ts": "2026-10-31T05:44:00Z", "role": "assistant", "snippet": "worker123 excluded"},
+            ]},
+            "/api/remote/r1/api/sessions": {"sessions": [{"id": "sess_remote", "title": "N2-style integration", "folder": "midtrain"}]},
+            "/api/remote/r2/api/search": TimeoutError("timed out"),
+        })
+
+        output = self.run_digest("--search", "exclude", "--exclude", "sess_digest")
+
+        self.assertIn("local hub: 2 matches; oci_dev: 1 matches; gone: unreachable (timed out)", output)
+        # The newest match decides the chat's place; within a chat matches are newest first too.
+        remote = output.index("## N2-style integration · oci_dev · folder midtrain · sess_remote")
+        local = output.index("## OCI 512 GB300 集群申请 · local hub · folder rea · sess_cluster")
+        self.assertLess(remote, local)
+        self.assertLess(output.index("2026-10-31 07:35 assistant: 已排除"), output.index("2026-10-31 05:42 user: 再重启一个 exclude worker123"))
+        self.assertNotIn("sess_run", output)
+        self.assertNotIn("Digest", output)
+        self.assertNotIn("READ_ERRORS", output)
 
     def test_unreadable_local_chat_is_reported_instead_of_no_activity(self):
         self.responses["/api/sessions"] = {"sessions": [
