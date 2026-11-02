@@ -385,6 +385,36 @@ class ClaudeSubagentSnapshotTests(unittest.IsolatedAsyncioTestCase):
             "stopped",
         )
 
+    def test_claude_rewind_stops_the_background_agents_of_the_process_it_evicts(self) -> None:
+        before, after = "Started before the rewind", "Started after the rewind"
+        events = [
+            self.event(1, "tool_started", tool={"id": "agent-1", "name": "Agent", "input": {"description": before, "run_in_background": True}}),
+            self.raw(2, {"type": "system", "subtype": "task_started", "task_id": "task-1", "tool_use_id": "agent-1", "task_type": "local_agent", "description": before, "is_backgrounded": True}),
+            # The background agent outlives its turn, so only the rewind can end it.
+            self.event(3, "turn_finished", exit_code=0),
+            # A history reload rewinds no provider history and leaves the process running.
+            self.event(4, "history_rewound", run_id="", reason="history_reload"),
+        ]
+        self.write_events(events)
+        self.assertEqual(agent_server.build_claude_subagent_snapshot(self.session_id)["active_count"], 1)
+
+        events += [
+            self.event(5, "history_rewound", run_id="", provider_rewind="claude_fork"),
+            # The next process's own agent is not touched.
+            self.event(6, "tool_started", run_id="run-2", tool={"id": "agent-2", "name": "Agent", "input": {"description": after, "run_in_background": True}}),
+            self.raw(7, {"type": "system", "subtype": "task_started", "task_id": "task-2", "tool_use_id": "agent-2", "task_type": "local_agent", "description": after, "is_backgrounded": True}, run_id="run-2"),
+        ]
+        self.write_events(events)
+        # Fold from the start, as after a server update.
+        agent_server.CLAUDE_SUBAGENT_FOLD_CACHE.pop(self.session_id, None)
+        snapshot = agent_server.build_claude_subagent_snapshot(self.session_id)
+
+        by_name = {item["subagent_name"]: item for item in snapshot["subagents"]}
+        self.assertEqual(by_name[before]["subagent_status"], "stopped")
+        self.assertEqual(by_name[before]["subagent_activity"], "Stopped when the chat was rewound")
+        self.assertEqual(by_name[after]["subagent_status"], "running")
+        self.assertEqual(snapshot["active_count"], 1)
+
     def test_snapshot_bounds_states_logs_and_endpoint_limit(self) -> None:
         events: list[dict[str, object]] = []
         seq = 0
