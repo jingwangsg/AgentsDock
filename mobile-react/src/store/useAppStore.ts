@@ -55,6 +55,7 @@ import type {
 } from '../types'
 import { AgentServerClient, AgentServerClientDisposedError, AgentServerClientUnvalidatedError, ServerError, WebSocketConnectionError } from '../api/AgentServerClient'
 import { addressProvesServer } from '../lib/connect-proof'
+import { DIRECT_WARMING_PACE, REMOTE_WARMING_PACE, drainedWarmingBytes, nextWarmingPause, warmChatOrder, warmingBudgetWaitMs, type WarmingPace } from '../lib/chat-warming'
 import { errorMessage, normalizeServerURL } from '../lib/format'
 import { reconcileHealthActiveSessions } from '../lib/active-sessions'
 import { isSubagentActive, subagentsFromEvents } from '../lib/subagents'
@@ -653,6 +654,98 @@ async function timelineSeekPage(
     page = await scope.client.sessionPage(sessionId, { ...options, visible: true })
   }
   return page
+}
+
+/** A chat's newest window, the one it shows on open: semantic when the server honors it, else the legacy tail. */
+async function fetchTimelineTail(
+  scope: ConnectionScope,
+  sessionId: string,
+  semantic: boolean,
+  prefetch = false,
+): Promise<{ page: TimelinePage; semanticPaging: boolean }> {
+  if (semantic) {
+    const page = await scope.client.sessionPage(sessionId, { limit: SEMANTIC_TAIL_LIMIT, tail: true, visible: true, pageMode: 'semantic', prefetch })
+    // A health contract alone is not proof that semantic paging was honored. Retry through the legacy endpoint shape
+    // so a proxy or partially upgraded server cannot leave the tail mid-turn.
+    if (page.semantic_paging === true || NativeAppState.currentState !== 'active') return { page, semanticPaging: page.semantic_paging === true }
+  }
+  return { page: await scope.client.sessionPage(sessionId, { limit: TAIL_LIMIT, tail: true, visible: true, prefetch }), semanticPaging: false }
+}
+
+/**
+ * Every rewind bumps the server's history revision and stamps it on its tombstone. A revision the page's tombstones do
+ * not reach is a deletion this cache never saw: the window is rebuilt from the server instead of merged over rows
+ * that may be gone.
+ */
+function timelineHistoryDiverged(cached: Snapshot | undefined, page: TimelinePage): boolean {
+  const serverRevision = page.session.history_revision
+  const seenRevision = Math.max(cached?.historyRevision ?? 0, ...page.events.map(event => (
+    event.type === 'history_rewound' && Number.isSafeInteger(event.history_revision) ? event.history_revision! : 0
+  )))
+  return Boolean(cached?.events.length) && serverRevision != null && serverRevision > 0 && seenRevision < serverRevision
+}
+
+/** The cached timeline after one page: merged into `current`, or replaced by an authoritative tail. */
+function snapshotFromPage(current: Snapshot | undefined, page: TimelinePage, options: {
+  session: Session
+  fetchedFullTail: boolean
+  fullTailSemanticPaging: boolean | null
+  historyDiverged: boolean
+  /** Rows the snapshot held when the request started; any others arrived meanwhile. */
+  eventIdsAtStart: ReadonlySet<string>
+}): Snapshot {
+  const { session, fetchedFullTail, fullTailSemanticPaging, historyDiverged, eventIdsAtStart } = options
+  const incomingEvents = page.events
+    .filter(event => event.session_id === session.id && Number.isFinite(event.seq))
+    .map(sanitizeTimelineEvent)
+  const replaceEvents = (fetchedFullTail && fullTailSemanticPaging === true)
+    || historyDiverged
+    || shouldReplaceCachedTimeline(current, incomingEvents, page.latest_seq, page.has_more, fetchedFullTail)
+  const now = Date.now()
+  // If the live stream appended while a full-tail request was pending,
+  // keep only those genuinely concurrent additions when replacing the
+  // cached window. Old disconnected cache entries must not leak back in.
+  const incomingIds = new Set(incomingEvents.map(event => event.id))
+  const concurrentEvents = replaceEvents
+    ? (current?.events ?? []).filter(event => !eventIdsAtStart.has(event.id) && !incomingIds.has(event.id))
+    : []
+  // Page rows (and, when replacing, the socket rows that overtook the page) enter through the
+  // same reducer as live events; the page's queue is current as of its latest sequence.
+  const seed: Snapshot = replaceEvents || !current
+    ? {
+        cacheVersion: SNAPSHOT_CACHE_VERSION, session, events: [], queuedTurns: [],
+        files: current?.files ?? [], filesTotal: current?.filesTotal ?? 0,
+        hasMore: false, total: current?.total ?? null, latestSeq: null, nextBefore: null, semanticPaging: null, cachedAt: now,
+      }
+    : { ...current, hasMore: false }
+  const asOfSeq = page.latest_seq ?? Math.max(snapshotLatestSeq(current), ...incomingEvents.map(event => event.seq))
+  const ingested = ingestSnapshot(seed, {
+    events: replaceEvents ? [...incomingEvents, ...concurrentEvents] : incomingEvents,
+    queue: { turns: page.queued_turns, asOfSeq },
+  })
+  // A delta page that stops short of the server's newest row (a warming page) leaves the cursor at its last row, stored
+  // or not, where the next page continues.
+  const partial = !fetchedFullTail && (page.events_omitted_after ?? 0) > 0
+  return {
+    ...ingested,
+    cacheVersion: SNAPSHOT_CACHE_VERSION,
+    session,
+    hasMore: (fetchedFullTail ? page.has_more : current?.hasMore ?? page.has_more) || ingested.hasMore,
+    total: fetchedFullTail ? page.total : ingested.total,
+    latestSeq: Math.max(ingested.latestSeq ?? 0, partial ? Math.max(0, ...incomingEvents.map(event => event.seq)) : page.latest_seq ?? 0),
+    nextBefore: fetchedFullTail
+      ? (page.has_more
+          ? timelinePageNextBefore(page)
+          : ingested.hasMore ? ingested.events[0]?.seq ?? null : null)
+      : current?.nextBefore ?? null,
+    semanticPaging: fetchedFullTail
+      ? fullTailSemanticPaging
+      : current?.semanticPaging ?? null,
+    // The server's revision is adopted only with an authoritative window; a merged page
+    // keeps the revision its tombstones reached, so a missed rewind stays detectable.
+    historyRevision: replaceEvents ? page.session.history_revision ?? ingested.historyRevision ?? null : ingested.historyRevision ?? null,
+    cachedAt: now,
+  }
 }
 
 Notifications.setNotificationHandler({
@@ -1965,108 +2058,28 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (exposeProgress) set({ syncSessionId: sessionId, syncStatus: 'syncing', syncError: null })
       try {
         let fullTailSemanticPaging: boolean | null = existingAtStart?.semanticPaging ?? null
-        const fetchFullTail = async (): Promise<TimelinePage> => {
-          if (supportsSemanticPaging) {
-            const semanticPage = await scope.client.sessionPage(sessionId, {
-              limit: SEMANTIC_TAIL_LIMIT,
-              tail: true,
-              visible: true,
-              pageMode: 'semantic',
-            })
-            if (NativeAppState.currentState !== 'active') return semanticPage
-            if (semanticPage.semantic_paging === true) {
-              fullTailSemanticPaging = true
-              return semanticPage
-            }
-            // A health contract alone is not proof that semantic paging was
-            // honored. Retry through the legacy endpoint shape so a proxy or
-            // partially upgraded server cannot leave the tail mid-turn.
-            fullTailSemanticPaging = false
-          } else {
-            fullTailSemanticPaging = false
-          }
-          return scope.client.sessionPage(sessionId, {
-            limit: TAIL_LIMIT,
-            tail: true,
-            visible: true,
-          })
-        }
-
         const after = snapshotLatestSeq(existingAtStart)
-        let page = fullTail
-          ? await fetchFullTail()
-          : await scope.client.sessionPage(sessionId, { after, limit: TAIL_LIMIT, tail: false, visible: true })
+        let page: TimelinePage
+        if (fullTail) ({ page, semanticPaging: fullTailSemanticPaging } = await fetchTimelineTail(scope, sessionId, supportsSemanticPaging))
+        else page = await scope.client.sessionPage(sessionId, { after, limit: TAIL_LIMIT, tail: false, visible: true })
         if (NativeAppState.currentState !== 'active') return
         let fetchedFullTail = fullTail
-        // Every rewind bumps the server's history revision and stamps it on its tombstone. A
-        // revision the delta's tombstones do not reach is a deletion this cache never saw: the
-        // window is rebuilt from the server instead of merged over rows that may be gone.
-        const cachedBeforeFetch = get().snapshots[sessionId]
-        const serverRevision = page.session.history_revision
-        const seenRevision = Math.max(cachedBeforeFetch?.historyRevision ?? 0, ...page.events.map(event => (
-          event.type === 'history_rewound' && Number.isSafeInteger(event.history_revision) ? event.history_revision! : 0
-        )))
-        const historyDiverged = Boolean(cachedBeforeFetch?.events.length)
-          && serverRevision != null && serverRevision > 0 && seenRevision < serverRevision
+        const historyDiverged = timelineHistoryDiverged(get().snapshots[sessionId], page)
         if (!fullTail && (historyDiverged || (page.events_omitted_after ?? 0) > 0 || (page.latest_seq ?? after) < after)) {
-          page = await fetchFullTail()
+          ({ page, semanticPaging: fullTailSemanticPaging } = await fetchTimelineTail(scope, sessionId, supportsSemanticPaging))
           fetchedFullTail = true
         }
         if (NativeAppState.currentState !== 'active' || !connectionIsCurrent(scope) || epoch !== selectionEpoch || get().selectedSessionId !== sessionId) return
 
         const current = get().snapshots[sessionId]
-        const incomingEvents = page.events
-          .filter(event => event.session_id === sessionId && Number.isFinite(event.seq))
-          .map(sanitizeTimelineEvent)
-        const replaceEvents = (fetchedFullTail && fullTailSemanticPaging === true)
-          || historyDiverged
-          || shouldReplaceCachedTimeline(current, incomingEvents, page.latest_seq, page.has_more, fetchedFullTail)
-        const now = Date.now()
-        // If the live stream appended while a full-tail request was pending,
-        // keep only those genuinely concurrent additions when replacing the
-        // cached window. Old disconnected cache entries must not leak back in.
-        const incomingIds = new Set(incomingEvents.map(event => event.id))
-        const concurrentEvents = replaceEvents
-          ? (current?.events ?? []).filter(event => !eventIdsAtStart.has(event.id) && !incomingIds.has(event.id))
-          : []
         const currentSession = get().sessions.find(value => value.id === sessionId)
           ?? current?.session
           ?? page.session
         const reconciledSession = sessionMutations.reconcileIncoming(currentSession, page.session, sessionRead)
-        // Page rows (and, when replacing, the socket rows that overtook the page) enter through the
-        // same reducer as live events; the page's queue is current as of its latest sequence.
-        const seed: Snapshot = replaceEvents || !current
-          ? {
-              cacheVersion: SNAPSHOT_CACHE_VERSION, session: reconciledSession, events: [], queuedTurns: [],
-              files: current?.files ?? [], filesTotal: current?.filesTotal ?? 0,
-              hasMore: false, total: current?.total ?? null, latestSeq: null, nextBefore: null, semanticPaging: null, cachedAt: now,
-            }
-          : { ...current, hasMore: false }
-        const asOfSeq = page.latest_seq ?? Math.max(snapshotLatestSeq(current), ...incomingEvents.map(event => event.seq))
-        const ingested = ingestSnapshot(seed, {
-          events: replaceEvents ? [...incomingEvents, ...concurrentEvents] : incomingEvents,
-          queue: { turns: page.queued_turns, asOfSeq },
+        const now = Date.now()
+        const next = snapshotFromPage(current, page, {
+          session: reconciledSession, fetchedFullTail, fullTailSemanticPaging, historyDiverged, eventIdsAtStart,
         })
-        const next: Snapshot = {
-          ...ingested,
-          cacheVersion: SNAPSHOT_CACHE_VERSION,
-          session: reconciledSession,
-          hasMore: (fetchedFullTail ? page.has_more : current?.hasMore ?? page.has_more) || ingested.hasMore,
-          total: fetchedFullTail ? page.total : ingested.total,
-          latestSeq: Math.max(ingested.latestSeq ?? 0, page.latest_seq ?? 0),
-          nextBefore: fetchedFullTail
-            ? (page.has_more
-                ? timelinePageNextBefore(page)
-                : ingested.hasMore ? ingested.events[0]?.seq ?? null : null)
-            : current?.nextBefore ?? null,
-          semanticPaging: fetchedFullTail
-            ? fullTailSemanticPaging
-            : current?.semanticPaging ?? null,
-          // The server's revision is adopted only with an authoritative window; a merged page
-          // keeps the revision its tombstones reached, so a missed rewind stays detectable.
-          historyRevision: replaceEvents ? page.session.history_revision ?? ingested.historyRevision ?? null : ingested.historyRevision ?? null,
-          cachedAt: now,
-        }
         set(state => ({
           snapshots: snapshotMapWith(state.snapshots, sessionId, next),
           queuedRunStatus: reconcileQueuedRunStatus(state.queuedRunStatus, sessionId, next.queuedTurns),
@@ -5256,6 +5269,160 @@ useAppStore.subscribe((state, previous) => {
   }
 })
 
+// Warming (lib/chat-warming): the cached timelines of chats nobody has open follow the server a small page at a time,
+// so opening one later reads only its newest rows. One request at a time, paced, only in the foreground, and never
+// while the user loads, scrolls or sends. Its reads never mark a chat read.
+const WARMING_START_MS = 3_000
+const WARMING_QUIET_MS = 3_000
+// Reading one cached timeline from disk to learn where it ends; the next one waits this long.
+const WARMING_DISK_STEP_MS = 250
+// A chat just brought up to the server's newest row waits this long before it is read again, so a chat whose turn
+// keeps running is caught up twice a minute, not on every new row, and the other chats get their turn.
+const WARMING_CHAT_COOLDOWN_MS = 30_000
+/** Where each chat's cached timeline ends, by `namespace\nchat id`; null when this device has none. */
+const warmCursors = new Map<string, number | null>()
+/** Chats whose last read failed or brought no progress, with the chat list's latest sequence at the time. */
+const warmStalled = new Map<string, number>()
+/** When each chat was last brought up to the server's newest row. */
+const warmCaughtUpAt = new Map<string, number>()
+const warming = {
+  timer: null as ReturnType<typeof setTimeout> | null,
+  running: false,
+  /** A chat list change arrived during a step: look again even if that step found nothing. */
+  rekick: false,
+  /** The connection the pause and the byte budget below belong to. */
+  generation: 0,
+  pauseMs: 0,
+  /** Bytes read and not yet drained by the budget (lib/chat-warming), as of `at`. */
+  budget: { level: 0, at: 0 },
+}
+let lastUserScrollAt = 0
+
+/** A list the user scrolls reports it; warming waits until the scrolling has settled. */
+export function noteUserScroll(): void {
+  lastUserScrollAt = Date.now()
+}
+
+function scheduleWarming(delayMs: number): void {
+  if (warming.running) warming.rekick = true
+  if (warming.timer || warming.running) return
+  warming.timer = setTimeout(() => {
+    warming.timer = null
+    warming.running = true
+    warming.rekick = false
+    void warmingStep()
+      .catch(() => null)
+      .then(next => {
+        warming.running = false
+        if (next !== null) scheduleWarming(next)
+        else if (warming.rekick) scheduleWarming(WARMING_START_MS)
+      })
+  }, delayMs)
+  // load-bearing under Node (the store tests): a pending warming step must not keep the process alive.
+  ;(warming.timer as { unref?: () => void }).unref?.()
+}
+
+/** One step of the warming: the delay before the next step, or null to wait for the next chat list change. */
+async function warmingStep(): Promise<number | null> {
+  const state = useAppStore.getState()
+  const scope = captureConnection()
+  if (NativeAppState.currentState !== 'active' || !state.connected || state.switchingProfileId || state.workspaceAdopting || !scope.client.isValidated) return null
+  // A server before session_prefetch_v1 would take every warming read for an open.
+  if (state.health?.capabilities?.session_prefetch_v1?.available !== true) return null
+  // The user's own requests come first.
+  if (syncInFlight || olderPageInFlight.size || state.loadingSessionId || state.sendingSessionIds.size
+    || Date.now() - lastUserScrollAt < WARMING_QUIET_MS) return WARMING_QUIET_MS
+  if (warming.generation !== scope.generation) {
+    warming.generation = scope.generation
+    warming.pauseMs = 0
+    warming.budget = { level: 0, at: 0 }
+  }
+  const pace = hubProxyRemoteId(scope.client.baseURL) === null ? DIRECT_WARMING_PACE : REMOTE_WARMING_PACE
+  const now = Date.now()
+  const wait = warmingBudgetWaitMs(warming.budget.level, warming.budget.at, now, pace.bytesPerMinute)
+  if (wait > 0) return wait
+  // Set when the only chats behind wait out their pause: the step after it reads the first one.
+  let cooldownWait: number | null = null
+  for (const session of warmChatOrder(state.sessions, state.selectedSessionId)) {
+    const key = `${scope.namespace}\n${session.id}`
+    const listed = session.latest_event_seq ?? 0
+    const loaded = state.snapshots[session.id]
+    if (loaded) warmCursors.set(key, snapshotLatestSeq(loaded))
+    const cursor = warmCursors.get(key)
+    if (cursor === undefined) {
+      // Only chats with a timeline on this device are kept warm. Reading one is this step's work.
+      const cached = await loadSnapshot(scope.namespace, session.id)
+      warmCursors.set(key, cached ? snapshotLatestSeq(cached) : null)
+      return WARMING_DISK_STEP_MS
+    }
+    if (cursor === null || listed <= cursor || warmStalled.get(key) === listed) continue
+    const caughtUpAt = warmCaughtUpAt.get(key) ?? 0
+    if (now - caughtUpAt < WARMING_CHAT_COOLDOWN_MS) {
+      cooldownWait = Math.min(cooldownWait ?? Infinity, caughtUpAt + WARMING_CHAT_COOLDOWN_MS - now)
+      continue
+    }
+    const started = Date.now()
+    try {
+      const { bytes, latestSeq } = await warmChat(scope, session.id, pace)
+      const done = Date.now()
+      warming.budget = { level: drainedWarmingBytes(warming.budget.level, warming.budget.at, done, pace.bytesPerMinute) + bytes, at: done }
+      warming.pauseMs = nextWarmingPause(pace, warming.pauseMs, done - started)
+      if (latestSeq <= cursor) warmStalled.set(key, listed)
+      if (latestSeq >= listed) warmCaughtUpAt.set(key, done)
+    } catch (error) {
+      if (isStaleConnectionError(error, scope)) return null
+      // The chat waits for its next change, and the next request backs off as after a slow answer.
+      warmStalled.set(key, listed)
+      warming.pauseMs = nextWarmingPause(pace, warming.pauseMs, pace.slowMs)
+    }
+    return warming.pauseMs
+  }
+  return cooldownWait
+}
+
+/**
+ * Brings one chat's cached timeline closer to the server's: the page after it, or, for a backlog longer than an open
+ * merges, the window the chat shows on open (older history stays on demand). Returns the bytes read and the new end.
+ */
+async function warmChat(scope: ConnectionScope, sessionId: string, pace: WarmingPace): Promise<{ bytes: number; latestSeq: number }> {
+  const { getState: get, setState: set } = useAppStore
+  const before = get().snapshots[sessionId]
+  const cached = before ?? await loadSnapshot(scope.namespace, sessionId)
+  if (!cached) return { bytes: 0, latestSeq: 0 }
+  const eventIdsAtStart = new Set(cached.events.map(event => event.id))
+  const after = snapshotLatestSeq(cached)
+  let page = await scope.client.sessionPage(sessionId, { after, limit: pace.pageLimit, tail: false, visible: true, prefetch: true })
+  let bytes = JSON.stringify(page).length
+  const historyDiverged = timelineHistoryDiverged(cached, page)
+  let fetchedFullTail = false
+  let fullTailSemanticPaging: boolean | null = null
+  if (historyDiverged || (page.latest_seq ?? after) < after || page.events.length + (page.events_omitted_after ?? 0) > TAIL_LIMIT) {
+    if (NativeAppState.currentState !== 'active') return { bytes, latestSeq: after }
+    const semantic = (get().health?.api_contract_version ?? 0) >= SEMANTIC_PAGING_API_CONTRACT
+    ;({ page, semanticPaging: fullTailSemanticPaging } = await fetchTimelineTail(scope, sessionId, semantic, true))
+    bytes += JSON.stringify(page).length
+    fetchedFullTail = true
+  }
+  // The open chat's sync owns its timeline, and anything that changed it meanwhile (an open, a send) is newer.
+  const current = get().snapshots[sessionId]
+  if (!connectionIsCurrent(scope) || get().selectedSessionId === sessionId || current !== before) {
+    return { bytes, latestSeq: snapshotLatestSeq(current ?? cached) }
+  }
+  // The snapshot keeps its own session: a warming read changes nothing the chat list shows, unread included.
+  const next = snapshotFromPage(cached, page, { session: cached.session, fetchedFullTail, fullTailSemanticPaging, historyDiverged, eventIdsAtStart })
+  // In place and with its time: a warmed chat must not push the open chat, or the one just left, out of memory.
+  if (current) set(state => ({ snapshots: { ...state.snapshots, [sessionId]: { ...next, cachedAt: current.cachedAt } } }))
+  const latestSeq = snapshotLatestSeq(next)
+  warmCursors.set(`${scope.namespace}\n${sessionId}`, latestSeq)
+  await saveSnapshot(scope.namespace, next)
+  return { bytes, latestSeq }
+}
+
+// A new chat list, a connection, or a health check (whose capabilities decide whether warming runs at all).
+useAppStore.subscribe((state, previous) => {
+  if (state.sessions !== previous.sessions || state.health !== previous.health || (state.connected && !previous.connected)) scheduleWarming(WARMING_START_MS)
+})
+
 function stopForegroundRefreshTimer(): void {
   if (refreshTimer) clearInterval(refreshTimer)
   refreshTimer = null
@@ -5454,6 +5621,8 @@ function installAppLifecycle(
       ) {
         await get().syncSelectedSession('foreground')
       }
+      // After the open chat's catch-up: chats nobody has open may have moved while the app was away.
+      scheduleWarming(WARMING_START_MS)
     })()
   })
 }

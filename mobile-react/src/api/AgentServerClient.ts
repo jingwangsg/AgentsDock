@@ -672,7 +672,8 @@ export class AgentServerClient {
     })).session
   }
 
-  async sessionPage(sessionId: string, options: { after?: number; before?: number; limit?: number; tail?: boolean; visible?: boolean; compact?: boolean; pageMode?: 'semantic' } = {}): Promise<TimelinePage> {
+  /** `prefetch`: a background read for the cache, not an open; the server starts nothing an open would. */
+  async sessionPage(sessionId: string, options: { after?: number; before?: number; limit?: number; tail?: boolean; visible?: boolean; compact?: boolean; pageMode?: 'semantic'; prefetch?: boolean } = {}): Promise<TimelinePage> {
     const query = new URLSearchParams()
     if (options.after != null) query.set('after', String(options.after))
     if (options.before != null) query.set('before', String(options.before))
@@ -681,6 +682,7 @@ export class AgentServerClient {
     query.set('visible', String(options.visible ?? true))
     if (options.compact === true) query.set('compact', 'true')
     if (options.pageMode === 'semantic') query.set('page_mode', 'semantic')
+    if (options.prefetch === true) query.set('prefetch', 'true')
     const response = await this.get<SessionResponse>(`/api/sessions/${encodeURIComponent(sessionId)}?${query}`, TIMELINE_REQUEST_TIMEOUT_MS)
     const semanticRequested = options.pageMode === 'semantic'
     const semanticHonored = semanticRequested && response.semantic_item_count != null

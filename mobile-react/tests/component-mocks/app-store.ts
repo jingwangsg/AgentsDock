@@ -26,6 +26,8 @@ export function resetComponentStore(state: Partial<AppState> = {}): void {
   useAppStore.setState({ ...initialState(), ...state }, true)
 }
 
+export function noteUserScroll(): void {}
+
 /** The production attachment source and cache key, over this mock's client. */
 export function attachmentCacheKey(sessionId: string, fileId: string): string {
   return `test-server/${sessionId}/${fileId}`

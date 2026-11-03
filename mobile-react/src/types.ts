@@ -1636,6 +1636,8 @@ export interface HealthCapabilities {
   cross_server_mail_v1?: { available: boolean }
   /** GET /api/connect-proof?nonce= answers without a token, proving a second address is this server (lib/connect-proof). */
   connect_proof_v1?: { available: boolean; version: number }
+  /** GET /api/sessions/{id} takes prefetch=true: a background read that starts nothing an open would. */
+  session_prefetch_v1?: { available: boolean; version: number }
   [key: string]: JsonValue | InteractiveProviderCapability | CursorBackendCapability | ScheduledJobsCapability | AgentEmergencyAlertsCapability | ProviderJobsAccessControlCapability | AgentTeamMailCapability | CrossChatHandoffsCapability | TeamHubV1Capability | ServerUpdatesCapability | WorkingDirectoryCompletionCapability | RemoteServersCapability | SessionRewindCapability | LocalProviderCommandsCapability | undefined
 }
 

@@ -6,7 +6,7 @@ import { codexLifecycleSemanticKey, isHandoffDigestEvent, isTimelineError, proje
 import { liveTimelineAdvanced, shouldShowTimelineLatest, timelineMaintainVisiblePosition, timelineTargetRowIndex } from '../lib/timeline-history-navigation'
 import { mergeHistoryWithLiveSnapshot } from '../lib/timeline-memory'
 import { reuseStableTimelineRows } from '../lib/timeline-row-reuse'
-import { useAppStore } from '../store/useAppStore'
+import { noteUserScroll, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
 import { Text } from './AppText'
 import { Loading } from './ui'
@@ -296,6 +296,7 @@ export function Timeline({ sessionId, scrollRequest, keyboardVisible, keyboardSe
     })
   }, [requestOlder])
   const handleScrollBeginDrag = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    noteUserScroll()
     // Timeline movement must not blur the composer. It also cancels a
     // pending post-keyboard anchor so the user's chosen position wins.
     const offset = Math.max(0, event.nativeEvent.contentOffset.y)
@@ -319,6 +320,7 @@ export function Timeline({ sessionId, scrollRequest, keyboardVisible, keyboardSe
     }
   }, [canLoadOlder, cancelSeekAlignment, loadingOlder])
   const handleScrollEndDrag = useCallback(() => {
+    noteUserScroll()
     const interactionToken = scrollInteractionToken.current
     if (scrollSettleFrame.current != null) cancelAnimationFrame(scrollSettleFrame.current)
     // Momentum begins after drag-end on iOS. Keep the user lock for one
@@ -342,6 +344,8 @@ export function Timeline({ sessionId, scrollRequest, keyboardVisible, keyboardSe
     if (interactionToken != null) finishScrollInteraction(interactionToken)
   }, [finishScrollInteraction])
   const handleScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    // A long drag or a fling keeps the warming of other chats waiting, not only its start and end.
+    if (userScrolling.current) noteUserScroll()
     const offset = Math.max(0, event.nativeEvent.contentOffset.y)
     if (userScrolling.current && offset <= TOP_LOAD_TRIGGER && topLoadArmed.current && canLoadOlder && !loadingOlder) {
       pendingAutomaticOlder.current = true
