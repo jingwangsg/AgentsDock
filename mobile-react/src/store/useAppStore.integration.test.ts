@@ -4,7 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage'
 import * as SecureStore from 'expo-secure-store'
 import * as Notifications from 'expo-notifications'
 import { AppState as NativeAppState } from 'react-native'
-import { AgentServerClientUnvalidatedError, ServerError } from '../api/AgentServerClient'
+import { AgentServerClient, AgentServerClientUnvalidatedError, ServerError } from '../api/AgentServerClient'
 import { SNAPSHOT_CACHE_VERSION } from '../lib/history'
 import { projectTimeline, rowText } from '../lib/timeline'
 import type { AgentFile, Event, Health, QueuedTurn, Session, Snapshot, StoredProfileSettings, WorkspacePreferences } from '../types'
@@ -20,7 +20,7 @@ function deferred(): Deferred {
   return { promise, resolve }
 }
 
-interface RequestRecord { path: string; token: string }
+interface RequestRecord { path: string; query: string; token: string }
 
 class MockAgentsServer {
   readonly requests: RequestRecord[] = []
@@ -127,7 +127,7 @@ class MockAgentsServer {
   private async respond(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const url = new URL(request.url ?? '/', this.baseURL || 'http://127.0.0.1')
     const token = typeof request.headers['x-zenithdock-token'] === 'string' ? request.headers['x-zenithdock-token'] : ''
-    this.requests.push({ path: url.pathname, token })
+    this.requests.push({ path: url.pathname, query: url.search, token })
     if (token !== this.expectedToken) {
       writeJSON(response, 401, { detail: `${this.label} rejected a foreign token` })
       return
@@ -329,6 +329,15 @@ try {
   assert(serverA.requests.every(request => request.token === 'token-a'))
   assert.equal((Notifications as typeof Notifications & { __notificationPermissionRequests(): number }).__notificationPermissionRequests(), 1)
   const generationA = state.profileGeneration
+
+  // An attachment image is cached under the server's identity, the chat and the file id: another address of the same
+  // server (its LAN address instead of Tailscale) finds the image this one cached.
+  const attachment = storeModule.attachmentImageSource(storeModule.client, 'shared-session', 'file_0123456789abcdef')
+  const otherAddress = new AgentServerClient('http://192.0.2.7:7850', 'token-a')
+  assert.equal(attachment.cacheKey, 'server-a/shared-session/file_0123456789abcdef')
+  assert.equal(storeModule.attachmentImageSource(otherAddress, 'shared-session', 'file_0123456789abcdef').cacheKey, attachment.cacheKey)
+  assert.notEqual(storeModule.attachmentImageSource(otherAddress, 'shared-session', 'file_0123456789abcdef').uri, attachment.uri)
+  otherAddress.dispose()
 
   // Settings written before the appearance preference existed open in Zed One
   // Dark; a Settings change is persisted with the profile settings.
@@ -545,6 +554,11 @@ try {
   await useAppStore.getState().reconnect()
   assert.equal(useAppStore.getState().connected, true)
   assert.equal(storeModule.client.isValidated, true)
+
+  // The catalog costs the server seconds of CLI probes: a reconnect never asks for refresh=true (that is RuntimeHealth's
+  // Refresh). This server reports no process id, so each reconnect reads it again.
+  const catalogReadsB = serverB.requests.filter(request => request.path === '/api/runtime/catalog')
+  assert.ok(catalogReadsB.length > 1 && catalogReadsB.every(request => request.query === ''), 'reconnects read the catalog without refresh=true')
 
   const bRuntimeBeforeMismatch = serverB.requests.filter(request => request.path === '/api/runtime/catalog').length
   serverB.identity = 'foreign-server'

@@ -52,6 +52,8 @@ export interface FilePreviewProps {
   layout: MobileFileViewerLayout
   previewURL?: string
   fallbackPreviewURL?: string
+  /** expo-image disk cache keys for preview URLs whose bytes never change (a chat attachment's file id). */
+  imageCacheKeys?: Record<string, string>
   headers?: Record<string, string>
   loadText?: (limit: number) => Promise<LoadedFileText>
   saveText?: (content: string, expectedRevision: string) => Promise<LoadedFileText>
@@ -68,7 +70,7 @@ export interface FilePreviewProps {
   onDownload: () => void
 }
 
-export function FilePreview({ name, path, contentType, size, layout, previewURL, fallbackPreviewURL, headers, loadText, saveText, maxEditableBytes, loadLocalPreview, onDirtyChange, onEditControllerChange, onTextSaved, imageViewer, onDownload }: FilePreviewProps) {
+export function FilePreview({ name, path, contentType, size, layout, previewURL, fallbackPreviewURL, imageCacheKeys, headers, loadText, saveText, maxEditableBytes, loadLocalPreview, onDirtyChange, onEditControllerChange, onTextSaved, imageViewer, onDownload }: FilePreviewProps) {
   const colors = usePalette()
   const kind = mobileFileViewerKind(name, contentType)
   const textLimit = mobileTextPreviewLimit(layout)
@@ -426,7 +428,7 @@ export function FilePreview({ name, path, contentType, size, layout, previewURL,
       resetKey={activePreviewURL}
       style={[styles.imageCanvas, { backgroundColor: colors.background }]}
     >
-      <Image source={{ uri: activePreviewURL, headers }} contentFit="contain" cachePolicy={fallbackPreviewURL && activePreviewURL !== fallbackPreviewURL ? 'none' : 'memory-disk'} onError={event => {
+      <Image source={{ uri: activePreviewURL, headers, cacheKey: imageCacheKeys?.[activePreviewURL] }} contentFit="contain" cachePolicy={fallbackPreviewURL && activePreviewURL !== fallbackPreviewURL ? 'none' : 'memory-disk'} onError={event => {
         if (fallbackPreviewURL && activePreviewURL !== fallbackPreviewURL) setActivePreviewURL(fallbackPreviewURL)
         else setError(event.error || 'The image could not be decoded.')
       }} style={StyleSheet.absoluteFill} />

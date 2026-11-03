@@ -89,6 +89,7 @@ function AppShellContent() {
   const cancelPendingServerUpdate = useAppStore(state => state.cancelPendingServerUpdate)
   const initialize = useAppStore(state => state.initialize)
   const profiles = useAppStore(state => state.profiles)
+  const secondAddressInUse = useAppStore(state => state.secondAddressInUse)
   const activeProfileId = useAppStore(state => state.activeProfileId)
   const profileGeneration = useAppStore(state => state.profileGeneration)
   const switchingProfileId = useAppStore(state => state.switchingProfileId)
@@ -169,7 +170,9 @@ function AppShellContent() {
     serverVersion: profile.serverVersion,
     sshHost: profile.sshHost,
     hidden: profile.hidden,
-  })), [profiles])
+    secondServerUrl: profile.secondServerURL ?? null,
+    secondAddressInUse: secondAddressInUse?.profileId === profile.id,
+  })), [profiles, secondAddressInUse])
   const showServerSetup = shouldPresentServerSetup({ initialized, connected, serverConfigured, serverURL, setupDismissed })
   const canCancelPendingServerUpdate = pendingServerUpdate?.profileId === activeProfileId
     && pendingServerUpdate.profileGeneration === profileGeneration
@@ -359,6 +362,11 @@ function AppShellContent() {
   }, [])
   useEffect(() => {
     if (!profileGeneration) return
+    // A move to the server's other address keeps the open chat and dialogs; they remount on the new client.
+    if (profileGeneration === useAppStore.getState().addressMoveGeneration) {
+      setModalGeneration(profileGeneration)
+      return
+    }
     clearInspectorFallback()
     dismissAppKeyboard()
     setMobileChatOpen(false)
@@ -509,6 +517,7 @@ function AppShellContent() {
         accessToken: patch.accessToken,
         serverIdentity: patch.serverIdentity,
         resetServerIdentity: patch.resetServerIdentity,
+        secondServerURL: patch.secondServerUrl,
       })}
       onReorderProfiles={reorderServerProfiles}
       onRemoveProfile={removeServerProfile}

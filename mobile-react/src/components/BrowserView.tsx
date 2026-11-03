@@ -44,7 +44,10 @@ export function BrowserView({ surface }: { surface: Surface }) {
   // localhost only, as before.
   const allHosts = useAppStore(state => state.health?.capabilities?.browser_tunnel_hosts_v1?.available === true)
   const [routing, setRouting] = useState<'pending' | 'routed' | 'unavailable'>('pending')
+  // A new connection (another address of the server) is unvalidated until its health check: route once it is.
+  const connected = useAppStore(state => state.connected)
   useEffect(() => {
+    if (!connected || !client.isValidated) return
     let current = true
     const tunnel = new URL(client.url(`/api/sessions/${encodeURIComponent(surface.id)}/ports/`))
     // The server's own address stays direct: the app's other web views load from it. Not when it is a
@@ -61,7 +64,7 @@ export function BrowserView({ surface }: { surface: Surface }) {
       current = false
       void releaseBrowserRouting(webViewProfile)
     }
-  }, [webViewProfile, allHosts])
+  }, [webViewProfile, allHosts, connected])
   const navigated = (state: WebViewNavigation) => {
     setHistory({ canGoBack: state.canGoBack, canGoForward: state.canGoForward })
     if (!state.url || state.url === 'about:blank') return

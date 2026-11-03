@@ -30,7 +30,7 @@ const mocks = {
   'expo-image-picker': `export async function launchImageLibraryAsync(){return {canceled:true}}`,
   '@expo/ui/community/menu': `export const MenuView='MenuView';`,
   'lucide-react-native': `export const AlertCircle='AlertCircle', ArrowDown='ArrowDown', ArrowUp='ArrowUp', Check='Check', ChevronDown='ChevronDown', ChevronRight='ChevronRight', CornerDownRight='CornerDownRight', File='File', Mail='Mail', MessageCircleMore='MessageCircleMore', MessageSquarePlus='MessageSquarePlus', MessageSquareShare='MessageSquareShare', Paperclip='Paperclip', Pencil='Pencil', Search='Search', Send='Send', Square='Square', Trash2='Trash2', X='X', Server='Server', RefreshCw='RefreshCw';`,
-  '../store/useAppStore': `export const useAppStore=globalThis.__teamComposerFixture.store; export const client=globalThis.__teamComposerFixture.client; export const capturedConnectionIsCurrent=(connection, profileId, generation)=>{ const state=useAppStore.getState(); return client===connection && connection.isValidated && state.activeProfileId===profileId && state.profileGeneration===generation && state.connected && !state.connecting && !state.switchingProfileId };`,
+  '../store/useAppStore': `export const useAppStore=globalThis.__teamComposerFixture.store; export const client=globalThis.__teamComposerFixture.client; export const attachmentImageSource=(connection, sessionId, fileId)=>({ uri: connection.fileURL(sessionId, fileId), headers: connection.authHeaders(), cacheKey: 'local-server/' + sessionId + '/' + fileId }); export const capturedConnectionIsCurrent=(connection, profileId, generation)=>{ const state=useAppStore.getState(); return client===connection && connection.isValidated && state.activeProfileId===profileId && state.profileGeneration===generation && state.connected && !state.connecting && !state.switchingProfileId };`,
   '../lib/analytics': `export function trackEvent(){}`,
   '../lib/app-keyboard': `export async function dismissAppKeyboard(){}`,
   './AppText': `import {forwardRef,createElement} from 'react'; export const Text='Text'; export const TextInput=forwardRef((props,ref)=>createElement('TextInput',{...props,ref}));`,
@@ -868,7 +868,7 @@ test('a queued image thumbnail opens the image preview',async()=>{
   try{
     const thumb=renderer.root.findAllByType('Pressable').find(node=>node.props.accessibilityLabel==='Preview Attachment')
     await act(async()=>thumb.props.onPress())
-    assert.deepEqual(previews,[['Attachment',{uri:'https://server/chat/image',headers:{Authorization:'Bearer t'}}]])
+    assert.deepEqual(previews,[['Attachment',{uri:'https://server/chat/image',headers:{Authorization:'Bearer t'},cacheKey:'local-server/chat/image'}]])
   }finally{await act(async()=>renderer.unmount())}
 })
 

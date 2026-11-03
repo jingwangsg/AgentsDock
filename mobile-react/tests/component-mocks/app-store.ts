@@ -26,6 +26,15 @@ export function resetComponentStore(state: Partial<AppState> = {}): void {
   useAppStore.setState({ ...initialState(), ...state }, true)
 }
 
+/** The production attachment source and cache key, over this mock's client. */
+export function attachmentCacheKey(sessionId: string, fileId: string): string {
+  return `test-server/${sessionId}/${fileId}`
+}
+
+export function attachmentImageSource(connection: AgentServerClient, sessionId: string, fileId: string) {
+  return { uri: connection.fileURL(sessionId, fileId), headers: connection.authHeaders(), cacheKey: attachmentCacheKey(sessionId, fileId) }
+}
+
 /** The production fence evaluated against this mock's state and client. */
 export function capturedConnectionIsCurrent(connection: AgentServerClient, profileId: string | null, generation: number): boolean {
   const state = useAppStore.getState()

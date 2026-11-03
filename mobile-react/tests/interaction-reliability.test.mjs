@@ -744,7 +744,7 @@ test('separate controls offer guarded attachments and Mac-parity quick messages'
   assert.match(store, /uploads: consumeComposer/)
   assert.match(composer, /import \{ Image \} from 'expo-image'/)
   assert.match(composer, /horizontal[\s\S]*?testID="attachment-shelf"/)
-  assert.match(composer, /image && connectionReady \? \{ uri: client\.fileURL\(sessionId, file\.id\), headers: client\.authHeaders\(\) \} : null/)
+  assert.match(composer, /image && connectionReady \? attachmentImageSource\(client, sessionId, file\.id\) : null/)
   assert.match(composer, /source = image \? \{ uri: file\.uri \} : null/)
   assert.match(composer, /fileIconWell: \{ width: 48, height: 48, minWidth: 48, flexShrink: 0/)
   assert.match(composer, /Upload failed · Tap to retry/)

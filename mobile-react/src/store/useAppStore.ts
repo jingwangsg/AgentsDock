@@ -4,6 +4,7 @@ import { sessionNeedsProviderInteraction } from '../lib/claude-controls'
 import { newIdempotencyKey } from '../lib/team-network'
 import { remoteChatTitlesFrom } from '../lib/live-chat-title'
 import { AppState as NativeAppState, Linking } from 'react-native'
+import NetInfo from '@react-native-community/netinfo'
 import * as Notifications from 'expo-notifications'
 import type {
   AgentFile,
@@ -53,6 +54,7 @@ import type {
   UpdateSurfaceInput,
 } from '../types'
 import { AgentServerClient, AgentServerClientDisposedError, AgentServerClientUnvalidatedError, ServerError, WebSocketConnectionError } from '../api/AgentServerClient'
+import { addressProvesServer } from '../lib/connect-proof'
 import { errorMessage, normalizeServerURL } from '../lib/format'
 import { reconcileHealthActiveSessions } from '../lib/active-sessions'
 import { isSubagentActive, subagentsFromEvents } from '../lib/subagents'
@@ -129,6 +131,7 @@ import {
   findDuplicateProfileByIdentity,
   HUB_PROXY_PREFIX,
   hubProxyBaseURL,
+  hubOrphanCandidates,
   hubProxyRemoteId,
   hubRemoteProfileOrder,
   profileNamespace,
@@ -174,6 +177,8 @@ let pendingJobsRefreshTimer: ReturnType<typeof setTimeout> | null = null
 let quickCreateSessionInFlight: { scope: ConnectionScope; promise: Promise<boolean> } | null = null
 /** The hub job `deployHubRemoteServer` or `moveHubRemote` is currently polling, if any; lets cancelHubDeploy reach both the poll loop and the server-side job. */
 let hubDeployInFlight: { client: AgentServerClient; jobId: string; cancelled: boolean } | null = null
+/** The `server_instance_id` whose catalog `runtime` holds; a profile switch clears `runtime` itself. */
+let runtimeServerInstance: string | undefined
 
 /**
  * The profile of the hub that proxies `/api/remote/<id>` profiles: the base of any such profile, or the
@@ -288,6 +293,20 @@ let activeConnection: ConnectionScope = {
 
 export let client = activeConnection.client
 
+/**
+ * expo-image source for a chat attachment through `connection`. A file id names bytes that never change, and the
+ * disk cache key leaves the server's address out: switching between its LAN and Tailscale addresses never downloads an
+ * image again.
+ */
+export function attachmentImageSource(connection: AgentServerClient, sessionId: string, fileId: string): { uri: string; headers: Record<string, string>; cacheKey: string } {
+  return { uri: connection.fileURL(sessionId, fileId), headers: connection.authHeaders(), cacheKey: attachmentCacheKey(sessionId, fileId) }
+}
+
+/** attachmentImageSource's cache key: the server's identity (its profile until one is pinned), the chat, the file id. */
+export function attachmentCacheKey(sessionId: string, fileId: string): string {
+  return `${activeConnection.namespace}/${sessionId}/${fileId}`
+}
+
 const agentRouteRefreshTokens = new Map<string, symbol>()
 const agentRouteMutationTokens = new Map<string, symbol>()
 
@@ -401,6 +420,22 @@ function installConnection(
           pendingServerUpdate: serverUpdateNotice(next, state.health),
         }))
       },
+      // A failed request on a second address can mean the phone changed networks before NetInfo said so: the
+      // connection moves to the primary before any retry, and the address waits for the next network change or
+      // foreground to prove itself again.
+      onConnectionLost: () => {
+        if (!connectionIsCurrent(next) || !usesSecondAddress(next)) return
+        const owner = secondAddressOwnerOf(next.profileId)
+        if (owner) failedSecondAddressProfileIds.add(owner.id)
+        forgetSecondAddresses()
+      },
+      // Open at a second address only while the current proof allows exactly this address.
+      addressOpen: () => {
+        if (!usesSecondAddress(next)) return true
+        const profiles = useAppStore.getState().profiles
+        const profile = profiles.find(value => value.id === next.profileId)
+        return Boolean(profile) && profileAddress(profile!, profiles) === next.client.baseURL
+      },
     }),
   }
   activeConnection = next
@@ -408,6 +443,146 @@ function installConnection(
   previous.client.dispose()
   set(emptyAgentRouteState())
   return next
+}
+
+/**
+ * Second addresses proven on the current network, by profile id, each with what the proof was made for (proofKey). A
+ * network change or the app's return to the foreground forgets them: a LAN address may belong to another device on the
+ * next network, so the token goes there again only after a fresh proof.
+ */
+const provenSecondAddresses = new Map<string, string>()
+/** Profiles whose second address proved but then failed to carry the connection: not probed again until the network changes or the app returns. */
+const failedSecondAddressProfileIds = new Set<string>()
+/** NetInfo's network (type, connected, IP address, access point); null until its first report. */
+let networkFingerprint: string | null = null
+/** Advanced by every network change after NetInfo's first report: a proof holds only within one. */
+let networkGeneration = 0
+let addressRoutingInFlight: { promise: Promise<void>; dirty: boolean } | null = null
+
+/** The profile whose second address carries `profile`'s traffic: itself, or the hub a remote is proxied through. */
+function secondAddressOwner(profile: PublicServerProfile, profiles: readonly PublicServerProfile[]): PublicServerProfile | undefined {
+  const hub = hubProxyBaseURL(profile.serverURL)
+  return hub === null ? profile : profiles.find(value => normalizeServerURL(value.serverURL) === hub)
+}
+
+function secondAddressOwnerOf(profileId: string): PublicServerProfile | undefined {
+  const profiles = useAppStore.getState().profiles
+  const profile = profiles.find(value => value.id === profileId)
+  return profile && secondAddressOwner(profile, profiles)
+}
+
+/** What a proof was made for: a change of the address, the pinned identity or the token voids it. */
+function proofKey(owner: PublicServerProfile): string {
+  return `${owner.secondServerURL}\n${owner.serverIdentity}\n${owner.credentialVersion}`
+}
+
+/** The address `profile` is reached at: under its owner's second address while that is proven, else its own. */
+function profileAddress(profile: PublicServerProfile, profiles: readonly PublicServerProfile[]): string {
+  const owner = secondAddressOwner(profile, profiles)
+  const remoteId = hubProxyRemoteId(profile.serverURL)
+  if (!owner?.secondServerURL || provenSecondAddresses.get(owner.id) !== proofKey(owner)) return normalizeServerURL(profile.serverURL)
+  return remoteId === null ? owner.secondServerURL : normalizeServerURL(owner.secondServerURL + HUB_PROXY_PREFIX + remoteId)
+}
+
+/**
+ * A profile whose health on its primary address advertises connect_proof_v1 gets its second address probed. Saved
+ * with the profile, so a cold start with the primary down can still try the second address.
+ */
+function learnConnectProof(profileId: string, health: Health): void {
+  const advertised = health.capabilities?.connect_proof_v1?.available === true
+  const profile = useAppStore.getState().profiles.find(value => value.id === profileId)
+  if (!profile || Boolean(profile.connectProof) === advertised) return
+  // A later health check sets it again if a concurrent profile edit drops it before this save.
+  useAppStore.setState(state => ({ profiles: state.profiles.map(value => value.id === profileId ? { ...value, connectProof: advertised || undefined } : value) }))
+  void saveProfileSettingsFromState(useAppStore.getState).catch(() => undefined)
+  if (advertised) void routeActiveConnection()
+}
+
+/** AppState.secondAddressInUse for `profile` connected at `address`. */
+function secondAddressState(profile: PublicServerProfile, profiles: readonly PublicServerProfile[], address: string): AppState['secondAddressInUse'] {
+  const owner = secondAddressOwner(profile, profiles)
+  return owner?.secondServerURL && address !== normalizeServerURL(profile.serverURL) ? { profileId: owner.id, address: owner.secondServerURL } : null
+}
+
+function usesSecondAddress(scope: ConnectionScope): boolean {
+  return scope.client.baseURL !== normalizeServerURL(useAppStore.getState().serverURL)
+}
+
+/**
+ * Forgets every proven second address, which closes a second-address client at once (its addressOpen), and moves the
+ * active connection to its primary; routeActiveConnection brings it back after a fresh proof.
+ */
+function forgetSecondAddresses(): void {
+  provenSecondAddresses.clear()
+  const scope = activeConnection
+  const profile = useAppStore.getState().profiles.find(value => value.id === scope.profileId)
+  if (!profile || !usesSecondAddress(scope)) return
+  // Requests already on their way there are aborted, and nothing waits on the connection while a profile switch holds
+  // the move back.
+  scope.client.revokeValidation()
+  useAppStore.setState({ connected: false, liveConnected: false })
+  moveActiveConnection(scope, profile, normalizeServerURL(profile.serverURL))
+}
+
+/**
+ * Moves the active profile's connection to `address`, another address of the same server, as a new client: every
+ * component holding the old one (streams, terminals, browser tabs, images) reattaches to the new client. While a
+ * profile switch or an identity adoption runs, the move waits for the next routing; the closed gate keeps the old
+ * client from sending anything meanwhile.
+ */
+function moveActiveConnection(scope: ConnectionScope, profile: PublicServerProfile, address: string): void {
+  const { getState: get, setState: set } = useAppStore
+  if (!connectionIsCurrent(scope) || scope.namespaceAdopting || get().switchingProfileId || get().workspaceAdopting) return
+  stopSelectedStream()
+  const next = installConnection(scope.profileId, address, get().token, scope.namespace, set)
+  set({
+    profileGeneration: next.generation,
+    addressMoveGeneration: next.generation,
+    connected: false,
+    connecting: false,
+    liveConnected: false,
+    secondAddressInUse: secondAddressState(profile, get().profiles, address),
+  })
+  void get().reconnect()
+}
+
+/**
+ * Moves the active connection to its second address once that proves to be the same server (only a nonce goes
+ * there), or to its primary when it does not. A call while one runs makes it run once more.
+ */
+function routeActiveConnection(): Promise<void> {
+  if (addressRoutingInFlight) {
+    addressRoutingInFlight.dirty = true
+    return addressRoutingInFlight.promise
+  }
+  const routing = { promise: Promise.resolve(), dirty: false }
+  addressRoutingInFlight = routing
+  routing.promise = (async () => {
+    try {
+      do {
+        routing.dirty = false
+        const get = useAppStore.getState
+        if (NativeAppState.currentState !== 'active') return
+        const scope = captureConnection()
+        const profile = get().profiles.find(value => value.id === scope.profileId)
+        if (!profile) return
+        const owner = secondAddressOwner(profile, get().profiles)
+        // Probed only with a pinned identity, and only for a server whose health on the primary advertised the proof.
+        if (owner?.secondServerURL && owner.serverIdentity && owner.connectProof
+          && !failedSecondAddressProfileIds.has(owner.id) && provenSecondAddresses.get(owner.id) !== proofKey(owner)) {
+          const network = networkGeneration
+          const proven = await addressProvesServer(owner.secondServerURL, await loadProfileToken(owner.id, owner.credentialVersion), owner.serverIdentity)
+          // A proof that straddled a network change says nothing about the new network.
+          if (proven && network === networkGeneration) provenSecondAddresses.set(owner.id, proofKey(owner))
+        }
+        const address = profileAddress(profile, get().profiles)
+        if (connectionIsCurrent(scope) && address !== scope.client.baseURL) moveActiveConnection(scope, profile, address)
+      } while (routing.dirty)
+    } finally {
+      addressRoutingInFlight = null
+    }
+  })()
+  return routing.promise
 }
 
 export type ChatSyncStatus = 'idle' | 'cached' | 'syncing' | 'live' | 'reconnecting' | 'offline' | 'error'
@@ -504,6 +679,10 @@ interface AppState {
   pendingServerUpdate: PendingServerUpdateNotice | null
   cancelingServerUpdate: boolean
   serverURL: string
+  /** The second address the active connection goes through and the profile it belongs to (the active one, or its hub); null on the primary. */
+  secondAddressInUse: { profileId: string; address: string } | null
+  /** The profileGeneration of the latest move between a server's addresses: the same server, so the UI stays as it is. */
+  addressMoveGeneration: number
   serverConfigured: boolean
   token: string
   health: Health | null
@@ -717,6 +896,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   pendingServerUpdate: null,
   cancelingServerUpdate: false,
   serverURL: DEFAULT_SERVER_URL,
+  secondAddressInUse: null,
+  addressMoveGeneration: 0,
   serverConfigured: false,
   token: '',
   health: null,
@@ -870,6 +1051,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         try {
           token = await loadProfileToken(profile.id, profile.credentialVersion)
           const health = await probeServerHealth(profile.serverURL, token)
+          if (hubProxyRemoteId(profile.serverURL) === null) learnConnectProof(profile.id, health)
           // A changed identity is settled when the server is selected, not by a background check;
           // until then the row shows its cached state, not the new server's.
           patch = profile.serverIdentity && health.server_identity !== profile.serverIdentity
@@ -1091,6 +1273,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   async updateServerProfile(profileId, patch) {
     let activation: { intent: number; scope: ConnectionScope } | null = null
+    const activeBefore = get().profiles.find(value => value.id === get().activeProfileId)
     const requestedProfile = get().profiles.find(value => value.id === profileId)
     if (requestedProfile && profileId === get().activeProfileId && serverProfileConnectionChanges(requestedProfile, patch)) {
       assertNoSendInFlightForServerMutation(set, get)
@@ -1108,6 +1291,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       } else await update()
     })
     if (activation) await completeServerProfileActivation(activation, set, get)
+    if (patch.secondServerURL !== undefined) {
+      // A changed second address proves itself before the token goes there.
+      failedSecondAddressProfileIds.delete(profileId)
+      forgetSecondAddresses()
+      void routeActiveConnection()
+    }
+    // updateServerProfileLocked moved the hub's remotes with it; an active remote reconnects at its new URL.
+    const active = get().profiles.find(value => value.id === activeBefore?.id)
+    if (active && active.id !== profileId && active.serverURL !== activeBefore?.serverURL) await activateServerProfile(active.id, true, set, get)
     const hub = get().profiles.find(value => value.id === profileId)
     const token = patch.accessToken
     if (hub && token) {
@@ -1187,6 +1379,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   async reconnect() {
     if (NativeAppState.currentState !== 'active' || !shouldAutoConnectServer(get())) return
     const requestedScope = captureConnection()
+    // A second address whose proof was forgotten is closed: routing proves it again or moves to the primary, then reconnects.
+    if (!requestedScope.client.isAddressOpen) return routeActiveConnection()
     if (reconnectInFlight?.scope === requestedScope) return reconnectInFlight.promise
     const operation = (async () => {
       if (NativeAppState.currentState !== 'active' || get().connecting) return
@@ -1223,6 +1417,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (isStaleConnectionError(error, scope)) return
       const message = errorMessage(error)
       forceValidationOffline(scope, message, set)
+      const owner = secondAddressOwnerOf(scope.profileId)
+      // A primary that fails tries the second address, if this server ever advertised the proof on the primary, also
+      // one that lost the connection before on this network.
+      if (!owner || !usesSecondAddress(scope)) {
+        if (owner) failedSecondAddressProfileIds.delete(owner.id)
+        void routeActiveConnection()
+      }
+      // A second address that fails moves the connection to the primary.
+      else if (!(error instanceof ServerError)) {
+        failedSecondAddressProfileIds.add(owner.id)
+        forgetSecondAddresses()
+      }
+      // Otherwise the server answered through the second address (a hub's 502 for a remote whose tunnel is down): it stays.
       return
     }
 
@@ -1230,6 +1437,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (pauseReconnectForInactiveApp(scope, set)) return
     if (!validatedRevisionIsCurrent(scope, acceptedValidationRevision)) return
     healthFailureCount = 0
+    if (!usesSecondAddress(scope) && hubProxyRemoteId(get().serverURL) === null) learnConnectProof(scope.profileId, health)
     set(state => ({
       connected: true,
       // Identity and credentials are authoritative once health validation
@@ -1250,10 +1458,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     void reconcileHubRemoteServers(scope, set, get)
     const sessionRead = sessionMutations.captureRead()
     const sessionsRequest = Promise.allSettled([scope.client.sessions()] as const)
-    const optionalRequests = Promise.allSettled([scope.client.runtimeCatalog(true), scope.client.jobs()] as const)
+    // The catalog takes the server seconds to build (it probes the CLIs) and changes only with them: kept across
+    // reconnects to the same server process, read again after a restart. RuntimeHealth's Refresh rechecks the CLIs.
+    const heldRuntime = health.server_instance_id && runtimeServerInstance === health.server_instance_id ? get().runtime : null
+    const optionalRequests = Promise.allSettled([heldRuntime ?? scope.client.runtimeCatalog(), scope.client.jobs()] as const)
     void optionalRequests.then(([runtimeResult, jobsResult]) => {
       if (NativeAppState.currentState !== 'active' || !connectionIsCurrent(scope)) return
       if (!validatedRevisionIsCurrent(scope, acceptedValidationRevision)) return
+      if (runtimeResult.status === 'fulfilled') runtimeServerInstance = health.server_instance_id
       set(state => ({
         runtime: runtimeResult.status === 'fulfilled' ? runtimeResult.value : state.runtime,
         jobs: jobsResult.status === 'fulfilled' ? jobsResult.value : state.jobs,
@@ -1423,6 +1635,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const acceptedValidationRevision = scope.client.validationRevision
       const runtime = await scope.client.runtimeCatalog(true)
       if (NativeAppState.currentState !== 'active' || !validatedRevisionIsCurrent(scope, acceptedValidationRevision)) return
+      runtimeServerInstance = health.server_instance_id
       set(state => ({
         runtime,
         health,
@@ -1448,6 +1661,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (NativeAppState.currentState !== 'active' || !get().connected) return
     const scope = captureConnection()
     if (expectedGeneration !== undefined && expectedGeneration !== scope.generation) return
+    // A second address whose proof no longer holds (its hub profile removed, the identity reset) is closed: routing
+    // proves it again or moves the connection to the primary.
+    if (!scope.client.isAddressOpen) return routeActiveConnection()
     if (refreshSessionsInFlight?.scope === scope) return refreshSessionsInFlight.promise
     const operation = (async () => {
       const activeRevisionAtRequest = activeSessionRevision
@@ -2469,7 +2685,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       try {
         const snapshot = await scope.client.subagents(sessionId)
         if (!connectionIsCurrent(scope)) return
-        set(state => ({ subagentsBySession: withSubagentStates(state.subagentsBySession, sessionId, snapshot.subagents) }))
+        // An unchanged snapshot (a 304) adds nothing newer: no store write, so no subscriber runs.
+        set(state => {
+          const subagentsBySession = withSubagentStates(state.subagentsBySession, sessionId, snapshot.subagents)
+          return subagentsBySession === state.subagentsBySession ? state : { subagentsBySession }
+        })
       } catch {
         // Advisory rows: the last known state stays on screen and the next poll or turn end retries.
       } finally {
@@ -4031,7 +4251,22 @@ async function updateServerProfileLocked(
     stagedCredentialVersion = await stageProfileToken(profileId, currentPublic.credentialVersion, nextToken)
     updated = { ...updated, credentialVersion: stagedCredentialVersion }
   }
-  const profiles = stored.map(profile => profile.id === profileId ? updated : profile)
+  // A hub's remotes follow it to its new address, unless the address is now another server (an identity reset). One
+  // whose new URL a profile already has (a duplicate a build before 85 made) stays, and the next registry mirror keeps
+  // one of the two.
+  const previousHub = normalizeServerURL(currentPublic.serverURL)
+  const taken = new Set(stored.map(profile => normalizeServerURL(profile.serverURL)))
+  const moved = new Map<string, string>()
+  if (normalizeServerURL(updated.serverURL) !== previousHub && !patch.resetServerIdentity) {
+    for (const profile of stored) {
+      const remoteId = hubProxyBaseURL(profile.serverURL) === previousHub ? hubProxyRemoteId(profile.serverURL) : null
+      const serverURL = remoteId ? normalizeServerURL(updated.serverURL + HUB_PROXY_PREFIX + remoteId) : null
+      if (serverURL && !taken.has(serverURL)) moved.set(profile.id, serverURL)
+    }
+  }
+  // The inactive hub's probe mirrors the registry only when its remote list changed; after a move it has to run once.
+  if (moved.size) lastHubRemotesKey = null
+  const profiles = stored.map(profile => profile.id === profileId ? updated : moved.has(profile.id) ? { ...profile, serverURL: moved.get(profile.id)! } : profile)
   try {
     await saveProfileSettings({
       schemaVersion: 2,
@@ -4047,7 +4282,7 @@ async function updateServerProfileLocked(
     throw error
   }
   set(state => ({
-    profiles: state.profiles.map(profile => profile.id === profileId ? publicProfile(updated, Boolean(nextToken), {
+    profiles: state.profiles.map(profile => moved.has(profile.id) ? { ...profile, serverURL: moved.get(profile.id)! } : profile.id === profileId ? publicProfile(updated, Boolean(nextToken), {
       connectionState: connectionChanged
         ? profileId === state.activeProfileId ? 'connecting' : health ? 'online' : 'cached'
         : profile.connectionState,
@@ -4108,6 +4343,8 @@ async function completeServerProfileActivation(
   // a 30-second health timeout. The health-only client still blocks all remote
   // work until reconnect completes identity validation.
   set({ switchingProfileId: null })
+  // The new profile, or the edited one, starts at its primary unless its second address is already proven here.
+  void routeActiveConnection()
   void get().reconnect().catch(error => {
     if (activation.intent !== profileSwitchIntent || !connectionIsCurrent(activation.scope)) return
     activation.scope.client.revokeValidation()
@@ -4171,7 +4408,8 @@ async function prepareServerProfileActivation(
     readReceiptTimer = null
     healthFailureCount = 0
     activeSessionRevision += 1
-    const scope = installConnection(profileId, profile.serverURL, token, namespace, set)
+    const address = profileAddress(profile, get().profiles)
+    const scope = installConnection(profileId, address, token, namespace, set)
     const previousUnread = unreadCount(get().sessions)
     set(state => ({
       profiles: state.profiles.map(value => value.id === profileId
@@ -4184,6 +4422,7 @@ async function prepareServerProfileActivation(
       switchingProfileId: profileId,
       workspaceAdopting: false,
       serverURL: profile.serverURL,
+      secondAddressInUse: secondAddressState(profile, get().profiles, address),
       serverConfigured: profile.serverConfigured,
       token,
       connected: false,
@@ -4382,19 +4621,42 @@ async function reconcileHubRegistry(
       // A list fetched before a removal, reorder or move here would recreate the remote, undo the drag or restore the old host; the next refresh reconciles.
       if (!isCurrent() || edits !== hubRegistryEdits) return false
       const stored = storedProfiles(get().profiles)
-      const { create, update, removeIds } = reconcileHubProfiles(stored, hubScope.serverURL, remotes)
-      // Runs while a remote is active too (a deploy, a move, the inactive hub's probe); the active profile is
-      // never removed under the user, as on the desktop.
-      const removed = new Set(removeIds.filter(id => id !== get().activeProfileId))
-      const complete = removed.size === removeIds.length
-      if (!create.length && !update.length && !removed.size && !hubRemoteProfileOrder(stored, hubScope.serverURL, remotes)) return complete
+      const activeProfileId = get().activeProfileId
       const hub = stored.find(profile => profile.id === hubScope.profileId)
-      const hubToken = hub ? await loadProfileToken(hub.id, hub.credentialVersion) : ''
+      let hubToken: string | undefined
+      const loadHubToken = async () => hubToken ??= hub ? await loadProfileToken(hub.id, hub.credentialVersion) : ''
+      // Remotes saved under an address the hub had before (builds before 85 left them there when it moved) are its
+      // own when they carry its token; another hub's never do, and a hub without a token adopts nothing. Of two
+      // profiles for one remote the active one stays, else the one with more on this device: cached chats, unread,
+      // pins and drafts.
+      const adopted = new Set<string>()
+      for (const orphan of hubOrphanCandidates(stored, hubScope.serverURL, remotes)) {
+        const token = await loadHubToken()
+        if (token && await loadProfileToken(orphan.id, orphan.credentialVersion) === token) adopted.add(orphan.id)
+      }
+      const keepPriority = new Map<string, number>()
+      if (adopted.size) {
+        for (const profile of stored.filter(value => hubProxyRemoteId(value.serverURL) !== null)) {
+          const namespace = profileNamespace(profile)
+          const [summary, workspace] = await Promise.all([cachedServerSummary(namespace), loadWorkspacePreferences(namespace)])
+          keepPriority.set(profile.id, profile.id === activeProfileId
+            ? Infinity
+            : summary.sessionCount + summary.unreadCount + summary.pinnedCount + Object.keys(workspace.drafts).length)
+        }
+      }
+      const { create, update, removeIds } = reconcileHubProfiles(stored, hubScope.serverURL, remotes, adopted, id => keepPriority.get(id) ?? 0)
+      // Runs while a remote is active too (a deploy, a move, the inactive hub's probe); the active profile is
+      // never removed or readdressed under the user, as on the desktop. A later mirror moves it once it is left.
+      const removed = new Set(removeIds.filter(id => id !== activeProfileId))
+      const activeMoveDeferred = update.some(entry => entry.id === activeProfileId && entry.serverURL)
+      const complete = removed.size === removeIds.length && !activeMoveDeferred
+      if (!create.length && !update.length && !removed.size && !hubRemoteProfileOrder(stored, hubScope.serverURL, remotes)) return complete
+      const token = await loadHubToken()
       // No health probe and no identity: a remote whose tunnel is down must
       // still get its profile; acceptHealthIdentity pins it on the first switch.
       const created = create.map(entry => createStoredServerProfile({ ...entry, serverConfigured: true }, createProfileId()))
-      const updates = new Map(update.map(entry => [entry.id, entry]))
-      for (const profile of created) await saveProfileToken(profile.id, profile.credentialVersion, hubToken)
+      const updates = new Map(update.map(({ serverURL, ...entry }) => [entry.id, serverURL && entry.id !== activeProfileId ? { ...entry, serverURL } : entry]))
+      for (const profile of created) await saveProfileToken(profile.id, profile.credentialVersion, token)
       const merged = [
         ...stored.filter(profile => !removed.has(profile.id)).map(profile => ({ ...profile, ...updates.get(profile.id) })),
         ...created,
@@ -4416,7 +4678,7 @@ async function reconcileHubRegistry(
       set(state => {
         const current = [
           ...state.profiles.filter(profile => !removed.has(profile.id)).map(profile => ({ ...profile, ...updates.get(profile.id) })),
-          ...created.map(profile => publicProfile(profile, Boolean(hubToken))),
+          ...created.map(profile => publicProfile(profile, Boolean(token))),
         ]
         return { profiles: profiles.map(({ id }) => current.find(profile => profile.id === id)!) }
       })
@@ -4719,6 +4981,8 @@ function storedProfiles(profiles: readonly PublicServerProfile[]): StoredServerP
     updatedAt: profile.updatedAt,
     ...(profile.sshHost ? { sshHost: profile.sshHost } : {}),
     ...(profile.hidden ? { hidden: true } : {}),
+    ...(profile.secondServerURL ? { secondServerURL: profile.secondServerURL } : {}),
+    ...(profile.connectProof ? { connectProof: true as const } : {}),
   }))
 }
 
@@ -4946,7 +5210,13 @@ function withSubagentStates(
   return next ? { ...bySession, [sessionId]: next } : bySession
 }
 
-// The 5 s subagent poll is a derived effect of (open chat, active set,
+/** The open chat's loaded timeline while a turn of it runs: a child the turn starts shows up there first. */
+function openChatEventsWhileActive(state: AppState): Event[] | undefined {
+  const sessionId = state.selectedSessionId
+  return sessionId && state.activeSessionIds.has(sessionId) ? state.snapshots[sessionId]?.events : undefined
+}
+
+// The 5 s subagent poll is a derived effect of (open chat, its children,
 // connection); reconcile it from the store rather than from every writer of
 // activeSessionIds. Only the open chat has a stream and a strip on screen.
 useAppStore.subscribe((state, previous) => {
@@ -4955,18 +5225,27 @@ useAppStore.subscribe((state, previous) => {
     && state.activeSessionIds === previous.activeSessionIds
     && state.connected === previous.connected
     && state.subagentsBySession === previous.subagentsBySession
+    && openChatEventsWhileActive(state) === openChatEventsWhileActive(previous)
   ) return
   const sessionId = state.selectedSessionId
-  // A child outlives its turn (a Claude background agent, a Codex collaborator); the poll follows it.
-  const liveChild = sessionId ? subagentsFromEvents(Object.values(state.subagentsBySession[sessionId] ?? {})).some(isSubagentActive) : false
-  const wanted = sessionId && state.connected && (state.activeSessionIds.has(sessionId) || liveChild) ? sessionId : null
+  // Polled only while a child runs. During a turn its Agent or spawn_agent tool shows the child first; a child
+  // outlives its turn (a Claude background agent, a Codex collaborator), and then the server's states keep the poll.
+  const states = sessionId ? Object.values(state.subagentsBySession[sessionId] ?? {}) : []
+  const owner = sessionId ? state.snapshots[sessionId]?.session.backend : undefined
+  const liveChild = sessionId
+    ? subagentsFromEvents([...openChatEventsWhileActive(state) ?? [], ...states], owner === 'claude' || owner === 'codex' ? owner : undefined).some(isSubagentActive)
+    : false
+  const wanted = sessionId && state.connected && liveChild ? sessionId : null
+  // When a turn ends or polling stops, fetch once more: final child statuses arrive after either. The turn-end fetch
+  // also finds a child the turn's events never showed.
+  const turnEnded = sessionId !== null && sessionId === previous.selectedSessionId
+    && previous.activeSessionIds.has(sessionId) && !state.activeSessionIds.has(sessionId)
+  const wasPolling = subagentPoll !== null && subagentPoll.sessionId === sessionId
+  if (sessionId && !wanted && (turnEnded || wasPolling)) void state.refreshSubagents(sessionId)
   if (subagentPoll?.sessionId === wanted) return
   if (subagentPoll) {
     clearInterval(subagentPoll.timer)
-    const ended = subagentPoll.sessionId
     subagentPoll = null
-    // A turn's final child statuses land after its terminal event; one more fetch closes the rows.
-    if (ended === sessionId) void state.refreshSubagents(ended)
   }
   if (!wanted) return
   subagentPoll = {
@@ -4991,7 +5270,9 @@ function reloadMissingRuntime(get: () => AppState, set: (value: Partial<AppState
   if (!get().connected || get().runtime) return
   const scope = captureConnection()
   void scope.client.runtimeCatalog().then(runtime => {
-    if (connectionIsCurrent(scope) && scope.client.isValidated && !get().runtime) set({ runtime })
+    if (!connectionIsCurrent(scope) || !scope.client.isValidated || get().runtime) return
+    runtimeServerInstance = get().health?.server_instance_id
+    set({ runtime })
   }).catch(() => undefined)
 }
 
@@ -5108,8 +5389,27 @@ function installAppLifecycle(
     }))
   }
   if (appStateSubscription) return
+  // NetInfo's first report is the network the app started on, where the second address proves itself first. A later
+  // change voids every proven second address: the same LAN address may be another device there.
+  NetInfo.addEventListener(network => {
+    const details = network.details && 'ipAddress' in network.details ? network.details : null
+    const fingerprint = `${network.type}|${network.isConnected}|${details?.ipAddress ?? ''}|${details && 'bssid' in details ? details.bssid ?? '' : ''}`
+    if (fingerprint === networkFingerprint) return
+    if (networkFingerprint !== null) {
+      networkGeneration += 1
+      failedSecondAddressProfileIds.clear()
+      forgetSecondAddresses()
+    }
+    networkFingerprint = fingerprint
+    void routeActiveConnection()
+  })
   appStateSubscription = NativeAppState.addEventListener('change', nextState => {
     if (nextState !== 'active') {
+      // The network may change unseen while the app is away: a second address proves itself again on the app's
+      // return. Its client is closed (addressOpen) from now on, and requests already on their way there are aborted.
+      provenSecondAddresses.clear()
+      failedSecondAddressProfileIds.clear()
+      if (usesSecondAddress(activeConnection)) activeConnection.client.revokeValidation()
       cancelSyncRecovery(set)
       stopForegroundRefreshTimer()
       stopSelectedStream()
@@ -5125,10 +5425,15 @@ function installAppLifecycle(
       return
     }
     startForegroundRefreshTimer(get, set)
+    // Nothing waits on a connection at a second address until the address proves itself again.
+    if (usesSecondAddress(activeConnection)) set({ connected: false, liveConnected: false })
     startSessionSummaryStream()
     if (!shouldAutoConnectServer(get())) return
     void (async () => {
       await repairSelectedSnapshotFromCache(get, set)
+      // Only a connection at the second address waits for the proof; the primary carries on while it runs.
+      if (usesSecondAddress(activeConnection)) await routeActiveConnection()
+      else void routeActiveConnection()
       if (NativeAppState.currentState !== 'active') return
       if (get().connected) {
         await get().refreshSessions()

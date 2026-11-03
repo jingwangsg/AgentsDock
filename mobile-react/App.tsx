@@ -1,6 +1,7 @@
 import 'react-native-gesture-handler'
 import { useEffect, useLayoutEffect } from 'react'
-import { Appearance, useColorScheme } from 'react-native'
+import { Appearance, Platform, useColorScheme } from 'react-native'
+import { Image } from 'expo-image'
 import { StatusBar } from 'expo-status-bar'
 import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import { KeyboardProvider } from 'react-native-keyboard-controller'
@@ -11,6 +12,10 @@ import { MaterialOverlayHost } from './src/components/material/MaterialOverlayHo
 import { trackEvent } from './src/lib/analytics'
 import { useAppStore } from './src/store/useAppStore'
 import { ColorSchemeProvider, dark, light } from './src/theme'
+
+// Chat attachments stay in the image disk cache across launches (attachmentImageSource). Glide caps it at 250 MB on
+// Android; SDWebImage on iOS caps only its age unless told a size.
+if (Platform.OS === 'ios') Image.configureCache({ maxDiskSize: 250 * 1024 * 1024 })
 
 export default function App() {
   const appearance = useAppStore(state => state.appearance)

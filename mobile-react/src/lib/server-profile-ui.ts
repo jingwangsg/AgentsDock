@@ -24,6 +24,10 @@ export interface ServerProfileListItem {
   sshHost?: string | null
   /** A hub remote hidden on the hub: left out of the server picker, marked in Manage Servers. */
   hidden?: boolean
+  /** Another address of this server (its LAN address beside Tailscale); the connection uses it once it proves to be this server. */
+  secondServerUrl?: string | null
+  /** The active connection goes through this profile's second address right now. */
+  secondAddressInUse?: boolean
 }
 
 export interface ServerProfileDraftValues {
@@ -38,6 +42,7 @@ export interface ServerProfileDraftValues {
   /** Hub remotes only: a new SSH host or install dir moves the remote there. */
   sshHost: string
   installDir: string
+  secondServerUrl: string
 }
 
 export interface ServerProfileTestInput {
@@ -67,6 +72,8 @@ export interface UpdateServerProfileInput {
   /** Identity returned by the successful test for this exact connection edit. */
   serverIdentity?: string
   resetServerIdentity?: boolean
+  /** Null removes it. Needs no connection test: it proves itself before any token goes there. */
+  secondServerUrl?: string | null
 }
 
 export type ServerProfileEditorInitialMode = 'manage' | 'edit-active'
@@ -86,6 +93,7 @@ export function editServerProfileDraft(profile: ServerProfileListItem): ServerPr
     resetServerIdentity: false,
     sshHost: profile.sshHost ?? '',
     installDir: '',
+    secondServerUrl: profile.secondServerUrl ?? '',
   }
 }
 
@@ -203,6 +211,8 @@ export function buildUpdateServerProfileInput(
   if (serverUrl !== profile.serverUrl) patch.serverUrl = serverUrl
   if (accessToken !== undefined) patch.accessToken = accessToken
   if (draft.resetServerIdentity) patch.resetServerIdentity = true
+  const secondServerUrl = draft.secondServerUrl.trim() ? normalizeServerURL(draft.secondServerUrl) : null
+  if (secondServerUrl !== (profile.secondServerUrl ?? null)) patch.secondServerUrl = secondServerUrl
   const changesConnection = patch.serverUrl !== undefined || patch.accessToken !== undefined || patch.resetServerIdentity === true
   const identity = testedServerIdentity?.trim()
   if (changesConnection && identity) patch.serverIdentity = identity

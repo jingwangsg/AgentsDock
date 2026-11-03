@@ -20,7 +20,7 @@ import * as ImagePicker from 'expo-image-picker'
 import { useShallow } from 'zustand/react/shallow'
 import { MenuView, type MenuAction } from './material/MenuView'
 import { AlertCircle, ArrowDown, ArrowUp, Check, ChevronDown, CornerDownRight, File as FileIcon, Mail, MessageCircleMore, MessageSquarePlus, MessageSquareShare, Paperclip, Pencil, Search, Send, Square, Trash2, X } from 'lucide-react-native'
-import { client, useAppStore } from '../store/useAppStore'
+import { attachmentImageSource, client, useAppStore } from '../store/useAppStore'
 import {
   COMPOSER_INPUT_MAX_HEIGHT,
   COMPOSER_INPUT_MIN_HEIGHT,
@@ -146,7 +146,7 @@ const QUICK_MESSAGE_ACTIONS: MenuAction[] = QUICK_MESSAGES.map((title, index) =>
   id: `quick-message:${index}`,
   title,
 }))
-type AttachmentImageSource = { uri: string; headers?: Record<string, string> }
+type AttachmentImageSource = { uri: string; headers?: Record<string, string>; cacheKey?: string }
 type ComposerSelection = { start: number; end: number }
 type ComposerMentionTrigger = ChatMentionTrigger | TeamMentionTrigger
 /**
@@ -2042,7 +2042,7 @@ function AttachmentShelf({ sessionId, uploads, pending, failed, connectionReady,
       const image = isImage(file)
       // fileURL/authHeaders intentionally assert a validated connection, so
       // never evaluate them while the app is offline or switching servers.
-      const source = image && connectionReady ? { uri: client.fileURL(sessionId, file.id), headers: client.authHeaders() } : null
+      const source = image && connectionReady ? attachmentImageSource(client, sessionId, file.id) : null
       return <View key={`ready:${file.id}`} testID={`attachment-ready-${file.id}`} style={[styles.upload, { backgroundColor: colors.raised, borderColor: colors.border }]}>
         <Pressable disabled={!source} accessibilityRole={source ? 'button' : undefined} accessibilityLabel={source ? `Preview ${file.filename}` : file.filename} onPress={() => source && onPreview(file.filename, source)} style={styles.uploadIdentity}>
           <View style={[styles.fileIconWell, { backgroundColor: colors.surface }]}>{source ? <Image source={source} contentFit="cover" style={StyleSheet.absoluteFill} transition={120} /> : <FileIcon size={21} color={colors.muted} strokeWidth={1.8} />}</View>
@@ -2082,8 +2082,9 @@ function QueuedAttachment({ sessionId, fileId, onPreview }: { sessionId: string;
   const known = useAppStore(state => state.snapshots[sessionId]?.files.find(file => file.id === fileId))
   const [failed, setFailed] = useState(false)
   const name = known?.filename ?? 'Attachment'
-  if (!failed && (!known?.content_type || known.content_type.startsWith('image/'))) {
-    const source = { uri: client.fileURL(sessionId, fileId), headers: client.authHeaders() }
+  // An unvalidated client (reconnecting, or a second address not yet proven again) has no URL to give.
+  if (!failed && client.isValidated && (!known?.content_type || known.content_type.startsWith('image/'))) {
+    const source = attachmentImageSource(client, sessionId, fileId)
     return <Pressable accessibilityRole="button" accessibilityLabel={`Preview ${name}`} onPress={() => onPreview(name, source)}>
       <Image
         source={source}
