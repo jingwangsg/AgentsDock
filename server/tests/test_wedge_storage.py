@@ -826,6 +826,8 @@ class PollingAccessLogFilterTests(unittest.TestCase):
             ("GET", "/api/health", 200),
             ("GET", "/api/jobs", 200),
             ("GET", "/api/sessions?summary=true", 200),
+            # An unchanged chat list the client revalidated.
+            ("GET", "/api/sessions?summary=true", 304),
             ("GET", "/api/sessions?summary=true&limit=50", 200),
             ("GET", "/api/sessions/sess_abc/codex/runtime", 200),
             ("GET", "/api/sessions/sess_abc/claude/runtime", 200),

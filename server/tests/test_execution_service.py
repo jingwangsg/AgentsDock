@@ -1,6 +1,7 @@
 """Execution ownership, lifecycle and truthful component-health contracts."""
 
 import asyncio
+import gzip
 import json
 from pathlib import Path
 import socket
@@ -100,6 +101,27 @@ class HealthTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["gateway"]["version"], "new")
         self.assertEqual(result["execution_service"]["version"], "old")
         self.assertEqual(dict(messages[0]["headers"])[b"content-length"], str(len(messages[1]["body"])).encode())
+
+    async def test_components_are_added_for_a_client_that_accepts_gzip(self):
+        # The app gzips health when the request accepts it (agent_server's GzipWhenAcceptedRoute).
+        async def app(scope, receive, send):
+            body = b'{"server_version":"new"}'
+            headers = [(b"content-type", b"application/json")]
+            if b"gzip" in dict(scope["headers"]).get(b"accept-encoding", b""):
+                body, headers = gzip.compress(body), [*headers, (b"content-encoding", b"gzip")]
+            await send({"type": "http.response.start", "status": 200, "headers": headers})
+            await send({"type": "http.response.body", "body": body})
+
+        wrapped = ComponentHealth(ComponentHealth(app, "execution_service", {"version": "new"}), "gateway", {"version": "new"})
+        messages = []
+
+        async def send(message):
+            messages.append(message)
+
+        await wrapped({"type": "http", "path": "/api/health", "headers": [(b"accept-encoding", b"gzip, deflate")]}, None, send)
+        result = json.loads(messages[1]["body"])
+        self.assertEqual(result["execution_service"]["version"], "new")
+        self.assertEqual(result["gateway"]["version"], "new")
 
     async def test_denied_health_remains_unchanged(self):
         expected = [
