@@ -20,6 +20,7 @@ import {
   type CanvasHostTheme,
   type CanvasSelectedElement,
 } from '../lib/canvas-page'
+import { cachedCanvas, cachedCanvasRuntime, keepCanvas, keepCanvasRuntime, keptCanvasIsCurrent } from '../lib/canvas-cache'
 import { interactiveClientCapabilities } from '../lib/chat-references'
 import { fonts } from '../lib/typography'
 import { client, useAppStore } from '../store/useAppStore'
@@ -39,13 +40,18 @@ const EMPTY_EVENTS: Event[] = []
 const REVISION_CONFLICT = /changed since it was opened/
 const errorText = (caught: unknown) => caught instanceof Error ? caught.message : String(caught)
 
-/** shell.html and vendor.js per runtime version: 650 KB that every canvas on a server shares. */
+/** shell.html and vendor.js per runtime version: 650 KB that every canvas on a server shares, kept across app runs. */
 const runtimeAssets = new Map<string, Promise<{ shell: string; vendor: string }>>()
-function loadRuntimeAssets(version: string): Promise<{ shell: string; vendor: string }> {
+function loadRuntimeAssets(serverIdentity: string | null, version: string): Promise<{ shell: string; vendor: string }> {
   let pending = runtimeAssets.get(version)
   if (!pending) {
-    pending = Promise.all([client.canvasRuntimeAsset('shell.html'), client.canvasRuntimeAsset('vendor.js')])
-      .then(([shell, vendor]) => ({ shell, vendor }))
+    pending = (async () => {
+      const kept = serverIdentity ? await cachedCanvasRuntime(serverIdentity, version) : null
+      if (kept) return kept
+      const [shell, vendor] = await Promise.all([client.canvasRuntimeAsset('shell.html'), client.canvasRuntimeAsset('vendor.js')])
+      if (serverIdentity) keepCanvasRuntime(serverIdentity, version, { shell, vendor })
+      return { shell, vendor }
+    })()
     // A failed download must not be served to the next open.
     pending.catch(() => runtimeAssets.delete(version))
     runtimeAssets.set(version, pending)
@@ -123,40 +129,75 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
     pendingSave.current = null
     if (!pending) return
     try {
-      await client.putCanvasState(sessionId, pending.name, pending.state)
+      const saved = await client.putCanvasState(sessionId, pending.name, pending.state)
+      // The next open shows the kept copy before it asks the server, so the copy carries the state the page saved.
+      const identity = useAppStore.getState().health?.server_identity
+      const kept = identity ? await cachedCanvas(identity, sessionId, pending.name) : null
+      if (identity && kept) keepCanvas(identity, sessionId, pending.name, { ...kept, state: saved.state })
     } catch (caught) {
       // pageError renders above the WebView; `error` would replace it and destroy the live canvas.
       setPageError(caught instanceof Error ? caught.message : String(caught))
     }
   }, [sessionId])
 
+  const recordLive = useRef<CanvasRecord | null>(null)
+  recordLive.current = record
+  // As in the desktop pane: a record replaces the one on screen only when its page would differ, i.e. another
+  // revision or runtime version, or a state that is neither the one the page started from nor the one it holds
+  // now (another device changed it). A check that finds the same canvas rebuilds nothing and keeps choices made
+  // while it ran.
+  const show = useCallback((next: CanvasRecord) => {
+    const shown = recordLive.current
+    const nextState = JSON.stringify(next.state ?? {})
+    if (shown && shown.name === next.name && shown.revision === next.revision && shown.runtime_version === next.runtime_version
+      && (nextState === JSON.stringify(shown.state ?? {}) || nextState === JSON.stringify(stateRef.current))) return
+    recordLive.current = next
+    setRecord(next)
+    stateRef.current = next.state ?? {}
+  }, [])
+
   useEffect(() => {
     // The server compiles on first read, long enough for the user to switch canvases meanwhile; a stale response must not land on the new name.
     const generation = ++loadGeneration.current
     const live = () => generation === loadGeneration.current
+    const showRuntime = async (identity: string | null, version: string | null) => {
+      if (!version) return
+      const assets = await loadRuntimeAssets(identity, version)
+      // Same version → same object, so the page is not rebuilt (and reloaded) a second time.
+      if (live()) setRuntime(previous => previous?.version === version ? previous : { version, ...assets })
+    }
     void (async () => {
       setError(null)
       try {
         // A reload must read back the last edit, not the state the server held before the pending PUT.
         await flushSave()
-        const [list, current] = await Promise.all([client.listCanvases(sessionId), client.getCanvas(sessionId, name)])
+        const identity = useAppStore.getState().health?.server_identity ?? null
+        // A canvas opened before shows its kept copy at once, while the server is asked whether it is current.
+        const kept = identity ? await cachedCanvas(identity, sessionId, name) : null
+        if (kept && live() && recordLive.current?.name !== name) {
+          show(kept)
+          await showRuntime(identity, kept.runtime_version)
+        }
+        // Same revision and runtime version: the kept bundle is current, and only the list and the state cross the link.
+        const check = async (): Promise<[{ canvases: CanvasSummary[] }, CanvasRecord]> => {
+          if (!kept) return Promise.all([client.listCanvases(sessionId), client.getCanvas(sessionId, name)])
+          const [list, { state }] = await Promise.all([client.listCanvases(sessionId), client.getCanvasState(sessionId, name)])
+          if (!keptCanvasIsCurrent(kept, list)) return [list, await client.getCanvas(sessionId, name)]
+          return [list, JSON.stringify(state) === JSON.stringify(kept.state) ? kept : { ...kept, state }]
+        }
+        const [list, current] = await check()
         if (!live()) return
         setCanvases(list.canvases)
-        setRecord(current)
-        stateRef.current = current.state ?? {}
-        const version = current.runtime_version
-        if (current.javascript && version) {
-          const assets = await loadRuntimeAssets(version)
-          // Same version → same object, so the page is not rebuilt (and reloaded) a second time.
-          if (live()) setRuntime(previous => previous?.version === version ? previous : { version, ...assets })
-        }
+        show(current)
+        if (identity && current !== kept) keepCanvas(identity, sessionId, name, current)
+        if (current.javascript) await showRuntime(identity, current.runtime_version)
       } catch (caught) {
         if (!live()) return
         setRecord(null)
         setError(caught instanceof Error ? caught.message : String(caught))
       }
     })()
-  }, [flushSave, name, reloadToken, sessionId])
+  }, [flushSave, name, reloadToken, sessionId, show])
 
   // A history rewind deletes the canvases it covers: re-list, and leave when the open one is gone.
   const rewoundSeq = useAppStore(state => lastRewindSeq(state.snapshots[sessionId]?.events ?? EMPTY_EVENTS))
@@ -193,15 +234,13 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
   // and reload only when the canvas has a new revision (a reload resets the page's own state).
   const running = useAppStore(state => state.activeSessionIds.has(sessionId))
   const seenRunning = useRef(running)
-  const revisionLive = useRef<number | null>(null)
-  revisionLive.current = record?.revision ?? null
   useEffect(() => {
     if (seenRunning.current === running) return
     seenRunning.current = running
     void loadComments()
     void client.listCanvases(sessionId)
       .then(list => list.canvases.find(canvas => canvas.name === name))
-      .then(current => { if (current && current.revision !== revisionLive.current) setReloadToken(token => token + 1) })
+      .then(current => { if (current && current.revision !== recordLive.current?.revision) setReloadToken(token => token + 1) })
       .catch(() => undefined)
   }, [loadComments, name, running, sessionId])
 
@@ -366,8 +405,9 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
       // Overwriting means saving over whatever revision is current now, after the user confirmed.
       const base = overwrite ? (await client.getCanvas(sessionId, name)).revision : sourceDraft.baseRevision
       const next = await client.putCanvasSource(sessionId, name, sourceDraft.text, base)
-      setRecord(next)
-      stateRef.current = next.state ?? {}
+      show(next)
+      const identity = useAppStore.getState().health?.server_identity
+      if (identity) keepCanvas(identity, sessionId, name, next)
       setSourceDraft(null)
       editorRef.current?.markClean(next.source)
     } catch (caught) {

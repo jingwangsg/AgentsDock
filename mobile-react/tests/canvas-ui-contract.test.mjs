@@ -56,6 +56,16 @@ test('the WebView renders a page assembled in-app the way the desktop protocol h
   assert.match(page, /data:application\/javascript;base64,/)
 })
 
+test('a canvas opened before renders from its kept copy and downloads the record only for another revision or runtime', () => {
+  // src/lib/canvas-cache.test.ts covers the storage and the revision check.
+  assert.match(sheet, /const kept = identity \? await cachedCanvas\(identity, sessionId, name\) : null\n\s+if \(kept && live\(\) && recordLive\.current\?\.name !== name\) \{\n\s+show\(kept\)/)
+  assert.match(sheet, /if \(!keptCanvasIsCurrent\(kept, list\)\) return \[list, await client\.getCanvas\(sessionId, name\)\]/)
+  assert.match(sheet, /const kept = serverIdentity \? await cachedCanvasRuntime\(serverIdentity, version\) : null/)
+  // Saved state and saved source update the kept copy, so the next open does not show an older one.
+  assert.match(sheet, /keepCanvas\(identity, sessionId, pending\.name, \{ \.\.\.kept, state: saved\.state \}\)/)
+  assert.match(sheet, /show\(next\)\n\s+const identity = useAppStore\.getState\(\)\.health\?\.server_identity\n\s+if \(identity\) keepCanvas\(identity, sessionId, name, next\)/)
+})
+
 test('runtime messages persist state with a debounce and surface errors with a source fallback', () => {
   assert.match(sheet, /const STATE_SAVE_DELAY_MS = 400/)
   assert.match(sheet, /case 'state':[\s\S]*?pendingSave\.current = \{ name, state: stateRef\.current \}[\s\S]*?setTimeout\(\(\) => \{ void flushSave\(\) \}, STATE_SAVE_DELAY_MS\)/)
@@ -143,7 +153,7 @@ test('comments: pick an element, Ask or Edit it as a stored thread, and pin open
   assert.match(sheet, /case 'comment-open':\n\s*setCommentsOpen\(true\)\n\s*setActiveThread\(message\.id\)/)
   // A turn starting or ending refreshes the threads and reloads a canvas the agent changed.
   assert.match(sheet, /const running = useAppStore\(state => state\.activeSessionIds\.has\(sessionId\)\)/)
-  assert.match(sheet, /if \(current && current\.revision !== revisionLive\.current\) setReloadToken/)
+  assert.match(sheet, /if \(current && current\.revision !== recordLive\.current\?\.revision\) setReloadToken/)
 })
 
 test('source: edits save against the revision they started from and confirm before overwriting', () => {

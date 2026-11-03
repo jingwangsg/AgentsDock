@@ -742,6 +742,9 @@ export class AgentServerClient {
     // The server compiles the report on first read (agentsdock_canvas.COMPILE_TIMEOUT_SECONDS = 180).
     return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}`, 180_000)
   }
+  getCanvasState(sessionId: string, name: string): Promise<{ state: Record<string, unknown> }> {
+    return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}/state`)
+  }
   putCanvasState(sessionId: string, name: string, state: Record<string, unknown>): Promise<{ state: Record<string, unknown> }> {
     return this.put(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}/state`, { state })
   }
