@@ -85302,6 +85302,8 @@ async def health() -> dict[str, Any]:
                 "available": bool(AGENT_TOKEN),
             },
             "connect_proof_v1": {"available": bool(AGENT_TOKEN), "version": 1},
+            # GET /api/sessions/{id} takes prefetch=true (get_session): clients warm cached chats only on such a server.
+            "session_prefetch_v1": {"available": True, "version": 1},
             cross_server_mail.CAPABILITY: {"available": bool(AGENT_TOKEN), "attachments": True},
             "workspace_files": {
                 "available": WORKSPACE_SECURE_OPEN_AVAILABLE,
@@ -90798,7 +90800,16 @@ async def get_session(
     compact: bool = False,
     page_mode: str | None = None,
     semantic_before: int | None = None,
+    prefetch: bool = False,
 ) -> dict[str, Any]:
+    """One page of a chat's timeline.
+
+    prefetch=true marks a client's background read that keeps the cached
+    timeline of a chat nobody has open up to date (the Android app's warming
+    of recent chats): the page is the same, but nothing that only an open
+    should start runs, neither the provider history sync nor the queue
+    repair. Servers before this flag ignore it and treat the read as an open.
+    """
     ensure_session_not_initializing(session_id)
     sess = STORE.sessions.get(session_id)
     if not sess:
@@ -90807,7 +90818,8 @@ async def get_session(
     # somewhere else (the provider's own CLI, or another machine sharing it).
     # Scheduled rather than awaited so the open stays fast; the client's event
     # stream delivers whatever it recovers.
-    schedule_provider_history_sync(sess)
+    if not prefetch:
+        schedule_provider_history_sync(sess)
     normalized_page_mode = str(page_mode or "").strip().lower()
     if normalized_page_mode not in {"", "semantic"}:
         raise HTTPException(status_code=400, detail="page_mode must be semantic")
@@ -90857,7 +90869,8 @@ async def get_session(
             limit=limit,
             tail=page_tail,
         )
-    await reconcile_idle_queue_session_from_snapshot(session_id)
+    if not prefetch:
+        await reconcile_idle_queue_session_from_snapshot(session_id)
     response = {
         "session": public_session(sess),
         "events": events,
