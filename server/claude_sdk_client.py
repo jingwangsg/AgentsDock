@@ -275,10 +275,10 @@ _TERMINAL_TASK_STATUSES = frozenset(
 )
 _ABORTED_RESULT_REASONS = frozenset({"aborted_streaming", "aborted_tools"})
 # Two bounded waits on an otherwise idle run. The CLI normally wakes the model
-# when a background task ends, and replays an injected follow-up once it takes
-# it; when neither happens (the task was dropped, the frame was lost) the run
-# ends with the Result the model had already sent instead of waiting for the
-# six-hour idle kill.
+# when a background task ends, and reports an injected follow-up "started" (an
+# older CLI: replays it) once it takes it; when neither happens (the task was
+# dropped, the frame was lost) the run ends with the Result the model had
+# already sent instead of waiting for the six-hour idle kill.
 CLAUDE_SDK_AWAITING_WAKE_GRACE_SECONDS = 120.0
 CLAUDE_SDK_STEER_REPLAY_GRACE_SECONDS = 30.0
 CLAUDE_BACKGROUND_TASK_RECEIPT_LIMIT = 64
@@ -652,8 +652,9 @@ def default_claude_sdk_client_factory(options: Any) -> ClaudeSDKClientProtocol:
                     logger.info("claude native model picker not recorded: %s", type(exc).__name__)
 
         async def receive_messages(self) -> AsyncIterator[Any]:
-            # SDK 0.2.130 drops local-command provenance and active_goal. Keep
-            # those native fields without changing parsing of normal messages.
+            # SDK 0.2.130 drops local-command provenance, active_goal and
+            # command_lifecycle. Keep those native frames and fields without
+            # changing parsing of normal messages.
             if self._query is None:
                 raise ClaudeSDKSupervisorClosed("Claude SDK client is not connected")
             async for data in self._query.receive_messages():
@@ -676,7 +677,7 @@ def default_claude_sdk_client_factory(options: Any) -> ClaudeSDKClientProtocol:
 def _parse_claude_sdk_message(data: dict[str, Any]) -> Any:
     from claude_agent_sdk._internal.message_parser import parse_message
 
-    if data.get("type") == "active_goal":
+    if data.get("type") in {"active_goal", "command_lifecycle"}:
         return data
     message = parse_message(data)
     if message is not None:
@@ -1219,13 +1220,16 @@ class ClaudeSDKRunHandle:
         self._released = False
         self._deferred_result: Any = None
         self._awaiting_wake_grace_armed = False
-        # The Result the CLI sent before replaying an injected follow-up.
+        # The Result the CLI sent before taking an injected follow-up.
         self._result_after_steer: Any = None
-        # Follow-ups injected into this run whose stdin frame the CLI has not
-        # replayed yet. The replay is not a user bubble, and a Result that
-        # arrives before it ended the turn without the message, so the run
-        # stays open for the CLI's answer.
+        # Follow-ups injected into this run that the CLI has not taken yet: no
+        # "started" lifecycle frame and no replay of their stdin frame. A
+        # Result that arrives before the CLI takes them ends the turn without
+        # the message, so the run stays open for the CLI's answer.
         self._unconfirmed_steer_ids: set[str] = set()
+        # Follow-ups the CLI reported started. Their replay comes later, with
+        # the model's first output, and is not a user bubble.
+        self._started_steer_ids: set[str] = set()
         # A Stop interrupted the answer with such a follow-up queued behind
         # it: Claude answers the follow-up next, as native Esc does. Cleared
         # when the CLI takes the follow-up.
@@ -1421,6 +1425,19 @@ class ClaudeSDKRunHandle:
         self._acknowledged = True
         self._acknowledged_event.set()
         return True
+
+    def _mark_steer_taken(self, steer_id: str) -> None:
+        """The CLI took an injected follow-up: its next Result, not the one it
+        sent before taking the follow-up, ends the run."""
+
+        self._unconfirmed_steer_ids.discard(steer_id)
+        if self._follow_up_kept and self._result_after_steer is not None:
+            # The interrupted answer already ended, so a Result during this
+            # answer is not that interrupt's. Taken before it, the follow-up
+            # joined the answer the interrupt ends.
+            self._interrupt_requested = False
+        self._follow_up_kept = False
+        self._result_after_steer = None
 
     def _mark_acknowledged_without_replay(self) -> None:
         """Open the stream gate for a validated local slash command.
@@ -2813,8 +2830,8 @@ class ClaudeSDKSupervisor:
             self._fail_active(error)
             await self._disconnect_current_client()
         elif active._follow_up_kept:
-            # Keep the steer id: its replay starts Claude's answer in this
-            # run; without it, the steer-replay grace ends the run.
+            # Keep the steer id: once the CLI takes it, Claude's answer runs
+            # in this run; if it never does, the steer-replay grace ends the run.
             pass
         elif active._result_after_steer is not None:
             # The model's turn had ended; only an injected follow-up the CLI
@@ -3249,6 +3266,20 @@ class ClaudeSDKSupervisor:
                 except Exception:
                     logger.debug("Claude usage observer unavailable")
             return
+        if _message_type(command.message) == "command_lifecycle":
+            # The CLI reports each queued message's state; "started" means it
+            # drained into a turn, which is when the CLI takes an injected
+            # follow-up. Its replay waits for the model's first output, which
+            # max-effort thinking delayed past the replay grace (45 s, 2026-11-03).
+            # The run's consumer never received these frames: the SDK dropped them.
+            active = self._active_run
+            command_uuid = str(_message_field(command.message, "command_uuid") or "")
+            if (active is not None and not active.done
+                    and _message_field(command.message, "state") == "started"
+                    and command_uuid in active._unconfirmed_steer_ids):
+                active._mark_steer_taken(command_uuid)
+                active._started_steer_ids.add(command_uuid)
+            return
         pending = self._pending_goal_clear
         if pending is not None:
             local_run = _message_field(command.message, "local_command_run")
@@ -3354,18 +3385,13 @@ class ClaudeSDKSupervisor:
             return
         for steer_id in active._unconfirmed_steer_ids:
             if _is_matching_replay_ack(command.message, steer_id):
-                # The CLI replays an injected follow-up once it has taken it;
-                # the frame is not a user bubble, and the CLI's next Result,
-                # not the one it sent before taking the follow-up, ends the run.
-                active._unconfirmed_steer_ids.discard(steer_id)
-                if active._follow_up_kept and active._result_after_steer is not None:
-                    # The interrupted answer already ended, so a Result during
-                    # this answer is not that interrupt's. Replayed before it,
-                    # the follow-up joined the answer the interrupt ends.
-                    active._interrupt_requested = False
-                active._follow_up_kept = False
-                active._result_after_steer = None
+                # Without a "started" frame before it (an older CLI, or a
+                # follow-up folded into the running turn), the replay is the
+                # first sign that the CLI took the follow-up. It is not a user bubble.
+                active._mark_steer_taken(steer_id)
                 return
+        if any(_is_matching_replay_ack(command.message, steer_id) for steer_id in active._started_steer_ids):
+            return
 
         if not _message_field(command.message, "parent_tool_use_id"):
             active._observe_tool_uses(command.message)
@@ -3384,7 +3410,7 @@ class ClaudeSDKSupervisor:
             # An abort this server did not ask for: the CLI ended its own turn
             # to deliver a "now" follow-up because the running tool could not
             # be moved (a subagent's Bash). It sends this Result before it
-            # replays the follow-up, so the steer id is still unconfirmed here.
+            # takes the follow-up, so the steer id is still unconfirmed here.
             cli_own_abort = (
                 forced_run_end
                 and not active._interrupt_requested
@@ -3392,7 +3418,7 @@ class ClaudeSDKSupervisor:
             )
             if active._unconfirmed_steer_ids and (not forced_run_end or cli_own_abort or active._follow_up_kept):
                 # This Result ended the turn before the CLI took an injected
-                # follow-up; the CLI replays and answers it next, in this run.
+                # follow-up; the CLI takes and answers it next, in this run.
                 # Ending the run here would disconnect the client and kill the
                 # agents it still tracks.
                 if active._result_after_steer is None:

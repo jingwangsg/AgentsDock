@@ -1,5 +1,36 @@
 # Public development log
 
+## 2026-11-03 — Claude chats: a message Claude has started on keeps its run, however long Claude thinks first (server)
+
+- A message sent to a Claude chat while Claude was finishing its answer, or
+  while the chat waited for a background task, went to Claude at once. The
+  server learned that Claude had taken it only from Claude's echo of the
+  message, and waited at most 30 s for it. Claude echoes a message only with
+  its first output on it, so when Claude thought longer before writing (31 to
+  126 s in the cases found in server logs), the server ended the run with the
+  previous answer. Claude's answer then belonged to no run: it did not appear
+  in the chat while it was written, its AgentsDock actions (sending a message
+  to another chat, reading the inbox) failed with "provider tool owner is
+  stale", and opening the chat later added the answer at the end with its old
+  time and a "Worked for 0s" row.
+- Claude Code also reports each queued message's state, "started" as soon as
+  it begins on it (about 10 ms after the message arrives when Claude is idle).
+  The Agent SDK the server uses discarded these reports. The server now reads
+  them: once Claude has started on the message, the run lasts until Claude's
+  answer ends, and a Stop during that answer stops it like any other answer. A
+  Claude Code version without these reports keeps the previous behavior.
+
+```text
+Change and expected user behavior: a message Claude starts on after its answer ended, or while a background task kept the chat running, stays in the same run however long Claude thinks first; the answer appears in the chat as it is written and its AgentsDock actions work.
+Source commit / app build / server version: branch fix/claude-steer-started-signal; no client build; server 1.0.7-beta.11; Claude Code 2.1.317.
+Test surface: two isolated servers on this Mac (main and the branch) with the real Claude CLI (Opus at max effort), driven through the HTTP turn API; raw stream-json probes of the CLI.
+Actions exercised and observed outcomes: (1) A chat started a background `sleep` and ended its turn; a follow-up asked for a long calculation, then a `chats title` provider call. The follow-up grace was set to 3 s on both servers. Main: the run ended 3.6 s after the follow-up with the previous answer, the title call returned "provider tool owner is stale", and opening the chat appended the missed answer. Branch: the run continued, the title call returned ok and the title changed, and nothing was appended. (2) Branch with the real 30 s grace: Claude needed 65 s to its first output on the follow-up; the run continued, the answer and the tool result appeared live, and the run ended after the background task's wake turn. (3) CLI probes: "started" about 10 ms after the message and the echo with the first output; with Stop and a queued message, the aborted answer's result came before the message's "started"; a "now" message during a subagent's call was echoed before its "started".
+Real boundaries exercised; any mocked/stubbed boundaries: HTTP turn API, the server's Claude SDK supervisor, the Claude CLI and API, an AgentsDock provider action. The grace in run (1) was lowered by setting the module constant at server start. The desktop and mobile apps were not exercised; they render the same events.
+Focused regression / typecheck / production build: tests for a follow-up the CLI reports started in a run that waits on a background agent, and for Stop with a follow-up the CLI reports started (both fail on main); a follow-up that is only queued still ends the run after the grace; the SDK parser keeps command_lifecycle frames. 606 tests in the Claude, steer and provider-tool modules; all 8 server shards.
+Remaining limitations or blocked acceptance: a message sent while Claude works on a turn it began by itself after a background task finished, before that turn's first output, stays queued until the turn's next tool call or end; if that takes over 30 s the run still ends early, as before (none of the logged cases was of this kind). A Stop during such an answer ends the chat's Claude process when background tasks run, as a Stop during any answer does.
+Availability: source only; the hub and remote servers need a server update.
+```
+
 ## 2026-11-03 — Desktop: recent chats kept current in the background, and polled lists revalidated (app)
 
 - Opening a chat that had not been viewed for a while caught up all at once.
