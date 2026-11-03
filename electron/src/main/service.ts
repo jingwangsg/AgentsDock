@@ -4970,6 +4970,7 @@ export class AppService {
   }
 
   private readonly canvasListsInFlight = new Map<string, ReturnType<AgentServerClient['listCanvases']>>()
+  private readonly canvasDownloads = new Map<string, Promise<CanvasRecord>>()
 
   /** The cached copy from an earlier open, without asking the server; null when there is none. */
   cachedCanvas(sessionId: string, name: string): Promise<CanvasRecord | null> {
@@ -4986,20 +4987,34 @@ export class AppService {
     await this.ensureValidatedScope(scope)
     const cached = await this.canvasCache.record(scope.namespace, sessionId, name)
     let record: CanvasRecord | null = null
+    let listed: CanvasSummary | undefined
     let bundleCurrent = false
     if (cached) {
       const [list, { state }] = await Promise.all([
         this.canvasListsInFlight.get(`${scope.generation}:${sessionId}`) ?? scope.client.listCanvases(sessionId),
         scope.client.getCanvasState(sessionId, name)
       ])
-      const listed = list.canvases.find(canvas => canvas.name === name)
+      listed = list.canvases.find(canvas => canvas.name === name)
       // The revision is the file's mtime, which some file systems keep in whole seconds: the size catches most
       // edits within one second. A source with CRLF line ends never matches and is downloaded each time.
       bundleCurrent = listed?.revision === cached.revision && listed.size === Buffer.byteLength(cached.source)
         && list.capability?.runtime_version === cached.runtime_version
       if (bundleCurrent) record = sameCanvasState(state, cached.state) ? cached : { ...cached, state }
     }
-    record ??= await scope.client.getCanvas(sessionId, name)
+    if (!record) {
+      // A turn's start and end each reload the pane, often while the first download still runs: the second joins
+      // it, unless the list it was checked against names a newer revision than the download brought.
+      const key = `${scope.generation}:${sessionId}:${name}`
+      let download = this.canvasDownloads.get(key)
+      if (!download) {
+        download = scope.client.getCanvas(sessionId, name).finally(() => {
+          if (this.canvasDownloads.get(key) === download) this.canvasDownloads.delete(key)
+        })
+        this.canvasDownloads.set(key, download)
+      }
+      record = await download
+      if (listed && record.revision !== listed.revision) record = await scope.client.getCanvas(sessionId, name)
+    }
     this.assertCurrentScope(scope)
     // The same object comes back only when the cached copy is current, state included: nothing to write.
     if (record !== cached) {

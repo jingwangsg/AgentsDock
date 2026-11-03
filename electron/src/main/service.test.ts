@@ -12027,19 +12027,41 @@ describe('Canvas cache', () => {
   })
 
   it.each([
-    ['a new revision', listed(2)],
-    ['a new size in the same second', listed(1, 'v1', 7)],
-    ['another runtime version', listed(1, 'v2')]
-  ])('downloads the record again when the server lists %s', async (_change, changed) => {
+    ['a new revision', listed(2), record(2)],
+    ['a new size in the same second', listed(1, 'v1', 7), record()],
+    ['another runtime version', listed(1, 'v2'), { ...record(), runtime_version: 'v2' }]
+  ])('downloads the record again when the server lists %s', async (_change, changed, current) => {
     const getCanvas = vi.fn(async () => record())
     const listCanvases = vi.fn(listed())
     const { service } = canvasService(fakeClient({ health: health(), getCanvas, listCanvases }), cacheRoot())
     await service.getCanvas('chat', 'report')
     listCanvases.mockImplementation(changed)
+    getCanvas.mockImplementation(async () => current)
     getCanvas.mockClear()
 
     await service.getCanvas('chat', 'report')
 
+    expect(getCanvas).toHaveBeenCalledTimes(1)
+  })
+
+  it('downloads a changed canvas once when the pane asks again while the download runs', async () => {
+    const getCanvas = vi.fn(async () => record())
+    const listCanvases = vi.fn(listed())
+    const client = fakeClient({ health: health(), getCanvas, listCanvases })
+    const { service } = canvasService(client, cacheRoot())
+    await service.getCanvas('chat', 'report')
+    let answer = (_value: CanvasRecord) => {}
+    listCanvases.mockImplementation(listed(2))
+    getCanvas.mockImplementation(() => new Promise<CanvasRecord>(resolve => { answer = resolve }))
+    getCanvas.mockClear()
+
+    // A turn's start and end: two loads, both checked against the new revision.
+    const both = Promise.all([service.getCanvas('chat', 'report'), service.getCanvas('chat', 'report')])
+    await vi.waitFor(() => expect(client.getCanvasState).toHaveBeenCalledTimes(2))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    answer(record(2))
+
+    await expect(both).resolves.toEqual([record(2), record(2)])
     expect(getCanvas).toHaveBeenCalledTimes(1)
   })
 
