@@ -977,6 +977,31 @@ export const useAppStore = create<AppState>((set, get) => ({
       window.agentsDock.events.on('server:timeline', payload => {
         if (!profileEventMatches(payload, get())) return
         const { sessionId, snapshot, source, mode, authoritative } = payload
+        if (payload.warmed) {
+          // A warming read of a chat nobody has open. A held copy that reaches the rows' start takes the rows and queue
+          // without cacheSnapshot, so its eviction order is unchanged, and stays within the memory bound of a chat no
+          // pane shows; the next open subscribes after them. The copy is dropped instead, and the next open reads the
+          // main-process cache, when it does not reach the rows (an emptied or discontinuous copy), for a replacement
+          // window, and when the bound empties it (its newest turn alone is longer than the bound), since an empty copy
+          // sends the next open to the server. A chat a pane shows is left to its own subscription.
+          const { after } = payload.warmed
+          set(state => {
+            const previous = state.snapshots[sessionId]
+            if (!previous || visibleChatSessionIds(currentChatPaneLayout(state).panes).includes(sessionId)) return state
+            const next = mode === 'merge' && !previous.historyDiscontinuity && (previous.events.at(-1)?.seq ?? 0) >= after
+              ? compactSnapshotEvents(ingestTimeline(previous, {
+                  events: snapshot.events, queue: { turns: snapshot.queuedTurns, asOfSeq: snapshot.queuedAsOfSeq ?? 0 }
+                }))
+              : null
+            if (!next?.events.length) {
+              const { [sessionId]: _dropped, ...snapshots } = state.snapshots
+              snapshotAccess.delete(sessionId)
+              return { snapshots }
+            }
+            return next === previous ? state : { snapshots: { ...state.snapshots, [sessionId]: next } }
+          })
+          return
+        }
         const currentSnapshot = get().snapshots[sessionId]
         const discontinuity = mode === 'replace' && !authoritative
           && timelineReplacementIsDiscontinuous(currentSnapshot, snapshot)

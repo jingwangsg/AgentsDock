@@ -157,6 +157,9 @@ const CHAT_SHARE_SNAPSHOT_TIMEOUT_MS = 40_000
 const DIGEST_PREVIEW_REQUEST_TIMEOUT_MS = 210_000
 const TIMELINE_REQUEST_TIMEOUT_MS = 120_000
 const SUBAGENT_SNAPSHOT_REQUEST_TIMEOUT_MS = 15_000
+// Answers kept for revalidation (getRevalidated): the chat list, plus the subagent snapshots and files lists of the
+// chats opened last. A subagent snapshot can reach about 0.5 MB of JSON.
+const REVALIDATED_ANSWERS = 16
 const LOCAL_SESSION_IMPORT_REQUEST_TIMEOUT_MS = 10 * 60_000
 // Above the worst-case valid 500-item payload even when every bounded string
 // is represented with six-byte JSON Unicode escapes.
@@ -321,6 +324,8 @@ export interface SessionPageOptions {
   visible?: boolean
   compact?: boolean
   pageMode?: 'semantic'
+  /** A warming read for the cache, not an open: the server starts nothing an open would (session_prefetch_v1). */
+  prefetch?: boolean
 }
 
 interface ClientConfiguration {
@@ -370,6 +375,8 @@ export class TeamHubBootstrapTransportError extends Error {
 
 export class AgentServerClient {
   private configuration: ClientConfiguration
+  /** The last tagged answer per path (getRevalidated), least recently used first. */
+  private readonly revalidated = new Map<string, { etag: string; body: string }>()
   private readonly uploadTimeoutMs: number | null
   private readonly uploadStallTimeoutMs: number
   private readonly uploadResponseTimeoutMs: number
@@ -988,7 +995,7 @@ export class AgentServerClient {
       body: JSON.stringify({ ssh_host: input.sshHost, install_dir: input.installDir })
     })
   }
-  async sessions(): Promise<Session[]> { return (await this.get<{ sessions: Session[] }>('/api/sessions?summary=true')).sessions }
+  async sessions(): Promise<Session[]> { return (await this.getRevalidated<{ sessions: Session[] }>('/api/sessions?summary=true')).sessions }
   /** Full rows carry each chat's provider IDs, which the summary list omits. */
   async sessionsWithProviderIds(): Promise<Session[]> { return (await this.get<{ sessions: Session[] }>('/api/sessions')).sessions }
   async surfaces(): Promise<Surface[]> { return (await this.get<{ surfaces: Surface[] }>('/api/surfaces')).surfaces }
@@ -1213,6 +1220,7 @@ export class AgentServerClient {
     query.set('tail', String(options.tail ?? true))
     query.set('visible', String(options.visible ?? true))
     if (options.compact !== undefined) query.set('compact', String(options.compact))
+    if (options.prefetch) query.set('prefetch', 'true')
     const response = await this.get<SessionResponse>(
       `/api/sessions/${encodeURIComponent(sessionId)}?${query}`,
       configuration,
@@ -1247,9 +1255,8 @@ export class AgentServerClient {
   }
 
   async subagents(sessionId: string): Promise<SubagentSnapshot> {
-    return this.get(
+    return this.getRevalidated(
       `/api/sessions/${encodeURIComponent(sessionId)}/subagents`,
-      this.configuration,
       SUBAGENT_SNAPSHOT_REQUEST_TIMEOUT_MS
     )
   }
@@ -1734,7 +1741,7 @@ export class AgentServerClient {
   async files(sessionId: string, offset = 0, limit = 60, contentPrefix?: string): Promise<FilesPage> {
     const query = new URLSearchParams({ offset: String(offset), limit: String(limit) })
     if (contentPrefix) query.set('content_prefix', contentPrefix)
-    return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/files?${query}`)
+    return this.getRevalidated(`/api/sessions/${encodeURIComponent(sessionId)}/files?${query}`)
   }
 
   async upload(sessionId: string, path: string, callerSignal?: AbortSignal): Promise<AgentFile> {
@@ -2838,14 +2845,48 @@ export class AgentServerClient {
   }
 
   private async request<T>(path: string, init: RequestInit = {}, configuration = this.configuration, maxResponseBytes?: number): Promise<T> {
+    const response = await this.fetchAuthorized(path, init, configuration)
+    if (!response.ok) await throwServerError(response, { maxResponseBytes })
+    if (response.status === 204) return undefined as T
+    if (maxResponseBytes != null) return await boundedJSONResponse(response, maxResponseBytes) as T
+    return response.json() as Promise<T>
+  }
+
+  /**
+   * A GET of a list the server tags with an ETag (the chat list, a chat's subagent snapshot or files list), sent with
+   * the tag of the answer kept from last time: an unchanged list comes back as an empty 304 and that answer is
+   * returned again. Node's fetch keeps no HTTP cache, so nothing else revalidates these polls.
+   */
+  private async getRevalidated<T>(path: string, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS): Promise<T> {
+    const kept = this.revalidated.get(path)
+    const response = await this.fetchAuthorized(path, {
+      headers: kept ? { 'If-None-Match': kept.etag } : undefined,
+      signal: AbortSignal.timeout(timeoutMs)
+    })
+    this.revalidated.delete(path)
+    if (kept && response.status === 304) {
+      this.revalidated.set(path, kept)
+      return JSON.parse(kept.body) as T
+    }
+    if (!response.ok) await throwServerError(response)
+    const body = await response.text()
+    const value = JSON.parse(body) as T
+    const etag = response.headers.get('etag')
+    if (etag) {
+      this.revalidated.set(path, { etag, body })
+      if (this.revalidated.size > REVALIDATED_ANSWERS) this.revalidated.delete(this.revalidated.keys().next().value!)
+    }
+    return value
+  }
+
+  private async fetchAuthorized(path: string, init: RequestInit, configuration = this.configuration): Promise<Response> {
     const headers = new Headers(init.headers)
     this.applyAuth(headers, configuration)
     if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
     const target = new URL(configurationURL(configuration, path))
     const started = performance.now()
-    let response: Response
     try {
-      response = await fetch(target.toString(), {
+      return await fetch(target.toString(), {
         ...init,
         headers,
         // Never allow a profile credential to be replayed to a redirect target.
@@ -2868,10 +2909,6 @@ export class AgentServerClient {
       }
       throw error
     }
-    if (!response.ok) await throwServerError(response, { maxResponseBytes })
-    if (response.status === 204) return undefined as T
-    if (maxResponseBytes != null) return await boundedJSONResponse(response, maxResponseBytes) as T
-    return response.json() as Promise<T>
   }
 
   private applyAuth(headers: Headers, configuration: ClientConfiguration): void {

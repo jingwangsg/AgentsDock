@@ -1591,6 +1591,76 @@ describe('live queue state', () => {
     expect(useAppStore.getState().snapshots['chat-b'].queuedTurns).toMatchObject([{ queued_id: 'queued-new' }])
   })
 
+  it('takes a warmed chat’s rows only into a copy it holds for a chat no pane shows, in place', async () => {
+    const handlers = new Map<string, (payload: any) => void>()
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        bootstrap: vi.fn().mockResolvedValue({
+          settings: { serverUrl: 'http://example.test', hasAccessToken: false, serverSetupComplete: true },
+          health: null, sessions: [], jobs: [], runtimeCatalog: null,
+          folderOrder: [], collapsedFolders: [], archivedCollapsed: false
+        }),
+        native: { log: vi.fn().mockResolvedValue(undefined), setBadge: vi.fn().mockResolvedValue(undefined) },
+        preferences: { get: vi.fn().mockResolvedValue(undefined) },
+        events: { on: vi.fn((channel: string, handler: (payload: any) => void) => { handlers.set(channel, handler); return () => {} }) }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      initialized: false, activeProfileId: null, profileGeneration: 0,
+      switchingProfileId: null, selectedSessionId: null, sessions: [], snapshots: {}
+    })
+    await useAppStore.getState().initialize()
+    const held = { ...snapshot('held', [eventFor('held', 1), eventFor('held', 2)], true), nextTimelineBefore: 1 }
+    const shown = snapshot('shown', [eventFor('shown', 1)])
+    // A copy at the memory bound of a chat no pane shows (1,440 rows), one that ends before the warmed rows begin, and
+    // one emptied by that bound.
+    const full = snapshot('full', Array.from({ length: 1_440 }, (_, index) => eventFor('full', index + 1)))
+    const behind = snapshot('behind', [eventFor('behind', 1)])
+    const emptied = { ...snapshot('emptied', [], true), historyVerified: false, eventsTotal: 2_000 }
+    // One turn at the bound: 40 more rows of it make the turn alone longer than the bound.
+    const giant = snapshot('giant', Array.from({ length: 1_440 }, (_, index) => eventFor('giant', index + 1, { run_id: 'run-1' })))
+    useAppStore.setState({
+      selectedSessionId: 'shown', chatPanes: { primary: 'shown', secondary: null },
+      sessions: ['held', 'shown', 'absent', 'full', 'behind', 'emptied', 'giant'].map(sessionFor),
+      snapshots: { held, shown, full, behind, emptied, giant }
+    })
+    // Rows after `after`, as the main process's cache held them before the read.
+    const warmed = (sessionId: string, mode: 'merge' | 'replace', events: Event[], after = events[0].seq - 1) => handlers.get('server:timeline')?.({
+      profileId: null, profileGeneration: 0, sessionId, source: 'server', mode, warmed: { after },
+      snapshot: { ...snapshot(sessionId, events), queuedAsOfSeq: events.at(-1)?.seq }
+    })
+
+    warmed('held', 'merge', [eventFor('held', 3), eventFor('held', 4)])
+    warmed('absent', 'merge', [eventFor('absent', 9)])
+    warmed('shown', 'merge', [eventFor('shown', 2)])
+    const merged = useAppStore.getState().snapshots.held
+    expect(merged.events.map(event => event.seq)).toEqual([1, 2, 3, 4])
+    // The copy keeps what it knew about older history; only its rows and queue moved.
+    expect(merged).toMatchObject({ hasMoreEvents: true, nextTimelineBefore: 1 })
+    expect(useAppStore.getState().snapshots.absent).toBeUndefined()
+    expect(useAppStore.getState().snapshots.shown).toBe(shown)
+    // Warmed rows keep a copy within that bound: the newest rows stay, older ones go back to on-demand history.
+    warmed('full', 'merge', Array.from({ length: 40 }, (_, index) => eventFor('full', 1_441 + index)))
+    const bounded = useAppStore.getState().snapshots.full
+    expect(bounded.events.length).toBeLessThanOrEqual(1_440)
+    expect(bounded.events.at(-1)?.seq).toBe(1_480)
+    expect(bounded.hasMoreEvents).toBe(true)
+    // A copy the rows do not join would show a gap: it goes, and the next open reads the main process's cache.
+    warmed('behind', 'merge', [eventFor('behind', 6), eventFor('behind', 7)])
+    warmed('emptied', 'merge', [eventFor('emptied', 1_801)])
+    expect(useAppStore.getState().snapshots.behind).toBeUndefined()
+    expect(useAppStore.getState().snapshots.emptied).toBeUndefined()
+    // A copy the bound would empty goes too: an empty copy sends the next open to the server, not to the cache.
+    warmed('giant', 'merge', Array.from({ length: 40 }, (_, index) => eventFor('giant', 1_441 + index, { run_id: 'run-1' })))
+    expect(useAppStore.getState().snapshots.giant).toBeUndefined()
+
+    // A replacement window need not join the copy: the copy goes, and the next open reads the cache.
+    warmed('held', 'replace', [eventFor('held', 90)])
+    expect(useAppStore.getState().snapshots.held).toBeUndefined()
+    expect(useAppStore.getState().snapshots.shown).toBe(shown)
+  })
+
   it('rejects a queue response that predates a queued send result', async () => {
     const send = vi.fn().mockResolvedValue({
       session: sessionFor('chat-a'),

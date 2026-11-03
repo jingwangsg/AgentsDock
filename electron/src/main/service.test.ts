@@ -113,8 +113,10 @@ import {
   ServerError,
   TeamHubBootstrapTransportError,
   type AgentServerClient,
-  type ServerUpdateTarget
+  type ServerUpdateTarget,
+  type SessionPageOptions
 } from './server-client'
+import { sessionUnread } from '../shared/chat-visibility'
 import { AppService, mergePolledSessionSummaries, mergeSessionSummaries, sessionOwnedFilesPage } from './service'
 import { CanvasCache } from './canvas-cache'
 import { SettingsStore } from './settings'
@@ -1222,6 +1224,275 @@ describe('background refresh failures', () => {
       service?.stop()
       vi.useRealTimers()
     }
+  })
+})
+
+describe('background warming of chats nobody has open', () => {
+  const at = (minute: number) => `2026-11-03T08:${String(minute).padStart(2, '0')}:00.000Z`
+  interface WarmChat { latest: number; cached: number; minute: number; extra?: Partial<Session>; rowBytes?: number }
+
+  // A fake server over `chats` (every row visible) that logs each page read with its timing. A warming read takes
+  // 200 ms, so two in flight at once would overlap in the log.
+  // `serverB`: the chats of the second profile (http://b.test:7850), for a switch.
+  function warmingHarness(chats: Record<string, WarmChat>, options: { prefetch?: boolean; activeServerUrl?: string; serverB?: Record<string, WarmChat> } = {}) {
+    const all = { ...chats, ...options.serverB }
+    const sessionOf = (id: string): Session => ({
+      id, title: id, backend: 'claude', archived: false, latest_event_seq: all[id].latest, latest_event_at: at(all[id].minute),
+      latest_agent_event_seq: all[id].latest, last_read_agent_event_seq: all[id].latest, manual_unread: false, ...all[id].extra
+    })
+    const eventOf = (id: string, seq: number): Event => ({
+      id: `${id}-${seq}`, seq, session_id: id, type: 'assistant_text', ts: at(0), text: `row ${seq} ${'x'.repeat(all[id].rowBytes ?? 0)}`
+    })
+    const pageOf = (id: string, request: SessionPageOptions): TimelinePage => {
+      const latest = all[id].latest
+      const rows = Array.from({ length: latest }, (_, index) => index + 1)
+      // A page's session differs from the list row in its title, so a list that took it shows that.
+      const session = { ...sessionOf(id), title: `${id} as a page reads it` }
+      if (request.pageMode === 'semantic') {
+        const seqs = rows.slice(-(request.limit ?? 48))
+        return { session, events: seqs.map(seq => eventOf(id, seq)), queued_turns: [], has_more: seqs[0] > 1,
+          latest_seq: latest, semantic_item_count: seqs.length, semantic_paging: true, events_omitted_after: 0 }
+      }
+      const newer = rows.filter(seq => seq > (request.after ?? 0))
+      const seqs = newer.slice(0, request.limit ?? 120)
+      return { session, events: seqs.map(seq => eventOf(id, seq)), queued_turns: [], has_more: false,
+        latest_seq: latest, events_omitted_after: newer.length - seqs.length }
+    }
+    const reads: Array<{ id: string; request: SessionPageOptions; start: number; end: number; bytes: number }> = []
+    let inFlight = 0
+    let maxInFlight = 0
+    const serve = (listed: Record<string, WarmChat>) => fakeClient({
+      health: async () => ({ ok: true, capabilities: options.prefetch === false ? {} : { session_prefetch_v1: { available: true, version: 1 } } }),
+      sessions: async () => Object.keys(listed).map(sessionOf),
+      // An open chat's socket connects and stays quiet, so a poll does not reconcile the chat again.
+      stream: (_id, _after, _onEvent, onState) => { onState(true); return vi.fn() },
+      sessionPage: async (id, request: SessionPageOptions = {}) => {
+        const entry = { id, request, start: Date.now(), end: 0, bytes: 0 }
+        reads.push(entry)
+        if (request.prefetch) {
+          maxInFlight = Math.max(maxInFlight, ++inFlight)
+          await new Promise(resolve => setTimeout(resolve, 200))
+          inFlight -= 1
+          if (id === 'broken') {
+            entry.end = Date.now()
+            throw new ServerError(500, 'history unreadable')
+          }
+        }
+        const page = pageOf(id, request)
+        entry.end = Date.now()
+        entry.bytes = JSON.stringify(page).length
+        return page
+      }
+    })
+    const client = serve(chats)
+    const clients: Record<string, Array<ReturnType<typeof fakeClient>>> = { [options.activeServerUrl ?? 'http://a.test:7850']: [client] }
+    if (options.serverB) clients['http://b.test:7850'] = [serve(options.serverB)]
+    const { service, cache } = createProfileService(clients, value => {
+      for (const [namespace, listed] of [['profile:a', chats], ['profile:b', options.serverB ?? {}]] as const) {
+        value.putSessions(namespace, Object.keys(listed).map(sessionOf))
+        // A cached chat as an earlier open left it: its rows and its semantic timeline state.
+        for (const [id, chat] of Object.entries(listed)) {
+          if (!chat.cached) continue
+          value.putEvents(namespace, id, Array.from({ length: chat.cached }, (_, index) => eventOf(id, index + 1)))
+          value.putTimelineState(namespace, id, false, chat.cached, chat.cached, null, true)
+        }
+      }
+    }, undefined, undefined, undefined, options.activeServerUrl)
+    // The inactive profile's health probes are another test's subject.
+    vi.spyOn(service as unknown as { refreshInactiveProfileHealth(): Promise<void> }, 'refreshInactiveProfileHealth').mockResolvedValue(undefined)
+    const listeners = new Map<string, (event: unknown, input: { type: string }) => void>()
+    const send = vi.fn()
+    service.addWindow({
+      isDestroyed: () => false,
+      on: vi.fn(),
+      webContents: { id: 51, send, on: (name: string, listener: (event: unknown, input: { type: string }) => void) => listeners.set(name, listener) }
+    } as never)
+    const prefetches = () => reads.filter(read => read.request.prefetch)
+    const warmedEmits = () => send.mock.calls.filter(([name, payload]) => name === 'server:timeline' && payload.warmed)
+      .map(([, payload]) => [payload.sessionId, payload.mode, payload.warmed.after, payload.snapshot.events.length])
+    return { service, cache, client, chats, reads, prefetches, warmedEmits, listeners, maxInFlight: () => maxInFlight }
+  }
+
+  afterEach(() => { vi.useRealTimers() })
+
+  it('reads the most recent cached chats a small page at a time, one request at a time and paced, without marking any read', async () => {
+    vi.useFakeTimers()
+    const harness = warmingHarness({
+      open: { latest: 20, cached: 20, minute: 59 },
+      // Its pages fail: read once, then left alone until it changes, while the others are warmed.
+      broken: { latest: 30, cached: 10, minute: 58 },
+      unread: { latest: 15, cached: 10, minute: 57, extra: { last_read_agent_event_seq: 10 } },
+      busy: { latest: 70, cached: 10, minute: 56 },
+      // A backlog longer than an open merges (480 rows): the window an open shows instead.
+      long: { latest: 600, cached: 5, minute: 55 },
+      uncached: { latest: 30, cached: 0, minute: 54 },
+      current: { latest: 12, cached: 12, minute: 53 }
+    })
+    const { service, cache, client } = harness
+    service.start()
+    await vi.advanceTimersByTimeAsync(0)
+    await service.subscribeTimeline('open', 20)
+    await vi.advanceTimersByTimeAsync(20_000)
+
+    expect(harness.prefetches().map(({ id, request }) => [id, request.after ?? null, request.limit, request.pageMode ?? null])).toEqual([
+      ['broken', 10, 40, null],
+      ['unread', 10, 40, null],
+      ['busy', 10, 40, null],
+      ['busy', 50, 40, null],
+      ['long', 5, 40, null],
+      ['long', null, 48, 'semantic']
+    ])
+    expect(harness.prefetches().every(({ request }) => request.visible === true && (request.pageMode === 'semantic' || request.tail === false))).toBe(true)
+    expect(harness.maxInFlight()).toBe(1)
+    const steps = harness.prefetches().filter(({ request }) => request.pageMode !== 'semantic')
+    for (let index = 1; index < steps.length; index += 1) {
+      expect(steps[index].start - steps[index - 1].end, `pause before ${steps[index].id}`).toBeGreaterThanOrEqual(1_500)
+    }
+    // The failed read doubled the pause once.
+    expect(steps[1].start - steps[0].end).toBeGreaterThanOrEqual(3_000)
+
+    expect(cache.snapshot('profile:a', 'busy')?.events.map(event => event.seq)).toEqual(Array.from({ length: 70 }, (_, index) => index + 1))
+    const long = cache.snapshot('profile:a', 'long')
+    expect(long?.events.map(event => event.seq)).toEqual(Array.from({ length: 48 }, (_, index) => 553 + index))
+    expect(long?.hasMoreEvents).toBe(true)
+    expect(harness.warmedEmits()).toEqual([['unread', 'merge', 10, 5], ['busy', 'merge', 10, 40], ['busy', 'merge', 50, 20], ['long', 'replace', 5, 48]])
+
+    // Nothing is marked read, and the chat list keeps its own rows.
+    expect(client.markRead).not.toHaveBeenCalled()
+    const listed = (await service.bootstrap()).sessions
+    expect(sessionUnread(listed.find(session => session.id === 'unread')!)).toBe(true)
+    expect(cache.session('profile:a', 'unread')?.last_read_agent_event_seq).toBe(10)
+    expect(listed.filter(session => ['unread', 'busy', 'long'].includes(session.id)).map(session => session.title)).toEqual(['unread', 'busy', 'long'])
+
+    // The next poll lists newer rows. The open chat has its own stream and is never read in the background; a chat
+    // caught up less than 30 s ago waits out the rest of that time.
+    const busyCaughtUp = steps.filter(({ id }) => id === 'busy').at(-1)!.end
+    harness.chats.open.latest = 26
+    harness.chats.busy.latest = 75
+    await vi.advanceTimersByTimeAsync(25_000)
+    expect(harness.client.sessions.mock.calls.length).toBeGreaterThan(1)
+    expect(harness.prefetches().filter(({ id }) => id === 'open')).toEqual([])
+    const busyAgain = harness.prefetches().find(({ id, request }) => id === 'busy' && request.after === 70)!
+    expect(busyAgain.start - busyCaughtUp).toBeGreaterThanOrEqual(30_000)
+
+    // Opening the warmed chat asks only for what is newer.
+    harness.reads.length = 0
+    await service.subscribeTimeline('busy', 75)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(harness.reads.map(({ id, request }) => [id, request.after, request.prefetch ?? false])).toEqual([['busy', 75, false]])
+    expect(client.stream.mock.calls.at(-1)?.slice(0, 2)).toEqual(['busy', 75])
+    service.stop()
+  })
+
+  it('drops a page whose chat changed on the way, so rows rewound meanwhile stay gone', async () => {
+    vi.useFakeTimers()
+    const harness = warmingHarness({ busy: { latest: 70, cached: 10, minute: 56 } })
+    const { service, cache } = harness
+    const row = (seq: number, extra: Partial<Event> = {}): Event => ({ id: `busy-${seq}`, seq, session_id: 'busy', type: 'assistant_text', ts: at(0), text: `row ${seq}`, ...extra })
+    service.start()
+    await vi.advanceTimersByTimeAsync(3_100)
+    expect(harness.prefetches().map(({ request }) => request.after)).toEqual([10])
+    // While rows 11-50 are on their way, an open caches rows up to 70 and the user rewinds rows 40-70.
+    cache.putEvents('profile:a', 'busy', Array.from({ length: 60 }, (_, index) => row(11 + index)))
+    cache.removeEventRange('profile:a', 'busy', 40, 70)
+    cache.putEvents('profile:a', 'busy', [row(71, { type: 'history_rewound', from_seq: 40, through_seq: 70 })])
+    await vi.advanceTimersByTimeAsync(200)
+    expect(cache.snapshot('profile:a', 'busy')?.events.map(event => event.seq)).toEqual([...Array.from({ length: 39 }, (_, index) => index + 1), 71])
+    expect(harness.warmedEmits()).toEqual([])
+    service.stop()
+  })
+
+  it('warms nothing on a server that does not take prefetch reads', async () => {
+    vi.useFakeTimers()
+    const harness = warmingHarness({ busy: { latest: 70, cached: 10, minute: 56 } }, { prefetch: false })
+    harness.service.start()
+    await vi.advanceTimersByTimeAsync(65_000)
+    expect(harness.client.sessions).toHaveBeenCalled()
+    expect(harness.reads).toEqual([])
+    harness.service.stop()
+  })
+
+  it('waits while the user types or scrolls, and while an older page the user asked for is on its way', async () => {
+    vi.useFakeTimers()
+    const older = deferred<void>()
+    const harness = warmingHarness({ busy: { latest: 200, cached: 10, minute: 56 }, current: { latest: 12, cached: 12, minute: 53 } })
+    const { service, client, listeners } = harness
+    const afters = () => harness.prefetches().map(({ request }) => request.after)
+    service.start()
+    // A key just before warming would start (3 s after the poll) holds it until 3 s after the key.
+    await vi.advanceTimersByTimeAsync(2_900)
+    listeners.get('before-input-event')?.({}, { type: 'keyDown' })
+    await vi.advanceTimersByTimeAsync(2_999)
+    expect(afters()).toEqual([])
+    await vi.advanceTimersByTimeAsync(201)
+    expect(afters()).toEqual([10])
+
+    // A wheel event between two pages holds the next one, otherwise 1.5 s after the first, until 3 s after the wheel.
+    await vi.advanceTimersByTimeAsync(900)
+    listeners.get('before-mouse-event')?.({}, { type: 'mouseWheel' })
+    await vi.advanceTimersByTimeAsync(2_990)
+    expect(afters()).toEqual([10])
+    await vi.advanceTimersByTimeAsync(20)
+    expect(afters()).toEqual([10, 50])
+
+    // An older page the user asked for holds warming until it arrives.
+    await vi.advanceTimersByTimeAsync(300)
+    const pageRequest = client.sessionPage.getMockImplementation()!
+    client.sessionPage.mockImplementationOnce(async (id, request) => { await older.promise; return pageRequest(id, request) })
+    const loading = service.olderTimeline('current', 5, 120)
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(afters()).toEqual([10, 50])
+    older.resolve()
+    await loading
+    const arrived = Date.now()
+    await vi.advanceTimersByTimeAsync(3_200)
+    expect(afters().slice(0, 3)).toEqual([10, 50, 90])
+    expect(harness.prefetches()[2].start).toBeGreaterThanOrEqual(arrived)
+    service.stop()
+  })
+
+  it('keeps the warming reads within a byte budget a minute', async () => {
+    vi.useFakeTimers()
+    // About 600 KB of JSON a page: the second page fills the 1 MB minute, so the third waits for it to drain.
+    const harness = warmingHarness({ big: { latest: 400, cached: 10, minute: 56, rowBytes: 15_000 } })
+    harness.service.start()
+    await vi.advanceTimersByTimeAsync(30_000)
+    const [first, second, third] = harness.prefetches()
+    expect(first.bytes).toBeGreaterThan(550_000)
+    expect(second.start - first.end).toBeLessThan(2_000)
+    expect(third.start - second.end).toBeGreaterThanOrEqual(8_000)
+    harness.service.stop()
+  })
+
+  it('starts warming a server switched to without waiting out the previous server’s budget wait', async () => {
+    vi.useFakeTimers()
+    // On server a two pages of about 600 KB fill the 1 MB minute: from about 6.4 s its next read waits about 9 s.
+    const harness = warmingHarness({ big: { latest: 400, cached: 10, minute: 56, rowBytes: 15_000 } },
+      { serverB: { other: { latest: 70, cached: 10, minute: 50 } } })
+    harness.service.start()
+    await vi.advanceTimersByTimeAsync(7_000)
+    expect(harness.prefetches().map(({ id }) => id)).toEqual(['big', 'big'])
+    // The window asks for the new server's refresh after a switch.
+    const { profileGeneration } = await harness.service.switchServer('b')
+    await harness.service.refreshServer('b', profileGeneration)
+    await vi.advanceTimersByTimeAsync(4_000)
+    expect(harness.prefetches().map(({ id }) => id)).toEqual(['big', 'big', 'other'])
+    harness.service.stop()
+  })
+
+  it('reads a remote behind a hub in smaller pages, with longer pauses and a smaller byte budget', async () => {
+    vi.useFakeTimers()
+    // A remote of another Mac's hub shares that hub's tunnel too. About 100 KB of JSON a page.
+    const harness = warmingHarness({ busy: { latest: 200, cached: 10, minute: 56, rowBytes: 5_000 } },
+      { activeServerUrl: 'http://10.0.0.5:7850/api/remote/abc123def456' })
+    harness.service.start()
+    await vi.advanceTimersByTimeAsync(45_000)
+    const [first, second, third] = harness.prefetches()
+    expect([first, second, third].map(({ request }) => [request.after, request.limit])).toEqual([[10, 20], [30, 20], [50, 20]])
+    expect(second.start - first.end).toBeGreaterThanOrEqual(5_000)
+    // Two pages are over the 128 KB minute: the third waits for the bucket to drain.
+    expect(third.start - second.end).toBeGreaterThanOrEqual(20_000)
+    harness.service.stop()
   })
 })
 

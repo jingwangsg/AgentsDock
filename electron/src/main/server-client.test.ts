@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TERMINAL_SHELL_EXITED_CLOSE_CODE } from '../shared/terminal'
+import { createHash } from 'node:crypto'
 import { closeSync, openSync } from 'node:fs'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
@@ -2933,6 +2934,43 @@ describe('AgentServerClient live stream', () => {
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe('http://example.test:7850/api/sessions?summary=true')
   })
 
+  it('asks for the polled lists again with the ETag of their last answer and keeps that answer on a 304', async () => {
+    // The real fetch, against a local server: the test setup stubs fetch with an empty 204.
+    vi.unstubAllGlobals()
+    // The server's weak tag over the JSON it would send (RevalidatedGzipRoute); an unchanged list gets an empty 304.
+    const bodies: Record<string, unknown> = {
+      '/api/sessions?summary=true': { sessions: [{ id: 'chat', title: 'Chat', backend: 'codex' }] },
+      '/api/sessions/chat/subagents': { session_id: 'chat', subagents: [], count: 0, active_count: 0, latest_seq: 4 },
+      '/api/sessions/chat/files?offset=0&limit=60': { files: [{ id: 'file-1', filename: 'a.txt' }], total: 1 }
+    }
+    const requests: Array<{ path: string; tag: string | undefined; status: number }> = []
+    await withLocalHTTPServer((request, response) => {
+      const body = JSON.stringify(bodies[request.url ?? ''])
+      const etag = `W/"${createHash('sha256').update(body).digest('hex').slice(0, 32)}"`
+      const status = request.headers['if-none-match'] === etag ? 304 : 200
+      requests.push({ path: request.url ?? '', tag: request.headers['if-none-match'], status })
+      response.writeHead(status, { 'Content-Type': 'application/json', ETag: etag })
+      response.end(status === 304 ? undefined : body)
+    }, async baseURL => {
+      const client = new AgentServerClient(baseURL, 'secret')
+      const read = async () => [await client.sessions(), await client.subagents('chat'), await client.files('chat')]
+      const first = await read()
+      expect(await read()).toEqual(first)
+      bodies['/api/sessions?summary=true'] = { sessions: [{ id: 'chat', title: 'Renamed', backend: 'codex' }] }
+      expect((await client.sessions())[0].title).toBe('Renamed')
+    })
+    expect(requests.map(({ path, tag, status }) => [path, Boolean(tag), status])).toEqual([
+      ['/api/sessions?summary=true', false, 200],
+      ['/api/sessions/chat/subagents', false, 200],
+      ['/api/sessions/chat/files?offset=0&limit=60', false, 200],
+      ['/api/sessions?summary=true', true, 304],
+      ['/api/sessions/chat/subagents', true, 304],
+      ['/api/sessions/chat/files?offset=0&limit=60', true, 304],
+      // The changed list no longer matches the tag sent: a full answer, with its new tag.
+      ['/api/sessions?summary=true', true, 200]
+    ])
+  })
+
   it('renders structured runtime preflight errors as actionable text', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       detail: { code: 'runtime_unavailable', message: 'Codex is not installed.', action: 'Install Codex, then refresh runtime status.' }
@@ -2959,6 +2997,18 @@ describe('AgentServerClient live stream', () => {
     expect(url).toContain('before=100')
     expect(url).toContain('tail=true')
     expect(page).toMatchObject({ has_more: true, latest_seq: 100, events_omitted_before: 42, events_omitted_after: 0 })
+  })
+
+  it('sends prefetch=true only when asked', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      session: { id: 'chat', title: 'Chat', backend: 'codex' }, events: [], queued_turns: [], latest_seq: 7
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new AgentServerClient('http://example.test:7850', 'secret')
+    await client.sessionPage('chat', { after: 7, limit: 40, tail: false, visible: true, prefetch: true })
+    await client.sessionPage('chat', { after: 7, limit: 480, tail: false, visible: true })
+    const queries = fetchMock.mock.calls.map(call => new URL(String((call as unknown[])[0])).searchParams)
+    expect(queries.map(query => query.get('prefetch'))).toEqual(['true', null])
   })
 
   it('opts into semantic paging and preserves its counts and boundary cursor', async () => {
