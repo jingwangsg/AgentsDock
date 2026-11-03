@@ -380,8 +380,8 @@ describe('CanvasPane comments and source editing', () => {
   })
 })
 
-describe('CanvasPane kept copy', () => {
-  const kept = { name: 'report', path: '/c/report.canvas.tsx', source: 'src', javascript: 'var a = 1', diagnostics: null, runtime_version: 'v1', state: { filter: 'all' }, revision: 1 }
+describe('CanvasPane cached copy', () => {
+  const kept = { name: 'report', path: '/c/report.canvas.tsx', source: 'src', javascript: 'var a = 1', diagnostics: null, runtime_version: 'v1', state: { filter: 'all', range: { from: 1, to: 9 } }, revision: 1 }
 
   function renderKept(checked: Promise<unknown>) {
     vi.stubGlobal('agentsDock', { canvas: {
@@ -401,8 +401,8 @@ describe('CanvasPane kept copy', () => {
     const shown = await pageAddress()
     expect(shown).toMatch(/^agentsdock-canvas:\/\/canvas\/profile\/1\/chat-1\/report\/index\.html/)
 
-    answer({ ...kept, state: { ...kept.state } })
-    await waitFor(() => expect(window.agentsDock.canvas.get).toHaveBeenCalled())
+    // The server answers with its keys sorted.
+    answer({ ...kept, state: { range: { to: 9, from: 1 }, filter: 'all' } })
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(await pageAddress()).toBe(shown)
   })
@@ -428,7 +428,7 @@ describe('CanvasPane kept copy', () => {
     window.dispatchEvent(event)
 
     // The page saved its choice before the server answered: the same page stays.
-    answer({ ...kept, state: { filter: 'mine' } })
+    answer({ ...kept, state: { ...kept.state, filter: 'mine' } })
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(await pageAddress()).toBe(shown)
   })
@@ -448,6 +448,35 @@ describe('CanvasPane kept copy', () => {
 
     answer({ ...kept, revision: 2, javascript: 'var a = 2' })
     await waitFor(async () => expect(await pageAddress()).not.toBe(shown))
+  })
+
+  it('replaces a failed compile with a successful compile of the same revision', async () => {
+    renderKept(Promise.resolve({ ...kept, javascript: '', diagnostics: 'Canvas compiler timed out after 180s.' }))
+    expect(await screen.findByText('Canvas compiler timed out after 180s.')).toBeInTheDocument()
+    vi.mocked(window.agentsDock.canvas.get).mockResolvedValue(kept as never)
+
+    fireEvent.click(screen.getByTitle('Reload'))
+
+    expect(await screen.findByTitle('Canvas report')).toBeInTheDocument()
+  })
+
+  it('ignores the answer for a canvas the user has left', async () => {
+    let answer = (_value: unknown) => {}
+    vi.stubGlobal('agentsDock', { canvas: {
+      list: vi.fn().mockResolvedValue({ canvases: [{ name: 'report', path: kept.path, revision: 1 }, { name: 'other', path: '/c/other.canvas.tsx', revision: 1 }] }),
+      get: vi.fn((_sessionId: string, name: string) => name === 'report' ? new Promise(resolve => { answer = resolve }) : Promise.resolve({ ...kept, name: 'other' })),
+      cached: vi.fn().mockResolvedValue(null),
+      putState: vi.fn()
+    } })
+    const { rerender } = renderCanvas()
+    await waitFor(() => expect(window.agentsDock.canvas.get).toHaveBeenCalledWith('chat-1', 'report'))
+    rerender(<CanvasPane session={session} target={{ sessionId: 'chat-1', name: 'other' }} onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByTitle('Canvas other').getAttribute('src')).toContain('/other/index.html'))
+
+    answer(kept)
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(screen.getByTitle('Canvas other').getAttribute('src')).toContain('/other/index.html')
   })
 
   it('loads a new page when the server holds a state neither the page started from nor chose', async () => {

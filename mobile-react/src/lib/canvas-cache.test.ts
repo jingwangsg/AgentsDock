@@ -2,17 +2,18 @@
 import assert from 'node:assert/strict'
 import { mockCacheFiles } from 'expo-file-system'
 import type { CanvasRecord } from '../types'
-import { cachedCanvas, cachedCanvasRuntime, keepCanvas, keepCanvasRuntime, keptCanvasIsCurrent } from './canvas-cache'
+import { cacheCanvas, cacheCanvasRuntime, cacheCanvasState, cachedCanvas, cachedCanvasRuntime, sameCanvasState } from './canvas-cache'
 
 const record = (revision: number, javascript = `var report = ${revision}`): CanvasRecord => ({
   name: 'report', path: '/state/canvases/chat/report.canvas.tsx', revision, updated_at: 't', source: 'source',
   javascript, diagnostics: null, runtime_version: 'v1', state: { filter: 'all' },
 })
 
-// --- kept per server identity, chat and canvas; runtimes per server identity and version
+// --- cached per server identity, chat and canvas; runtimes per server identity and version
 {
-  keepCanvas('server-a', 'chat', 'report', record(1))
-  keepCanvasRuntime('server-a', 'v1', { shell: '<html>', vendor: 'vendor()' })
+  mockCacheFiles.clear()
+  cacheCanvas('server-a', 'chat', 'report', record(1))
+  cacheCanvasRuntime('server-a', 'v1', { shell: '<html>', vendor: 'vendor()' })
   assert.deepEqual(await cachedCanvas('server-a', 'chat', 'report'), record(1))
   assert.deepEqual(await cachedCanvasRuntime('server-a', 'v1'), { shell: '<html>', vendor: 'vendor()' })
   assert.equal(await cachedCanvas('server-b', 'chat', 'report'), null, 'another server identity has its own entries')
@@ -20,15 +21,29 @@ const record = (revision: number, javascript = `var report = ${revision}`): Canv
   assert.equal(await cachedCanvasRuntime('server-a', 'v2'), null)
 }
 
-// --- a canvas whose latest record did not compile has no kept copy
+// --- a saved state goes to its own entry and leaves the record's file alone
 {
-  keepCanvas('server-a', 'chat', 'report', { ...record(2, ''), diagnostics: 'Canvas compiler timed out after 180s.' })
+  mockCacheFiles.clear()
+  cacheCanvas('server-a', 'chat', 'report', record(1))
+  const recordFile = [...mockCacheFiles.values()].sort((a, b) => b.text.length - a.text.length)[0]
+  const recordText = recordFile.text
+  cacheCanvasState('server-a', 'chat', 'report', { filter: 'mine' })
+  assert.equal(recordFile.text, recordText)
+  assert.deepEqual(await cachedCanvas('server-a', 'chat', 'report'), { ...record(1), state: { filter: 'mine' } })
+}
+
+// --- a canvas whose latest record did not compile has no cached copy
+{
+  mockCacheFiles.clear()
+  cacheCanvas('server-a', 'chat', 'report', record(1))
+  cacheCanvas('server-a', 'chat', 'report', { ...record(2, ''), diagnostics: 'Canvas compiler timed out after 180s.' })
   assert.equal(await cachedCanvas('server-a', 'chat', 'report'), null)
 }
 
 // --- an unreadable entry is a miss
 {
-  keepCanvas('server-a', 'chat', 'report', record(1))
+  mockCacheFiles.clear()
+  cacheCanvas('server-a', 'chat', 'report', record(1))
   for (const file of mockCacheFiles.values()) file.text = '{"key":'
   assert.equal(await cachedCanvas('server-a', 'chat', 'report'), null)
 }
@@ -37,25 +52,21 @@ const record = (revision: number, javascript = `var report = ${revision}`): Canv
 {
   mockCacheFiles.clear()
   const big = 'x'.repeat(30 * 1024 * 1024)
-  keepCanvas('server-a', 'chat', 'old', { ...record(1, big), name: 'old' })
+  cacheCanvas('server-a', 'chat', 'old', { ...record(1, big), name: 'old' })
   for (const file of mockCacheFiles.values()) file.modified -= 60_000
-  keepCanvas('server-a', 'chat', 'newer', { ...record(1, big), name: 'newer' })
-  keepCanvas('server-a', 'chat', 'newest', { ...record(1, big), name: 'newest' })
+  cacheCanvas('server-a', 'chat', 'newer', { ...record(1, big), name: 'newer' })
+  cacheCanvas('server-a', 'chat', 'newest', { ...record(1, big), name: 'newest' })
   assert.equal(await cachedCanvas('server-a', 'chat', 'old'), null)
   assert.ok(await cachedCanvas('server-a', 'chat', 'newer'))
   assert.ok(await cachedCanvas('server-a', 'chat', 'newest'))
 }
 
-// --- a kept copy is current while the server lists its revision under the same runtime version
+// --- states compare without key order: the server stores them sorted, a page reports its own order
 {
-  const list = (revision: number, runtimeVersion = 'v1') => ({
-    canvases: [{ name: 'report', path: '/state/canvases/chat/report.canvas.tsx', revision, size: 6, updated_at: 't' }],
-    capability: { runtime_version: runtimeVersion },
-  })
-  assert.equal(keptCanvasIsCurrent(record(1), list(1)), true)
-  assert.equal(keptCanvasIsCurrent(record(1), list(2)), false, 'the agent saved a new revision')
-  assert.equal(keptCanvasIsCurrent(record(1), list(1, 'v2')), false, 'the server compiles with another runtime')
-  assert.equal(keptCanvasIsCurrent(record(1), { canvases: [] }), false, 'the canvas is gone')
+  assert.equal(sameCanvasState({ tab: 1, filter: { region: 'eu', metric: 'loss' } }, { filter: { metric: 'loss', region: 'eu' }, tab: 1 }), true)
+  assert.equal(sameCanvasState({ runs: [2, 1] }, { runs: [1, 2] }), false, 'an array keeps its order')
+  assert.equal(sameCanvasState(undefined, {}), true)
+  assert.equal(sameCanvasState({ filter: 'all' }, { filter: 'mine' }), false)
 }
 
 console.log('canvas cache tests passed')

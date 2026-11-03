@@ -21,7 +21,7 @@ const types = source('src/types.ts')
 test('the client exposes the canvas routes with the desktop record types', () => {
   assert.match(types, /export interface CanvasSummary \{\n  name: string\n  path: string\n  revision: number\n  size: number\n  updated_at: string\n\}/)
   assert.match(types, /export interface CanvasRecord extends Omit<CanvasSummary, 'size'> \{[\s\S]*?javascript: string\n  diagnostics: string \| null\n  runtime_version: string \| null\n  state: Record<string, unknown>/)
-  assert.match(client, /listCanvases\(sessionId: string\): Promise<\{ canvases: CanvasSummary\[\] \}>/)
+  assert.match(client, /listCanvases\(sessionId: string\): Promise<\{ canvases: CanvasSummary\[\]; capability\?: \{ runtime_version\?: string \| null \} \}>/)
   assert.match(client, /getCanvas\(sessionId: string, name: string\): Promise<CanvasRecord>/)
   assert.match(client, /putCanvasState\(sessionId: string, name: string, state: Record<string, unknown>\)/)
   assert.match(client, /async canvasRuntimeAsset\(asset: 'shell\.html' \| 'vendor\.js'\): Promise<string>/)
@@ -56,14 +56,17 @@ test('the WebView renders a page assembled in-app the way the desktop protocol h
   assert.match(page, /data:application\/javascript;base64,/)
 })
 
-test('a canvas opened before renders from its kept copy and downloads the record only for another revision or runtime', () => {
-  // src/lib/canvas-cache.test.ts covers the storage and the revision check.
-  assert.match(sheet, /const kept = identity \? await cachedCanvas\(identity, sessionId, name\) : null\n\s+if \(kept && live\(\) && recordLive\.current\?\.name !== name\) \{\n\s+show\(kept\)/)
-  assert.match(sheet, /if \(!keptCanvasIsCurrent\(kept, list\)\) return \[list, await client\.getCanvas\(sessionId, name\)\]/)
-  assert.match(sheet, /const kept = serverIdentity \? await cachedCanvasRuntime\(serverIdentity, version\) : null/)
-  // Saved state and saved source update the kept copy, so the next open does not show an older one.
-  assert.match(sheet, /keepCanvas\(identity, sessionId, pending\.name, \{ \.\.\.kept, state: saved\.state \}\)/)
-  assert.match(sheet, /show\(next\)\n\s+const identity = useAppStore\.getState\(\)\.health\?\.server_identity\n\s+if \(identity\) keepCanvas\(identity, sessionId, name, next\)/)
+test('a canvas opened before renders from its cached copy and downloads the record only for another bundle', () => {
+  // src/lib/canvas-cache.test.ts covers the storage and the state comparison.
+  assert.match(sheet, /const cached = identity \? await cachedCanvas\(identity, sessionId, name\) : null/)
+  assert.match(sheet, /if \(cached && live\(\) && recordLive\.current\?\.name !== name\) \{/)
+  assert.match(sheet, /bundleCurrent = listed\?\.revision === cached\.revision && listed\.size === new TextEncoder\(\)\.encode\(cached\.source\)\.length/)
+  assert.match(sheet, /current \?\?= await client\.getCanvas\(sessionId, name\)/)
+  // A runtime is cached only under the version the server's runtime route serves.
+  assert.match(sheet, /version === useAppStore\.getState\(\)\.health\?\.capabilities\?\.canvas_v1\?\.runtime_version/)
+  // Saved state and saved source update the cached copy, so the next open does not show an older one.
+  assert.match(sheet, /cacheCanvasState\(identity, sessionId, pending\.name, saved\.state\)/)
+  assert.match(sheet, /if \(identity\) cacheCanvas\(identity, sessionId, name, next\)/)
 })
 
 test('runtime messages persist state with a debounce and surface errors with a source fallback', () => {

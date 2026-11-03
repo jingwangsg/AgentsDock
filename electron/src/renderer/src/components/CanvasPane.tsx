@@ -1,4 +1,4 @@
-import { CANVAS_HOST_MESSAGE_SOURCE, CANVAS_NAME_PATTERN, CANVAS_PAGE_MESSAGE_SOURCE, canvasPageURL, type CanvasHostTheme } from '@shared/canvas'
+import { CANVAS_HOST_MESSAGE_SOURCE, CANVAS_NAME_PATTERN, CANVAS_PAGE_MESSAGE_SOURCE, canvasPageURL, sameCanvasState, type CanvasHostTheme } from '@shared/canvas'
 import { t } from '@shared/i18n'
 import type { CanvasCommentMode, CanvasCommentThread, CanvasRecord, CanvasSummary, Session } from '@shared/types'
 import { ChevronDown, ChevronUp, Crosshair, Eye, FileCode2, FileDown, MessageSquare, RefreshCw, Search, TableOfContents, X } from 'lucide-react'
@@ -103,7 +103,7 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
   const [name, setName] = useState(target.name)
   const [canvases, setCanvases] = useState<CanvasSummary[]>([])
   const [record, setRecord] = useState<CanvasRecord | null>(null)
-  /** Counts the records put on screen; each gets a new page, also when only its state or runtime version differs. */
+  /** Counts the records put on screen; each gets a new page, also when it differs only in state or runtime version. */
   const [pageGeneration, setPageGeneration] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [pageError, setPageError] = useState<string | null>(null)
@@ -159,37 +159,45 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
 
   const recordLive = useRef<CanvasRecord | null>(null)
   recordLive.current = record
-  // A record replaces the one on screen only when its page would differ: another revision or runtime version,
-  // or a state that is neither the one the page started from nor the one it holds now (another device changed
-  // it). A check that finds the same canvas reloads nothing and keeps choices made while it ran.
+  // A record replaces the one on screen only when its page would differ: another bundle (revision, runtime
+  // version, compile result), or a state that is neither the one the page started from nor the one it holds now,
+  // i.e. one another device saved. A check that finds the same canvas reloads nothing and keeps choices made while
+  // it ran.
   const show = useCallback((next: CanvasRecord) => {
     const shown = recordLive.current
-    const nextState = JSON.stringify(next.state ?? {})
-    if (shown && shown.name === next.name && shown.revision === next.revision && shown.runtime_version === next.runtime_version
-      && (nextState === JSON.stringify(shown.state ?? {}) || nextState === JSON.stringify(stateRef.current))) return
+    const sameBundle = shown?.name === next.name && shown.revision === next.revision && shown.runtime_version === next.runtime_version
+      && shown.diagnostics === next.diagnostics && shown.javascript === next.javascript
+    const knownState = sameCanvasState(next.state, shown?.state) || sameCanvasState(next.state, stateRef.current)
+    if (sameBundle && knownState) return
     recordLive.current = next
     setRecord(next)
     setPageGeneration(generation => generation + 1)
     stateRef.current = next.state ?? {}
   }, [])
 
+  // Only the latest load may change the pane: an earlier one, for a canvas the user has left, can finish later.
+  const loadGeneration = useRef(0)
   const load = useCallback(async () => {
+    const generation = ++loadGeneration.current
+    const live = () => generation === loadGeneration.current
     setError(null)
     try {
       // A reload must read back the last edit, not the state the server held before the pending PUT.
       await flushSave()
-      // A canvas opened before shows its kept copy at once, while the server is asked whether it is current.
+      // Not yet on screen: the cached copy shows at once, while the server is asked whether it is current.
       if (recordLive.current?.name !== name) {
         const cached = await window.agentsDock.canvas.cached(session.id, name)
-        if (cached) show(cached)
+        if (cached && live()) show(cached)
       }
       const [list, current] = await Promise.all([
         window.agentsDock.canvas.list(session.id),
         window.agentsDock.canvas.get(session.id, name)
       ])
+      if (!live()) return
       setCanvases(list.canvases)
       show(current)
     } catch (caught) {
+      if (!live()) return
       setRecord(null)
       setError(caught instanceof Error ? caught.message : String(caught))
     }
@@ -231,7 +239,7 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
         .catch(() => undefined)
         .then(current => {
           if (current === null) onClose()
-          // load(), not a new reloadToken: that would reload the page at once from the kept, outdated copy.
+          // load(), not a new reloadToken: that would reload the page at once from the outdated cached copy.
           else if (current === undefined || current.revision !== recordLive.current?.revision) void load()
         })
     }
@@ -339,7 +347,8 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
   }, [postToPage])
 
   const src = useMemo(() => {
-    // No page before the chosen canvas's record is here: its page would download the record beside load().
+    // No page until the chosen canvas's record is on screen: a page requested earlier finds no cached record and
+    // downloads it a second time, in parallel with load().
     if (!profileId || !record || record.name !== name || record.diagnostics || !record.javascript) return null
     return canvasPageURL({ profileId, profileGeneration, sessionId: session.id, name, theme: hostTheme(), reloadKey: `${pageGeneration}-${reloadToken}` })
   }, [name, pageGeneration, profileGeneration, profileId, record, reloadToken, session.id])

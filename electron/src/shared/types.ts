@@ -1951,7 +1951,7 @@ export interface CanvasCommentInput {
 }
 
 export interface HealthCapabilities {
-  canvas_v1?: { available: boolean; version: number; comments?: boolean; source_edit?: boolean }
+  canvas_v1?: { available: boolean; version: number; runtime_version?: string | null; comments?: boolean; source_edit?: boolean }
   provider_usage?: { available: boolean; version: number; backends?: Backend[] }
   subagent_limit_v1?: { version: number; backends?: Backend[] }
   codex_provider_v1?: { available?: boolean; version?: number; per_chat?: boolean; per_chat_models?: boolean; model_discovery?: boolean; model_compatibility?: boolean }

@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { mkdtempSync, readdirSync, rmSync, utimesSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync, statSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -44,6 +44,22 @@ describe('CanvasCache', () => {
     expect(await restarted.runtime('server-a', 'v2')).toBeNull()
   })
 
+  it('keeps the state in an entry of its own, so a saved state does not rewrite the record', async () => {
+    const root = cacheRoot()
+    const cache = new CanvasCache(root)
+    await cache.putRecord('server-a', 'chat', 'report', record(1))
+    const recordFile = files(root).map(file => [file, statSync(file).size] as const).sort((a, b) => b[1] - a[1])[0][0]
+    const past = new Date(Date.now() - 60_000)
+    utimesSync(recordFile, past, past)
+    const written = statSync(recordFile).mtimeMs
+
+    await cache.putState('server-a', 'chat', 'report', { filter: 'mine' })
+
+    expect(statSync(recordFile).mtimeMs).toBe(written)
+    expect(await cache.record('server-a', 'chat', 'report')).toEqual({ ...record(1), state: { filter: 'mine' } })
+    expect(await new CanvasCache(root).record('server-a', 'chat', 'report')).toEqual({ ...record(1), state: { filter: 'mine' } })
+  })
+
   it('drops the entry of a canvas whose latest record did not compile', async () => {
     const root = cacheRoot()
     const cache = new CanvasCache(root)
@@ -78,11 +94,12 @@ describe('CanvasCache', () => {
     await cache.putRuntime('server-a', 'v1', { shell: '<html>', vendor: 'vendor()' })
     await cache.putRecord('server-b', 'chat', 'report', record(1))
 
-    cache.removeNamespaces(['server-a', ''])
+    cache.removeServerNamespaces(['server-a', ''])
 
     expect(await cache.record('server-a', 'chat', 'report')).toBeNull()
     expect(await cache.runtime('server-a', 'v1')).toBeNull()
     expect(await cache.record('server-b', 'chat', 'report')).toEqual(record(1))
-    expect(files(root)).toHaveLength(1)
+    // server-b's record and state.
+    expect(files(root)).toHaveLength(2)
   })
 })

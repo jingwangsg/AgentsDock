@@ -735,7 +735,7 @@ export class AgentServerClient {
       CODE_DIFF_MAX_BYTES,
     )
   }
-  listCanvases(sessionId: string): Promise<{ canvases: CanvasSummary[] }> {
+  listCanvases(sessionId: string): Promise<{ canvases: CanvasSummary[]; capability?: { runtime_version?: string | null } }> {
     return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/canvases`)
   }
   getCanvas(sessionId: string, name: string): Promise<CanvasRecord> {
