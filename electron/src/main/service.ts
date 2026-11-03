@@ -191,6 +191,7 @@ import { openInZed as launchZed, readZedWorkspaceFolders } from './open-in-zed'
 import { sshHostAlias, type OpenInZedRequest } from '../shared/ssh-host-alias'
 import { clearStorageError, localStorageWasFull, observeStorageErrors, reportStorageError } from './storage-health'
 import { SubagentEventProjector } from './subagent-projection'
+import { DIRECT_WARMING_PACE, REMOTE_WARMING_PACE, nextWarmingPause, warmChatOrder, warmingBucketLevel, warmingBudgetWaitMs, type WarmingPace } from './chat-warming'
 import { mergeTimelineSearchResults } from './search'
 import type { TeamHubConfigureServerRoleInput, TeamHubDiscovery, TeamHubScope, TeamHubServerScope } from '../shared/team-hub'
 import type { TeamHubBootstrapProof, TeamHubBootstrapProofInput } from './team-hub-service'
@@ -264,6 +265,12 @@ const SUBAGENT_POLL_INTERVAL_MS = 5_000
 // five seconds or treat a normal typing pause as idle time.
 const BACKGROUND_REFRESH_INTERVAL_MS = 30_000
 const FOREGROUND_INTERACTION_QUIET_MS = 3_000
+// Warming (warmingStep) starts this long after a chat list poll, so a chat the app restores or reconnects after the
+// same poll is read first.
+const WARMING_START_MS = 3_000
+// A chat just brought up to the server's newest row waits this long before it is read again, so a chat whose turn
+// keeps running is caught up twice a minute, not on every new row, and the other chats get their turn.
+const WARMING_CHAT_COOLDOWN_MS = 30_000
 const INACTIVE_PROFILE_HEALTH_INTERVAL_MS = 30_000
 const INACTIVE_PROFILE_HEALTH_TIMEOUT_MS = 5_000
 // A hub remote answers through the hub's ssh relay; one request measured 3-8 s over a Sky-proxied link.
@@ -482,6 +489,19 @@ export class AppService {
   private deferredBackgroundRefreshTimer: NodeJS.Timeout | null = null
   private deferredBackgroundRefresh: ConnectionScope | null = null
   private lastForegroundInteractionAt = Number.NEGATIVE_INFINITY
+  /** Cold opens, older pages, history seeks (timelineAround) and sends in flight (whileUserWaits); warming sends nothing meanwhile. */
+  private userRequestsInFlight = 0
+  private warmingTimer: NodeJS.Timeout | null = null
+  private warmingRunning = false
+  /** Warming's pause and byte budget (chat-warming.ts), for the connection generation they belong to. */
+  private warming = { generation: -1, pauseMs: 0, budget: { level: 0, at: 0 } }
+  /** What warming knows per `namespace\nchat`. */
+  private warmedChats = new Map<string, {
+    /** When a read last reached the server's newest row; the chat then waits WARMING_CHAT_COOLDOWN_MS. */
+    caughtUpAt: number
+    /** The list's latest_event_seq when a read failed or brought no rows; skipped until the list shows another. */
+    stalledAtSeq: number | null
+  }>()
   private backgroundApplyQuietWaiters = new Map<number, Set<(apply: boolean) => void>>()
   private foregroundSensitiveRefreshes = new Set<number>()
   private foregroundApplyBypassGenerations = new Set<number>()
@@ -716,7 +736,9 @@ export class AppService {
     if (this.deferredBackgroundRefreshTimer) clearTimeout(this.deferredBackgroundRefreshTimer)
     if (this.profileHealthPollTimer) clearInterval(this.profileHealthPollTimer)
     if (this.searchBackfillTimer) clearTimeout(this.searchBackfillTimer)
+    if (this.warmingTimer) clearTimeout(this.warmingTimer)
     this.pollTimer = null
+    this.warmingTimer = null
     this.deferredBackgroundRefreshTimer = null
     this.deferredBackgroundRefresh = null
     this.lastForegroundInteractionAt = Number.NEGATIVE_INFINITY
@@ -3206,7 +3228,7 @@ export class AppService {
       return cached
     }
     try {
-      return await this.fetchTimeline(scope, sessionId, lease)
+      return await this.whileUserWaits(this.fetchTimeline(scope, sessionId, lease))
     } catch (error) {
       this.finishTimelineInitialization(sessionId, lease)
       throw error
@@ -3362,9 +3384,9 @@ export class AppService {
       await this.ensureValidatedScope(scope)
       const options = { before, limit, tail: true, visible: true }
       // Live-tail pages go to the disk cache below; historical pages are memoized in memory instead.
-      const page = persistLiveCache
-        ? await this.semanticTimelinePage(scope, sessionId, options)
-        : await this.historicalSemanticPage(scope, sessionId, options)
+      const page = await this.whileUserWaits(persistLiveCache
+        ? this.semanticTimelinePage(scope, sessionId, options)
+        : this.historicalSemanticPage(scope, sessionId, options))
       this.assertCurrentScope(scope)
       const nextBefore = timelinePageNextBefore(page)
       if (persistLiveCache) {
@@ -3422,14 +3444,14 @@ export class AppService {
     const boundedLimit = Math.max(40, Math.min(HISTORY_AROUND_EVENT_LIMIT, limit))
     const olderLimit = Math.floor(boundedLimit / 2)
     const newerLimit = boundedLimit - olderLimit
-    const [older, newer] = await Promise.all([
+    const [older, newer] = await this.whileUserWaits(Promise.all([
       this.historicalSemanticPage(scope, sessionId, {
         before: anchorSeq, limit: olderLimit, tail: true, visible: true
       }),
       this.historicalSemanticPage(scope, sessionId, {
         after: Math.max(0, anchorSeq - 1), limit: newerLimit, tail: false, visible: true
       })
-    ])
+    ]))
     this.assertCurrentScope(scope)
     const events = mergeEventsBySequence(older.events, newer.events)
     const timeline = this.cache.timelineState(scope.namespace, sessionId)
@@ -4168,7 +4190,7 @@ export class AppService {
     assertLocalAgentChatReferences(input.chatReferences)
     const scope = this.captureScope()
     await this.ensureValidatedScope(scope)
-    const response = await scope.client.sendTurn(
+    const response = await this.whileUserWaits(scope.client.sendTurn(
       input.sessionId,
       input.prompt,
       input.fileIds,
@@ -4179,7 +4201,7 @@ export class AppService {
       input.teamReferences ?? [],
       input.skillSelection,
       input.clientRequestId
-    )
+    ))
     this.assertCurrentScope(scope)
     this.upsertSession(scope, response.session)
     if (response.event) {
@@ -6205,6 +6227,7 @@ export class AppService {
       })
     }
     this.lastSyncState = syncState
+    if (this.health?.capabilities?.session_prefetch_v1?.available === true) this.scheduleWarming(WARMING_START_MS)
   }
 
   private async refreshJobs(scope = this.captureScope(), announce = false): Promise<void> {
@@ -6488,13 +6511,8 @@ export class AppService {
           tailEvents: auditPage.events.length
         })
       } else {
-        // Every rewind bumps the server's history revision and stamps it on its tombstone. A
-        // revision the delta's tombstones do not reach is a deletion this cache never saw: the
-        // window is rebuilt from the server instead of merged over rows that may be gone.
         const serverRevision = page.session.history_revision
-        const seenRevision = Math.max(timelineState?.historyRevision ?? 0, ...page.events.map(event => (
-          event.type === 'history_rewound' && Number.isSafeInteger(event.history_revision) ? event.history_revision! : 0
-        )))
+        const seenRevision = seenHistoryRevision(timelineState?.historyRevision, page)
         historyDiverged = Boolean(before?.events.length) && serverRevision != null && serverRevision > 0 && seenRevision < serverRevision
         if (historyDiverged) appLog('timeline', 'cached history revision behind the server; replacing the cached window', {
           sessionId, cached: timelineState?.historyRevision ?? null, seen: seenRevision, server: serverRevision
@@ -6664,6 +6682,147 @@ export class AppService {
       filesTotal: 0,
       cachedAt: Date.now()
     }
+  }
+
+  private async whileUserWaits<T>(request: Promise<T>): Promise<T> {
+    this.userRequestsInFlight += 1
+    try {
+      return await request
+    } finally {
+      this.userRequestsInFlight -= 1
+    }
+  }
+
+  /**
+   * Warming (chat-warming.ts): the caches of chats nobody has open follow the server a small page at a time, so
+   * opening one later reads only its newest rows; a cached chat otherwise opens with a socket replay of every row
+   * after its cache. One request at a time, paced, within a byte budget, and never while the user types, scrolls,
+   * opens, loads or sends. Its reads (prefetch=true) mark nothing read and leave the chat list alone.
+   */
+  private scheduleWarming(delayMs: number): void {
+    if (!this.running || this.warmingRunning) return
+    if (this.warmingTimer) {
+      // A wait of the connection before a profile switch (a budget wait can take minutes) does not hold the new one.
+      if (this.warming.generation === this.captureScope().generation) return
+      clearTimeout(this.warmingTimer)
+    }
+    this.warmingTimer = setTimeout(() => {
+      this.warmingTimer = null
+      this.warmingRunning = true
+      void this.warmingStep()
+        .catch(error => {
+          appLog('warming', 'warming step failed; waiting for the next chat list poll', { error: errorText(error) })
+          return null
+        })
+        .then(next => {
+          this.warmingRunning = false
+          if (next !== null) this.scheduleWarming(next)
+        })
+    }, delayMs)
+  }
+
+  /** One warming step: the delay before the next, or null to wait for the next chat list poll. */
+  private async warmingStep(): Promise<number | null> {
+    const scope = this.captureScope()
+    // A server before session_prefetch_v1 would take every warming read for an open; the poll that scheduled this
+    // step saw the flag, a later one may not.
+    if (!this.isValidatedScope(scope) || this.health?.capabilities?.session_prefetch_v1?.available !== true) return null
+    // The user's own requests come first: input in the last few seconds, and an open, older page or send on its way.
+    const quietIn = this.lastForegroundInteractionAt + FOREGROUND_INTERACTION_QUIET_MS - Date.now()
+    if (quietIn > 0) return quietIn
+    if (this.userRequestsInFlight || this.timelineReconcileInFlight.size) return FOREGROUND_INTERACTION_QUIET_MS
+    if (this.warming.generation !== scope.generation) this.warming = { generation: scope.generation, pauseMs: 0, budget: { level: 0, at: 0 } }
+    // A remote behind a hub's proxy (`{hub}/api/remote/{id}`, this Mac's hub or another one) shares that hub's tunnel.
+    const pace = /\/api\/remote\/[^/]+$/.test(scope.serverUrl) ? REMOTE_WARMING_PACE : DIRECT_WARMING_PACE
+    const now = Date.now()
+    const budgetWait = warmingBudgetWaitMs(this.warming.budget.level, this.warming.budget.at, now, pace.bytesPerMinute)
+    if (budgetWait > 0) return budgetWait
+    // The shortest remaining cooldown among chats that are behind; returned when none can be read now.
+    let cooldownWait: number | null = null
+    const open = new Set(this.timelineSubscriptions.keys())
+    for (const { session, cachedThrough } of warmChatOrder(this.sessions, open, id => this.cache.latestEventSequence(scope.namespace, id))) {
+      const key = `${scope.namespace}\n${session.id}`
+      const listed = session.latest_event_seq ?? 0
+      const warmed = this.warmedChats.get(key)
+      if (listed <= cachedThrough || warmed?.stalledAtSeq === listed) continue
+      if (warmed && now - warmed.caughtUpAt < WARMING_CHAT_COOLDOWN_MS) {
+        cooldownWait = Math.min(cooldownWait ?? Infinity, warmed.caughtUpAt + WARMING_CHAT_COOLDOWN_MS - now)
+        continue
+      }
+      const started = Date.now()
+      try {
+        const { bytes, rows, reachedSeq } = await this.warmChat(scope, session.id, cachedThrough, pace)
+        if (!this.isValidatedScope(scope)) return null
+        const done = Date.now()
+        this.warming.budget = { level: warmingBucketLevel(this.warming.budget.level, this.warming.budget.at, done, pace.bytesPerMinute) + bytes, at: done }
+        this.warming.pauseMs = nextWarmingPause(pace, this.warming.pauseMs, done - started)
+        // A read that brought no rows (the server's newest rows are ones a visible page leaves out) waits until the
+        // chat changes again; one an open superseded (rows null) leaves the record as it was.
+        if (rows !== null) this.warmedChats.set(key, {
+          caughtUpAt: (reachedSeq ?? 0) >= listed ? done : warmed?.caughtUpAt ?? 0,
+          stalledAtSeq: rows ? null : listed
+        })
+      } catch (error) {
+        if (!this.isValidatedScope(scope)) return null
+        reportStorageError(error)
+        appLog('warming', 'chat read failed; it waits until it changes', { sessionId: session.id, error: errorText(error) })
+        // The next request backs off as after a slow answer.
+        this.warmedChats.set(key, { caughtUpAt: warmed?.caughtUpAt ?? 0, stalledAtSeq: listed })
+        this.warming.pauseMs = nextWarmingPause(pace, this.warming.pauseMs, pace.slowMs)
+      }
+      return this.warming.pauseMs
+    }
+    return cooldownWait
+  }
+
+  /**
+   * Brings one chat's cache closer to the server's: the page after it, or, for a backlog longer than an open merges,
+   * the window an open shows (older history stays on demand). Returns the bytes read, the rows it brought (null when
+   * the page was dropped) and, when it reached the server's newest row, that row's sequence.
+   */
+  private async warmChat(
+    scope: ConnectionScope, sessionId: string, after: number, pace: WarmingPace
+  ): Promise<{ bytes: number; rows: number | null; reachedSeq: number | null }> {
+    let page = await scope.client.sessionPage(sessionId, { after, limit: pace.pageLimit, tail: false, visible: true, prefetch: true })
+    let bytes = JSON.stringify(page).length
+    // A profile switch voids this read, and so does any change to this chat's cache meanwhile: an open
+    // (reconcileTimelineAndStream) owns the cache while it lasts, and what it wrote, a rewind's tombstone included, is
+    // newer than this page. Live rows still buffered for the cache count as written.
+    const superseded = () => {
+      this.flushEventCache()
+      return !this.isValidatedScope(scope) || this.timelineSubscriptions.has(sessionId)
+        || this.cache.latestEventSequence(scope.namespace, sessionId) !== after
+    }
+    // The same rules as an open: a rewind this cache never saw, a server log behind the cache, or a backlog longer
+    // than an open merges get the window an open shows.
+    const serverRevision = page.session.history_revision ?? 0
+    const replace = serverRevision > seenHistoryRevision(this.cache.timelineState(scope.namespace, sessionId)?.historyRevision, page)
+      || (page.latest_seq ?? after) < after
+      || page.events.length + (page.events_omitted_after ?? 0) > DELTA_EVENT_LIMIT
+    if (replace && !superseded()) {
+      page = await this.semanticTimelinePage(scope, sessionId, { limit: INITIAL_SEMANTIC_ITEM_LIMIT, tail: true, visible: true, prefetch: true })
+      bytes += JSON.stringify(page).length
+    }
+    if (superseded()) return { bytes, rows: null, reachedSeq: null }
+    if (replace) {
+      this.ingestEventsIntoCache(scope, sessionId, page.events, { replace: true })
+      this.cache.putTimelineState(scope.namespace, sessionId, Boolean(page.has_more), page.latest_seq, page.total,
+        timelinePageNextBefore(page), semanticAttemptSucceeded(page), page.session.history_revision ?? undefined)
+    } else {
+      this.ingestEventsIntoCache(scope, sessionId, page.events, { reconciledAfter: after })
+    }
+    // The chat list keeps its own row: the page's session (read state included) is not taken from a warming read.
+    this.cache.putQueuedTurns(scope.namespace, sessionId, page.queued_turns ?? [])
+    const lastSeq = page.events.at(-1)?.seq ?? after
+    if (replace || page.events.length) this.emit('server:timeline', {
+      sessionId, source: 'server', mode: replace ? 'replace' : 'merge', warmed: { after },
+      profileId: scope.profileId, profileGeneration: scope.generation,
+      snapshot: {
+        session: page.session, events: page.events, queuedTurns: page.queued_turns ?? [], queuedAsOfSeq: page.latest_seq ?? lastSeq,
+        files: [], hasMoreEvents: Boolean(page.has_more), filesTotal: 0, cachedAt: Date.now()
+      }
+    })
+    return { bytes, rows: page.events.length, reachedSeq: (page.events_omitted_after ?? 0) > 0 ? null : page.latest_seq ?? lastSeq }
   }
 
   private async fetchSubagentSnapshot(
@@ -9022,6 +9181,17 @@ function timelinePageNextBefore(page: TimelinePage): number | null {
 
 function semanticAttemptSucceeded(page: TimelinePage): boolean {
   return page.semantic_paging ?? (page.semantic_item_count != null)
+}
+
+/**
+ * The newest history revision a cache knows once it takes this page: its own, or one a tombstone in the page carries.
+ * Every rewind bumps the server's revision and stamps it on its tombstone, so a server revision above this one is a
+ * deletion the cache never saw: its window is rebuilt from the server instead of merged over rows that may be gone.
+ */
+function seenHistoryRevision(cachedRevision: number | null | undefined, page: TimelinePage): number {
+  return Math.max(cachedRevision ?? 0, ...page.events.map(event => (
+    event.type === 'history_rewound' && Number.isSafeInteger(event.history_revision) ? event.history_revision! : 0
+  )))
 }
 
 

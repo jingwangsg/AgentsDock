@@ -1990,6 +1990,8 @@ export interface HealthCapabilities {
   session_summary_events_v1?: ServerCapability
   remote_servers_v1?: RemoteServersCapability
   cross_server_mail_v1?: ServerCapability
+  /** GET /api/sessions/{id} takes prefetch=true: a background read that starts nothing an open would. */
+  session_prefetch_v1?: { available: boolean; version: number }
   [key: string]: SideQuestionsCapability | ServerCapability | ServerRestartCapability | TeamHubV1Capability | TeamHubHostControlCapability | LocalSessionImportCapability | SessionForkCompletedPrefixCapability | SessionRewindCapability | AgentEmergencyAlertsCapability | TeamMailHintsCapability | TeamActivityHintsCapability | AgentTeamMailCapability | AgentTeamMessagesCapability | TeamBulletinAliasCapability | TeamAllServersAliasCapability | PinnedItemsCapability | RemoteServersCapability | JsonValue | undefined
 }
 
@@ -2151,6 +2153,12 @@ export interface ProfileTimelineEvent extends ProfileEventContext {
   mode?: 'merge' | 'replace'
   /** The cached window proved stale (history revision behind the server): adopt this snapshot whole, older paged rows included. */
   authoritative?: boolean
+  /**
+   * A warming read of a chat nobody has open, of the rows after `after`: a renderer copy that reaches that row takes
+   * the rows and queue; a copy that does not, or any copy for a replacement window, is dropped so the next open
+   * reads the cache. It never adds a copy.
+   */
+  warmed?: { after: number }
 }
 export interface ProfileTerminalDataEvent extends ProfileEventContext {
   sessionId: string
