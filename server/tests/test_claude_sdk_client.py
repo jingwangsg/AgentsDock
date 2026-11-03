@@ -642,6 +642,8 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message.terminal_reason, "completed")
         event = {"type": "active_goal", "value": None}
         self.assertEqual(_parse_claude_sdk_message(event), event)
+        lifecycle = {"type": "command_lifecycle", "command_uuid": "steer-1", "state": "started", "uuid": "frame-1"}
+        self.assertEqual(_parse_claude_sdk_message(lifecycle), lifecycle)
 
     async def test_pending_mail_hint_is_exact_root_checkpoint_without_new_query(self) -> None:
         calls = []
@@ -2531,6 +2533,24 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         await client.emit({"type": "result", "is_error": False, "result": "BANANA"})
         self.assertEqual((await asyncio.wait_for(handle.wait_result(), 5))["result"], "BANANA")
 
+    async def test_stop_keeps_the_run_for_a_follow_up_the_cli_reports_started(self) -> None:
+        # CLI 2.1.317 (measured 2026-11-03): the aborted Result, then the queued message's
+        # "started"; its replay comes only with the answer's first output, after the grace.
+        handle, client, follow_up_id = await self.start_with_queued_follow_up("chat-stop-started")
+        with patch.object(claude_sdk_client, "CLAUDE_SDK_STEER_REPLAY_GRACE_SECONDS", 0.05):
+            self.assertTrue(await handle.interrupt(keep_follow_up=True))
+            await client.emit(ABORTED_RESULT)
+            await client.emit({"type": "command_lifecycle", "command_uuid": follow_up_id, "state": "started"})
+            await asyncio.sleep(0.2)  # 4x the grace
+        self.assertFalse(handle.done)
+        # Claude is answering the follow-up now, so another Stop ends that answer.
+        self.assertFalse(handle.interrupt_would_keep_follow_up)
+        await client.emit(replay_ack(follow_up_id))
+        await client.emit({"type": "assistant", "text": "BANANA"})
+        self.assertEqual(await asyncio.wait_for(handle.__anext__(), 5), {"type": "assistant", "text": "BANANA"})
+        await client.emit({"type": "result", "is_error": False, "result": "BANANA"})
+        self.assertEqual((await asyncio.wait_for(handle.wait_result(), 5))["result"], "BANANA")
+
     async def test_a_second_stop_ends_the_follow_up_answer(self) -> None:
         handle, client, follow_up_id = await self.start_with_queued_follow_up("chat-stop-twice")
         self.assertTrue(await handle.interrupt(keep_follow_up=True))
@@ -2767,10 +2787,11 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
                 break
             await asyncio.sleep(0)
         self.assertTrue(handle.awaiting_background_tasks)
-        # The CLI drops the frame (no replay): the run must not stay open for it.
+        # The CLI drops the frame (queued, never started, no replay): the run must not stay open for it.
         client.auto_ack = False
         with patch.object(claude_sdk_client, "CLAUDE_SDK_STEER_REPLAY_GRACE_SECONDS", 0.2):
             self.assertTrue(await self.manager.steer("chat-steer-waiting", run_id="run-waiting", prompt="and the logs?", deliver_now=False))
+            await client.emit({"type": "command_lifecycle", "command_uuid": client.query_envelopes[-1][0]["uuid"], "state": "queued"})
             result = await asyncio.wait_for(handle.wait_result(), 5)
         self.assertEqual(result["result"], "started")
 
@@ -2792,6 +2813,35 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await asyncio.wait_for(handle.__anext__(), 5))["text"], "pong")
         await client.emit({"type": "result", "is_error": False, "result": "first pong"})
         self.assertEqual((await asyncio.wait_for(handle.wait_result(), 5))["result"], "first pong")
+
+    async def test_a_follow_up_the_cli_started_keeps_a_waiting_run_past_the_grace(self) -> None:
+        # 2026-11-03: the follow-up reached a run that a background agent kept open. The CLI took it
+        # at once, but replays it only with the model's first output, 45 s of thinking later; the
+        # grace ended the run, and the answer belonged to no run.
+        handle = await self.manager.start_run("chat-steer-started", "Delegate", run_id="run-started", options={}, configuration_key="same")
+        client = self.factory.clients[-1]
+        await client.emit({"type": "system", "subtype": "task_started", "task_id": "agent-1", "task_type": "local_agent"})
+        await client.emit({"type": "result", "is_error": False, "result": "launched"})
+        await asyncio.wait_for(handle.__anext__(), 5)
+        for _ in range(50):
+            if handle.awaiting_background_tasks:
+                break
+            await asyncio.sleep(0)
+        self.assertTrue(handle.awaiting_background_tasks)
+        client.auto_ack = False
+        with patch.object(claude_sdk_client, "CLAUDE_SDK_STEER_REPLAY_GRACE_SECONDS", 0.05):
+            self.assertTrue(await self.manager.steer("chat-steer-started", run_id="run-started", prompt="PBR instead", deliver_now=False))
+            steer_id = client.query_envelopes[-1][0]["uuid"]
+            await client.emit({"type": "command_lifecycle", "command_uuid": steer_id, "state": "started"})
+            await asyncio.sleep(0.2)  # 4x the grace
+        self.assertFalse(handle.done)
+        # The replay comes with the model's first output and is not a timeline item.
+        await client.emit(replay_ack(steer_id))
+        await client.emit({"type": "assistant", "text": "PBR it is"})
+        self.assertEqual(await asyncio.wait_for(handle.__anext__(), 5), {"type": "assistant", "text": "PBR it is"})
+        await client.emit({"type": "system", "subtype": "task_notification", "task_id": "agent-1", "status": "completed"})
+        await client.emit({"type": "result", "is_error": False, "result": "PBR it is"})
+        self.assertEqual((await asyncio.wait_for(handle.wait_result(), 5))["result"], "PBR it is")
 
     async def test_steer_wakes_a_run_that_only_background_tasks_kept_open(self) -> None:
         handle = await self.manager.start_run("chat-steer-bg", "Delegate", run_id="run-bg", options={}, configuration_key="same")
