@@ -50,7 +50,7 @@ test('Download shows destination choice before credentials or bytes, then report
   assert.equal(f.states[0].phase, 'choosing')
   picker.resolve('chosen-folder')
   await pending
-  assert.deepEqual(f.order, ['source', 'temporary:report.txt', 'download', 'save', 'cleanup'])
+  assert.deepEqual(f.order, ['temporary:report.txt', 'source', 'download', 'save', 'cleanup'])
   assert.deepEqual(f.states.map(state => state.phase), ['choosing', 'downloading', 'downloading', 'saving', 'done'])
   assert.equal(f.states[2].bytesWritten, 5)
   assert.equal(f.states[2].totalBytes, 10)
@@ -107,7 +107,8 @@ test('a dropped download restarts into the same staged file and shows "Retryingâ
     return target
   } })
   await f.run()
-  assert.deepEqual(f.order, ['pick', 'source', 'temporary:report.txt', 'download', 'download', 'save', 'cleanup'])
+  // The retry resolves its credentials again, through the client's checks.
+  assert.deepEqual(f.order, ['pick', 'temporary:report.txt', 'source', 'download', 'source', 'download', 'save', 'cleanup'])
   assert.deepEqual(waits, [2_000])
   assert.deepEqual(f.states.map(state => [state.phase, state.bytesWritten, state.message]), [
     ['choosing', undefined, undefined],
@@ -120,6 +121,19 @@ test('a dropped download restarts into the same staged file and shows "Retryingâ
   ])
 })
 
+test('a retry the client no longer gives credentials for (a second address after a network change) stops', async t => {
+  t.mock.method(globalThis, 'setTimeout', (callback: () => void) => { queueMicrotask(callback); return 0 })
+  const f = fixture({ download: async () => { f.order.push('download'); throw new Error('unexpected end of stream on http://192.168.0.101:7850/...') } })
+  let sources = 0
+  const source = () => {
+    sources += 1
+    if (sources > 1) throw new Error('Agent server client has not passed server identity validation')
+    return f.request.source()
+  }
+  await assert.rejects(f.run({ ...f.request, source }), /server identity validation/)
+  assert.deepEqual(f.order, ['pick', 'temporary:report.txt', 'source', 'download', 'cleanup'])
+})
+
 test('Cancel during the retry wait cancels the download', async t => {
   const f = fixture({ download: async () => { f.order.push('download'); throw new Error('Connection reset') } })
   // The user taps Cancel as the wait starts.
@@ -127,7 +141,7 @@ test('Cancel during the retry wait cancels the download', async t => {
   await f.run()
   assert.ok(f.states.some(state => state.message === 'The connection to the server dropped. Retryingâ€¦'))
   assert.equal(f.states.at(-1)!.phase, 'cancelled')
-  assert.deepEqual(f.order, ['pick', 'source', 'temporary:report.txt', 'download', 'cleanup'])
+  assert.deepEqual(f.order, ['pick', 'temporary:report.txt', 'source', 'download', 'cleanup'])
 })
 
 test('one native picker owns all concurrent transfers and the lock releases after cancellation', async () => {
@@ -146,7 +160,7 @@ test('Share checks availability, reports immediate busy state, and retains stage
   const f = fixture()
   await f.run({ ...f.request, action: 'share' })
   assert.equal(f.states[0].phase, 'downloading')
-  assert.deepEqual(f.order, ['sharing-available', 'source', 'temporary:report.txt', 'download', 'share'])
+  assert.deepEqual(f.order, ['sharing-available', 'temporary:report.txt', 'source', 'download', 'share'])
   assert.equal(f.states.at(-1)!.phase, 'done')
 })
 

@@ -30,12 +30,12 @@ test('streamed subagent_state feeds the slice, never the timeline, and a rewind 
   assert.match(store, /if \(existing && existing\.seq >= event\.seq\) continue/)
 })
 
-test('the snapshot is fetched on open and turn end, and polled every 5 s while the open chat is active or a child of it still runs', () => {
+test('the snapshot is fetched on open and turn end, and polled every 5 s while a child of the open chat runs', () => {
   assert.match(store, /const SUBAGENT_POLL_MS = 5_000/)
   assert.match(store, /void get\(\)\.refreshFiles\(sessionId\)\n\s*void get\(\)\.refreshSubagents\(sessionId\)/)
-  assert.match(store, /const liveChild = sessionId \? subagentsFromEvents\(Object\.values\(state\.subagentsBySession\[sessionId\] \?\? \{\}\)\)\.some\(isSubagentActive\) : false/)
-  assert.match(store, /const wanted = sessionId && state\.connected && \(state\.activeSessionIds\.has\(sessionId\) \|\| liveChild\) \? sessionId : null/)
-  assert.match(store, /if \(ended === sessionId\) void state\.refreshSubagents\(ended\)/)
+  assert.match(store, /subagentsFromEvents\(\[\.\.\.openChatEventsWhileActive\(state\) \?\? \[\], \.\.\.states\], [^)]*\)\.some\(isSubagentActive\)/)
+  assert.match(store, /const wanted = sessionId && state\.connected && liveChild \? sessionId : null/)
+  assert.match(store, /if \(sessionId && !wanted && \(turnEnded \|\| wasPolling\)\) void state\.refreshSubagents\(sessionId\)/)
   assert.match(store, /if \(NativeAppState\.currentState === 'active'\) void useAppStore\.getState\(\)\.refreshSubagents\(wanted\)/)
   // No overlapping requests: a pending refresh is returned, not duplicated.
   assert.match(store, /const inFlight = subagentsRefreshInFlight\.get\(sessionId\)\n\s*if \(inFlight\) return inFlight/)

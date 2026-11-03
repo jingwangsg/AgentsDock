@@ -22,6 +22,7 @@ import {
   displayServerProfileName,
   profileHostSubtitle,
   requiresIdentityResetConfirmation,
+  serverProfileHost,
   unreadCountLabel,
   type RemoteDeployProgressEntry,
   type ServerConnectionTestResult,
@@ -107,7 +108,7 @@ export function ServerProfileSelector({
   const colors = usePalette()
   const active = profiles.find(profile => profile.id === activeProfileId) ?? profiles[0] ?? null
   const switching = profiles.find(profile => profile.id === switchingProfileId) ?? null
-  const host = active ? profileHostSubtitle(active) : null
+  const host = active?.secondAddressInUse && active.secondServerUrl ? serverProfileHost(active.secondServerUrl) : active ? profileHostSubtitle(active) : null
   const unavailable = disabled || Boolean(switchingProfileId)
   const selectorLabel = switching
     ? `Switching to ${displayServerProfileName(switching)}. Please wait.`
@@ -701,6 +702,25 @@ export function ServerProfilesManager({
           onValueChange={clearAccessToken => updateDraft({ clearAccessToken, accessToken: '' }, true)}
         />
       </View> : null}
+
+      {/* A hub remote's address, even one whose hub profile is gone, goes through its hub's second address. */}
+      {hubProxyBaseURL(draft.serverUrl) === null ? <>
+      <FieldLabel text="Second address (optional)" />
+      <TextInput
+        testID="server-profile-second-url"
+        accessibilityLabel="Second server address"
+        value={draft.secondServerUrl}
+        onChangeText={secondServerUrl => updateDraft({ secondServerUrl })}
+        editable={!busy}
+        autoCapitalize="none"
+        autoCorrect={false}
+        keyboardType="url"
+        placeholder="192.168.0.101:7850"
+        placeholderTextColor={colors.muted}
+        style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]}
+      />
+      <Text style={[styles.help, { color: colors.muted }]}>Used instead of the address above whenever it proves to be this same server, such as the Mac's LAN address at home. It gets no access token until then.</Text>
+      </> : null}
       </>}
 
       {identityResetRequired ? <View style={[styles.identityWarning, { backgroundColor: `${colors.orange}14`, borderColor: `${colors.orange}55` }]}>
@@ -898,6 +918,7 @@ function ServerManagementRow({ profile, active, switching, disabled, removable, 
         {profile.cachedUnreadCount > 0 ? <ServerUnreadBadge count={profile.cachedUnreadCount} /> : null}
       </View>
       {address ? <Text style={[styles.profileUrl, { color: colors.muted }]} numberOfLines={1}>{address}</Text> : null}
+      {profile.secondServerUrl ? <Text style={[styles.profileUrl, { color: profile.secondAddressInUse ? colors.green : colors.muted }]} numberOfLines={1}>{`Second: ${profile.secondServerUrl}${profile.secondAddressInUse ? ' · in use' : ''}`}</Text> : null}
       {profile.lastConnectionError ? <Text style={[styles.profileDetail, { color: profile.connectionState === 'degraded' ? colors.orange : colors.red }]} numberOfLines={2}>{profile.lastConnectionError}</Text> : details ? <Text style={[styles.profileDetail, { color: colors.muted }]} numberOfLines={1}>{details}</Text> : null}
       {work ? <Text accessibilityRole={work.failed ? 'alert' : undefined} style={[styles.profileDetail, { color: work.failed ? colors.red : colors.muted }]} numberOfLines={2}>{work.text}</Text> : null}
       {/* Under the name, not beside Use/Edit/More: a 375 pt row has no room for two more buttons. */}

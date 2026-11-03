@@ -33,7 +33,7 @@ import { FileReadStatusError, isTunnelFailure, readFileWithRetry } from '../../l
 import { inferredMobileFileContentType, mobileFileViewerKind, mobileFileViewerLayout, workspaceRelativeSourcePath, type MobileFileViewerKind, type MobileFileViewerLayout } from '../../lib/file-viewer'
 import { fullscreenModalPadding, type FullscreenSafeAreaInsets } from '../../lib/fullscreen-modal-layout'
 import { filesNewestFirst, formatBytes } from '../../lib/format'
-import { capturedConnectionIsCurrent, client, useAppStore } from '../../store/useAppStore'
+import { attachmentCacheKey, capturedConnectionIsCurrent, client, useAppStore } from '../../store/useAppStore'
 import { usePalette } from '../../theme'
 import type { AgentFile, WorkspaceInfo } from '../../types'
 import { Text } from '../AppText'
@@ -488,6 +488,7 @@ function ArtifactPreview({ file, kind, layout, connection, workspacePath, worksp
     layout={layout}
     previewURL={kind === 'image' && automaticPreviewAllowed ? liveImageURL ?? artifactURL : undefined}
     fallbackPreviewURL={kind === 'image' && automaticPreviewAllowed && liveImageURL ? artifactURL : undefined}
+    imageCacheKeys={kind === 'image' ? { [artifactURL]: attachmentCacheKey(connection.sessionId, file.id) } : undefined}
     headers={connection.client.authHeaders()}
     loadText={kind === 'text' || kind === 'markdown' ? loadText : undefined}
     loadLocalPreview={kind === 'pdf' && automaticPreviewAllowed ? loadPDF : undefined}

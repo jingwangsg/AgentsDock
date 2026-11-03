@@ -4,7 +4,7 @@ import DraggableFlatList, { ScaleDecorator, type DragEndParams } from 'react-nat
 import { MenuView, type MenuAction, type MenuComponentRef } from './material/MenuView'
 import { Bell, ChevronDown, ChevronRight, FolderPlus, Globe, Network, Plus, RefreshCw, Search, Server, Settings, Terminal, GripVertical, Undo2 } from 'lucide-react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { useAppStore } from '../store/useAppStore'
+import { noteUserScroll, useAppStore } from '../store/useAppStore'
 import { Alert } from '../lib/alert'
 import { radius, usePalette } from '../theme'
 import type { Backend, Session, Surface, SurfaceKind, TimelineSearchResult } from '../types'
@@ -492,7 +492,7 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
         keyboardDismissMode="on-drag"
         keyboardShouldPersistTaps="handled"
         alwaysBounceVertical={Platform.OS === 'ios'}
-        onScrollBeginDrag={dismissSearchKeyboard}
+        onScrollBeginDrag={() => { noteUserScroll(); dismissSearchKeyboard() }}
         contentContainerStyle={styles.list}
         renderItem={({ item, drag }) => <ScaleDecorator activeScale={1.03}>{item.kind === 'header' ? <FolderHeader
           item={item}

@@ -119,6 +119,9 @@ class ComponentHealth:
         if scope["type"] != "http" or scope.get("path") != "/api/health":
             await self.app(scope, receive, send)
             return
+        # load-bearing: the app gzips health for a client that accepts it, and an encoded body would pass through below
+        # without this component's fields. Asked without Accept-Encoding, it answers plain JSON.
+        scope = {**scope, "headers": [(name, value) for name, value in scope.get("headers", []) if name.lower() != b"accept-encoding"]}
         start: dict[str, Any] | None = None
         chunks: list[bytes] = []
         count = 0

@@ -82332,8 +82332,19 @@ def secure_peer_attachment_read_transport_error(
     return None
 
 
+CONNECT_PROOF_PATH = "/api/connect-proof"
+# The whole query: one nonce, 128 to 512 bits in lowercase hex.
+CONNECT_PROOF_QUERY_RE = re.compile(r"nonce=[0-9a-f]{32,128}")
+
+
 @app.middleware("http")
 async def require_agent_token(request: Request, call_next):
+    # The one /api route without a token (connect_proof_v1): a client asks a second address of this server
+    # to prove it holds that client's token before sending it there, so the request carries no credential.
+    if request.url.path == CONNECT_PROOF_PATH:
+        if request.method != "GET" or not AGENT_TOKEN or CONNECT_PROOF_QUERY_RE.fullmatch(request.url.query) is None:
+            return JSONResponse({"detail": "not found"}, status_code=404)
+        return await call_next(request)
     # Starlette otherwise redirects a bare mount path and builds Location from
     # the untrusted Host header. The Hub contract is versioned below the mount;
     # the bare prefix is deliberately inert for every method.
@@ -84910,7 +84921,41 @@ async def codex_provider_mcp(request: Request) -> Response:
     })
 
 
-@app.get("/api/health")
+class GzipWhenAcceptedRoute(APIRoute):
+    """Gzip the body FastAPI built for a client that accepts it; decoded, it is the same bytes."""
+
+    # True in RevalidatedGzipRoute: the body's hash is its ETag, and a client whose If-None-Match names it gets an empty 304.
+    revalidated = False
+
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        build_response = super().get_route_handler()
+
+        async def respond(request: Request) -> Response:
+            response = await build_response(request)
+            response.headers["Vary"] = "Accept-Encoding"
+            if self.revalidated and response.status_code == 200:
+                # Weak: the tag names the decoded JSON, which the gzip and the plain response share.
+                etag = f'W/"{hashlib.sha256(response.body).hexdigest()[:32]}"'
+                # Vary again for the 304, which is a new response.
+                validators = {"ETag": etag, "Cache-Control": "private, no-cache", "Vary": "Accept-Encoding"}
+                if etag in (tag.strip() for tag in request.headers.get("if-none-match", "").split(",")):
+                    return Response(status_code=304, headers=validators)
+                response.headers.update(validators)
+            if "gzip" in request.headers.get("accept-encoding", ""):
+                response.body = await asyncio.to_thread(gzip.compress, response.body, compresslevel=6)
+                response.headers["Content-Encoding"] = "gzip"
+                response.headers["Content-Length"] = str(len(response.body))
+            return response
+
+        return respond
+
+
+class RevalidatedGzipRoute(GzipWhenAcceptedRoute):
+    """A list clients poll: a client that sends back the ETag it has gets an empty 304 while the list is unchanged."""
+
+    revalidated = True
+
+
 async def health() -> dict[str, Any]:
     await reconcile_idle_queued_turns_from_health_poll()
     # Health must answer even when an admission lock is wedged; the reads
@@ -85256,6 +85301,9 @@ async def health() -> dict[str, Any]:
                 **remote_servers.capability(REMOTE_SERVERS),
                 "available": bool(AGENT_TOKEN),
             },
+            "connect_proof_v1": {"available": bool(AGENT_TOKEN), "version": 1},
+            # GET /api/sessions/{id} takes prefetch=true (get_session): clients warm cached chats only on such a server.
+            "session_prefetch_v1": {"available": True, "version": 1},
             cross_server_mail.CAPABILITY: {"available": bool(AGENT_TOKEN), "attachments": True},
             "workspace_files": {
                 "available": WORKSPACE_SECURE_OPEN_AVAILABLE,
@@ -85434,6 +85482,23 @@ async def health() -> dict[str, Any]:
         "host_health_log": str(HOST_HEALTH_FILE),
         "runtimes": runtime_diagnostics_snapshot(),
     }
+
+
+# Every client polls health once a minute, for each saved server; 17 KB of JSON and about 5 KB gzipped (2026-11-03).
+# No ETag: its job_guard load and memory figures change on every call.
+app.router.add_api_route("/api/health", health, methods=["GET"], route_class_override=GzipWhenAcceptedRoute)
+
+
+@app.get(CONNECT_PROOF_PATH)
+async def connect_proof(nonce: str = Query(pattern=r"^[0-9a-f]{32,128}$")) -> dict[str, str]:
+    """HMAC-SHA256 under this server's token of its identity and the client's nonce.
+
+    Answered without a token (require_agent_token): before a client sends its token to a second
+    address of this server, it checks the proof with that token and the identity it pinned. The
+    identity itself is not returned, so the route tells an unauthenticated caller nothing new.
+    """
+    message = f"agentsdock-connect-proof-v1\n{nonce}\n{server_identity()}".encode("utf-8")
+    return {"proof": hmac.new(AGENT_TOKEN.encode("utf-8"), message, hashlib.sha256).hexdigest()}
 
 
 def codex_goals_admin_status() -> dict[str, Any]:
@@ -89994,7 +90059,6 @@ async def tail_session_process_log(session_id: str, path: str, lines: int = 200)
     raise HTTPException(status_code=403, detail="log path is not attached to the live process")
 
 
-@app.get("/api/sessions")
 async def list_sessions(summary: bool = False) -> dict[str, Any]:
     await STORE.ensure_sort_orders()
     sessions = [
@@ -90003,6 +90067,10 @@ async def list_sessions(summary: bool = False) -> dict[str, Any]:
         if not session.get("_fork_initializing")
     ]
     return {"sessions": sessions}
+
+
+# Every client polls the chat list; measured 2026-11-03 at 207 KB of JSON for one hub.
+app.router.add_api_route("/api/sessions", list_sessions, methods=["GET"], route_class_override=RevalidatedGzipRoute)
 
 
 @app.get("/api/search")
@@ -90416,7 +90484,6 @@ async def get_timeline_index(session_id: str) -> dict[str, Any]:
     return await scan_transcript(build_timeline_index, session_id)
 
 
-@app.get("/api/sessions/{session_id}/subagents")
 async def get_session_subagents(
     session_id: str,
     limit: int = Query(default=64, ge=1, le=SUBAGENT_SNAPSHOT_STATE_LIMIT),
@@ -90435,6 +90502,11 @@ async def get_session_subagents(
                 concise_error_message(exc),
             )
     return await scan_transcript(build_subagent_snapshot, session_id, limit)
+
+
+# Polled while a child runs; 64 states with their 80-entry logs measured 476 KB of JSON (2026-11-03).
+app.router.add_api_route("/api/sessions/{session_id}/subagents", get_session_subagents, methods=["GET"],
+                         route_class_override=RevalidatedGzipRoute)
 
 
 @app.get("/api/sessions/{session_id}/search")
@@ -90714,24 +90786,6 @@ async def export_session(session_id: str, format: Literal["markdown", "html", "j
     return Response(await asyncio.to_thread(render_page), media_type="text/html; charset=utf-8", headers=headers)
 
 
-class GzipWhenAcceptedRoute(APIRoute):
-    """Gzip the body FastAPI built for a client that accepts it; decoded, it is the same bytes."""
-
-    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
-        build_response = super().get_route_handler()
-
-        async def respond(request: Request) -> Response:
-            response = await build_response(request)
-            response.headers["Vary"] = "Accept-Encoding"
-            if "gzip" in request.headers.get("accept-encoding", ""):
-                response.body = await asyncio.to_thread(gzip.compress, response.body, compresslevel=6)
-                response.headers["Content-Encoding"] = "gzip"
-                response.headers["Content-Length"] = str(len(response.body))
-            return response
-
-        return respond
-
-
 # GET /api/sessions/{session_id} is registered after this function: neither @app.get
 # nor app.add_api_route takes a route class. A long chat's page is about 1 MB of JSON
 # and a fifth of that gzipped, and remote links run at 0.1-0.4 MiB/s. The hub proxy
@@ -90746,7 +90800,16 @@ async def get_session(
     compact: bool = False,
     page_mode: str | None = None,
     semantic_before: int | None = None,
+    prefetch: bool = False,
 ) -> dict[str, Any]:
+    """One page of a chat's timeline.
+
+    prefetch=true marks a client's background read that keeps the cached
+    timeline of a chat nobody has open up to date (the Android app's warming
+    of recent chats): the page is the same, but nothing that only an open
+    should start runs, neither the provider history sync nor the queue
+    repair. Servers before this flag ignore it and treat the read as an open.
+    """
     ensure_session_not_initializing(session_id)
     sess = STORE.sessions.get(session_id)
     if not sess:
@@ -90755,7 +90818,8 @@ async def get_session(
     # somewhere else (the provider's own CLI, or another machine sharing it).
     # Scheduled rather than awaited so the open stays fast; the client's event
     # stream delivers whatever it recovers.
-    schedule_provider_history_sync(sess)
+    if not prefetch:
+        schedule_provider_history_sync(sess)
     normalized_page_mode = str(page_mode or "").strip().lower()
     if normalized_page_mode not in {"", "semantic"}:
         raise HTTPException(status_code=400, detail="page_mode must be semantic")
@@ -90805,7 +90869,8 @@ async def get_session(
             limit=limit,
             tail=page_tail,
         )
-    await reconcile_idle_queue_session_from_snapshot(session_id)
+    if not prefetch:
+        await reconcile_idle_queue_session_from_snapshot(session_id)
     response = {
         "session": public_session(sess),
         "events": events,
@@ -103362,7 +103427,6 @@ def resolve_session_file_event(
     raise HTTPException(status_code=404, detail="file event not found")
 
 
-@app.get("/api/sessions/{session_id}/files")
 async def list_session_files(
     session_id: str,
     limit: int | None = Query(default=None, ge=1, le=200),
@@ -103395,6 +103459,11 @@ async def list_session_files(
         "limit": limit,
         "has_more": offset + len(page) < total,
     }
+
+
+# Fetched on every chat open.
+app.router.add_api_route("/api/sessions/{session_id}/files", list_session_files, methods=["GET"],
+                         route_class_override=RevalidatedGzipRoute)
 
 
 @app.get("/api/sessions/{session_id}/files/{file_id}/event")
@@ -103438,6 +103507,8 @@ async def get_session_file(session_id: str, file_id: str) -> FileResponse:
         media_type=file_response_media_type(meta),
         filename=meta.get("filename"),
         content_disposition_type="inline",
+        # A file id names bytes that never change, so a client keeps its copy instead of asking again.
+        headers={"Cache-Control": "private, max-age=31536000, immutable"},
     )
 
 
@@ -103517,7 +103588,8 @@ def is_polling_access_log_request(method: Any, path: Any, status: Any) -> bool:
     if str(method or "").upper() != "GET":
         return False
     try:
-        if int(status) != 200:
+        # 304: a client's cache asked again and the chat list had not changed.
+        if int(status) not in (200, 304):
             return False
     except (TypeError, ValueError):
         return False

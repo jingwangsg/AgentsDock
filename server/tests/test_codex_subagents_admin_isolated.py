@@ -68,6 +68,8 @@ class CodexSubagentsAdminTests(unittest.IsolatedAsyncioTestCase):
             "close_codex_app_server_manager": AsyncMock(),
             "AGENT_TOKEN": "synthetic-native-token",
             "TEAM_HUB_MOUNT_PATH": "/api/team-hub",
+            "CONNECT_PROOF_PATH": "/api/connect-proof",
+            "CONNECT_PROOF_QUERY_RE": re.compile(r"^never$"),
             "TEAM_HUB_SERVER_SESSION_MOUNT_PATH": "/api/team-hub-server-session",
             "TEAM_HUB_SERVER_SESSION_ATTACHMENT_CONTENT_PATH_RE": re.compile(r"^never$"),
             "CODEX_PROVIDER_MCP_PATH": "/api/provider-mcp",

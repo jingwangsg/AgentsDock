@@ -126,6 +126,8 @@ const TIMELINE_REQUEST_TIMEOUT_MS = 12_000
 const REWIND_REQUEST_TIMEOUT_MS = 120_000
 // A bulk-import batch copies up to LOCAL_SESSION_IMPORT_HARD_BATCH_LIMIT provider transcripts on the server.
 const LOCAL_SESSION_IMPORT_REQUEST_TIMEOUT_MS = 10 * 60_000
+// The chat list and the open chats' subagent and files lists.
+const MAX_REVALIDATED_COPIES = 6
 const STREAM_CONNECT_TIMEOUT_MS = 10_000
 const STREAM_RETRY_INITIAL_MS = 500
 const STREAM_RETRY_MAX_MS = 30_000
@@ -224,6 +226,13 @@ export interface AgentServerClientOptions {
   onAuthorizationFailure?: (error: ServerError | WebSocketConnectionError) => void
   /** Called synchronously for an HTTP rejection from the active request scope. */
   onServerError?: (error: ServerError) => void
+  /** Called synchronously when a request or a stream loses its connection, before any retry. */
+  onConnectionLost?: () => void
+  /**
+   * Consulted before every request, stream connection, URL and credential header: while it returns false nothing goes
+   * to this client's address, health checks included. A second address is open only while its proof holds.
+   */
+  addressOpen?: () => boolean
   /** Test seams; production aborts an upload after these windows (UPLOAD_STALL_TIMEOUT_MS, UPLOAD_RESPONSE_TIMEOUT_MS, UPLOAD_TIMEOUT_CAP_MS). */
   uploadStallTimeoutMs?: number
   uploadResponseTimeoutMs?: number
@@ -237,18 +246,24 @@ export class AgentServerClient {
   private readonly validationRequired: boolean
   private readonly onAuthorizationFailure?: (error: ServerError | WebSocketConnectionError) => void
   private readonly onServerError?: (error: ServerError) => void
+  private readonly onConnectionLost?: () => void
+  private readonly addressOpen?: () => boolean
   private readonly uploadStallTimeoutMs: number
   private readonly uploadResponseTimeoutMs: number
   private readonly uploadTimeoutMs: number
   private validated: boolean
   private validationRevisionValue = 0
   private disposed = false
+  /** getRevalidated's copies: the last tagged body per path, a few chats' worth. */
+  private readonly revalidated = new Map<string, { etag: string; value: unknown }>()
 
   constructor(baseURL: string, token = '', options: AgentServerClientOptions = {}) {
     this.configuration = createConfiguration(baseURL, token)
     this.validationRequired = options.requireValidation === true
     this.onAuthorizationFailure = options.onAuthorizationFailure
     this.onServerError = options.onServerError
+    this.onConnectionLost = options.onConnectionLost
+    this.addressOpen = options.addressOpen
     this.uploadStallTimeoutMs = options.uploadStallTimeoutMs ?? UPLOAD_STALL_TIMEOUT_MS
     this.uploadResponseTimeoutMs = options.uploadResponseTimeoutMs ?? UPLOAD_RESPONSE_TIMEOUT_MS
     this.uploadTimeoutMs = options.uploadTimeoutMs ?? UPLOAD_TIMEOUT_CAP_MS
@@ -268,7 +283,8 @@ export class AgentServerClient {
   }
 
   get isDisposed(): boolean { return this.disposed }
-  get isValidated(): boolean { return !this.disposed && this.validated }
+  get isValidated(): boolean { return !this.disposed && this.validated && this.isAddressOpen }
+  get isAddressOpen(): boolean { return this.addressOpen?.() ?? true }
   /** Monotonic epoch used to reject health results older than an invalidation. */
   get validationRevision(): number { return this.validationRevisionValue }
 
@@ -284,6 +300,8 @@ export class AgentServerClient {
     if (!this.validationRequired || !this.validated) return
     this.invalidateValidation()
   }
+
+  get baseURL(): string { return this.configuration.baseURL }
 
   dispose(): void {
     if (this.disposed) return
@@ -445,17 +463,16 @@ export class AgentServerClient {
       'team-network',
     )
   }
-  async sessions(): Promise<Session[]> {
-    const { sessions } = await this.get<{ sessions: Session[] }>('/api/sessions?summary=true')
+  sessions(): Promise<Session[]> {
     // load-bearing: the server keeps these two keys sparse in summary rows on
     // purpose (agent_server.public_session, pinned by test_emergency_alerts) and
     // sends the explicit null/0 tombstone only on the emergency stream. This
     // store merges list rows over the retained session by spreading, so a
     // summary consumer must restore the tombstone itself or an alert another
     // client already acknowledged would survive here.
-    return sessions.map(session => 'emergency_alert' in session
+    return this.getRevalidated('/api/sessions?summary=true', ({ sessions }: { sessions: Session[] }) => sessions.map(session => 'emergency_alert' in session
       ? session
-      : { ...session, emergency_alert: null, unacknowledged_emergency_count: 0 })
+      : { ...session, emergency_alert: null, unacknowledged_emergency_count: 0 }))
   }
   async jobs(): Promise<Job[]> { return (await this.get<{ jobs: Job[] }>('/api/jobs')).jobs }
 
@@ -655,7 +672,8 @@ export class AgentServerClient {
     })).session
   }
 
-  async sessionPage(sessionId: string, options: { after?: number; before?: number; limit?: number; tail?: boolean; visible?: boolean; compact?: boolean; pageMode?: 'semantic' } = {}): Promise<TimelinePage> {
+  /** `prefetch`: a background read for the cache, not an open; the server starts nothing an open would. */
+  async sessionPage(sessionId: string, options: { after?: number; before?: number; limit?: number; tail?: boolean; visible?: boolean; compact?: boolean; pageMode?: 'semantic'; prefetch?: boolean } = {}): Promise<TimelinePage> {
     const query = new URLSearchParams()
     if (options.after != null) query.set('after', String(options.after))
     if (options.before != null) query.set('before', String(options.before))
@@ -664,6 +682,7 @@ export class AgentServerClient {
     query.set('visible', String(options.visible ?? true))
     if (options.compact === true) query.set('compact', 'true')
     if (options.pageMode === 'semantic') query.set('page_mode', 'semantic')
+    if (options.prefetch === true) query.set('prefetch', 'true')
     const response = await this.get<SessionResponse>(`/api/sessions/${encodeURIComponent(sessionId)}?${query}`, TIMELINE_REQUEST_TIMEOUT_MS)
     const semanticRequested = options.pageMode === 'semantic'
     const semanticHonored = semanticRequested && response.semantic_item_count != null
@@ -962,7 +981,7 @@ export class AgentServerClient {
     return (await this.sessionPage(sessionId, { limit: 1, tail: true, visible: false })).queued_turns
   }
   subagents(sessionId: string, limit = 64): Promise<SubagentSnapshot> {
-    return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/subagents?limit=${limit}`)
+    return this.getRevalidated(`/api/sessions/${encodeURIComponent(sessionId)}/subagents?limit=${limit}`)
   }
   async updateQueued(
     sessionId: string,
@@ -1051,7 +1070,7 @@ export class AgentServerClient {
   files(sessionId: string, offset = 0, limit = 60, contentPrefix?: string): Promise<FilesPage> {
     const query = new URLSearchParams({ offset: String(offset), limit: String(limit) })
     if (contentPrefix) query.set('content_prefix', contentPrefix)
-    return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/files?${query}`)
+    return this.getRevalidated(`/api/sessions/${encodeURIComponent(sessionId)}/files?${query}`)
   }
   async upload(sessionId: string, file: UploadRef): Promise<AgentFile> {
     const scope = this.captureScope()
@@ -1194,7 +1213,7 @@ export class AgentServerClient {
       }, delay)
     }
     const connect = () => {
-      if (stopped) return
+      if (stopped || !this.isAddressOpen) return
       clearConnectTimeout()
       const url = new URL(endpoint)
       url.searchParams.set('after', String(lastSeq))
@@ -1276,6 +1295,7 @@ export class AgentServerClient {
           unregister()
           return
         }
+        this.reportConnectionLost()
         scheduleRetry()
       }
       socket.onerror = () => { if (!stopped) reportState(false) }
@@ -1333,7 +1353,7 @@ export class AgentServerClient {
       }, delay)
     }
     const connect = () => {
-      if (stopped) return
+      if (stopped || !this.isAddressOpen) return
       clearConnectTimeout()
       const url = new URL(endpoint)
       const protocols = [SESSION_SUMMARY_STREAM_PROTOCOL]
@@ -1375,6 +1395,7 @@ export class AgentServerClient {
           unregister()
           return
         }
+        this.reportConnectionLost()
         scheduleRetry()
       }
     }
@@ -1399,6 +1420,38 @@ export class AgentServerClient {
   private patch<T>(path: string, body: unknown): Promise<T> { return this.request(path, { method: 'PATCH', body: JSON.stringify(body) }) }
   private delete<T>(path: string): Promise<T> { return this.request(path, { method: 'DELETE' }) }
 
+  /**
+   * GET for a list the server tags with an ETag (agent_server.RevalidatedGzipRoute). The tag of the copy held here
+   * goes back as If-None-Match; a 304, or a 200 that a platform HTTP cache answered with that same tag, resolves to
+   * that same parsed copy, so a caller sees by identity that nothing changed. An older server sends no tag and is
+   * read in full every time.
+   */
+  private async getRevalidated<T>(path: string, parse: (body: any) => T = body => body): Promise<T> {
+    const scope = this.captureScope()
+    // Keyed by path: a client has one base URL.
+    const held = this.revalidated.get(path)
+    const headers = new Headers(authHeaders(scope.configuration.token))
+    if (held) headers.set('If-None-Match', held.etag)
+    const response = await this.fetchWithTimeout(buildURL(scope.configuration.baseURL, path), { headers }, 30_000, scope.signal)
+    const etag = response.headers.get('etag')
+    const unchanged = held !== undefined && (response.status === 304 || (response.ok && etag === held.etag))
+    if (!unchanged && !response.ok) {
+      const error = await this.serverError(response)
+      this.assertScopeActive(scope)
+      this.reportServerError(error)
+      this.revokeForAuthorizationFailure(error)
+      throw error
+    }
+    const copy = unchanged && held ? held : { etag, value: parse(await response.json()) }
+    this.assertScopeActive(scope)
+    this.revalidated.delete(path)
+    if (copy.etag) {
+      this.revalidated.set(path, { etag: copy.etag, value: copy.value })
+      // The least recently read goes first.
+      if (this.revalidated.size > MAX_REVALIDATED_COPIES) this.revalidated.delete(this.revalidated.keys().next().value!)
+    }
+    return copy.value as T
+  }
   private async requestBoundedText(path: string, maxBytes: number): Promise<CodeDiffResponse> {
     const scope = this.captureScope()
     const headers = new Headers(authHeaders(scope.configuration.token))
@@ -1507,6 +1560,7 @@ export class AgentServerClient {
       return response
     } catch (error) {
       if (scopeSignal.aborted) this.throwScopeAbort(scopeSignal)
+      this.reportConnectionLost()
       throw error
     } finally {
       clearTimeout(timer)
@@ -1530,12 +1584,14 @@ export class AgentServerClient {
 
   private assertValidated(): void {
     this.assertActive()
-    if (!this.validated) throw new AgentServerClientUnvalidatedError()
+    if (!this.validated || !this.isAddressOpen) throw new AgentServerClientUnvalidatedError()
   }
 
   private captureScope(allowUnvalidated = false): ClientScope {
-    if (allowUnvalidated) this.assertActive()
-    else this.assertValidated()
+    if (allowUnvalidated) {
+      this.assertActive()
+      if (!this.isAddressOpen) throw new AgentServerClientUnvalidatedError()
+    } else this.assertValidated()
     return { configuration: this.configuration, signal: this.scopeController.signal }
   }
 
@@ -1562,6 +1618,10 @@ export class AgentServerClient {
 
   private reportAuthorizationFailure(error: ServerError | WebSocketConnectionError): void {
     try { this.onAuthorizationFailure?.(error) } catch { /* validation remains revoked */ }
+  }
+
+  private reportConnectionLost(): void {
+    try { this.onConnectionLost?.() } catch { /* the caller's retry decides what happens next */ }
   }
 
   private reportServerError(error: ServerError): void {

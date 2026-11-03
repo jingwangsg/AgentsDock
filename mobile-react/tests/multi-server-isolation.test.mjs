@@ -111,7 +111,7 @@ test('profile activation serializes durable preparation and releases cached stat
   assert.match(prepare, /syncInFlight = null/)
   assert.match(prepare, /foregroundRepairInFlight = null/)
   assert.match(prepare, /if \(readReceiptTimer\) clearTimeout\(readReceiptTimer\)/)
-  assert.match(prepare, /const scope = installConnection\(profileId, profile\.serverURL, token, namespace, set\)/)
+  assert.match(prepare, /const address = profileAddress\(profile, get\(\)\.profiles\)\n\s*const scope = installConnection\(profileId, address, token, namespace, set\)/)
   assert.match(prepare, /catch \(error\) \{[\s\S]*?intent === profileSwitchIntent[\s\S]*?switchingProfileId: null/)
   assert.match(prepare, /scope\.client\.revokeValidation\(\)/)
   assert.ok(prepare.indexOf('await saveProfileSettings(') < prepare.indexOf('const scope = installConnection('), 'Active-profile metadata must commit before installing its connection')

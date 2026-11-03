@@ -98,41 +98,80 @@ export function hubProxyBaseURL(serverURL: string): string | null {
   return /^(.*)\/api\/remote\/[^/]+$/.exec(normalizeServerURL(serverURL))?.[1] ?? null
 }
 
+/** The registry's remotes by id, each with the profile URL it has under this hub. */
+function registeredRemotes<T extends Pick<RemoteServer, 'proxy_path'>>(hub: string, remotes: readonly T[]): Map<string, { remote: T; serverURL: string }> {
+  return new Map(remotes.map(remote => {
+    const serverURL = normalizeServerURL(hub + remote.proxy_path)
+    return [hubProxyRemoteId(serverURL)!, { remote, serverURL }]
+  }))
+}
+
 /**
- * Diffs the saved profiles against the hub's remote-server registry. Only
- * proxied profiles of this hub can be removed, and profiles of other hubs or
- * direct servers are untouched. A saved remote follows the hub's name, SSH host
- * and hidden flag for it (a rename, a move, a hide, or another device's edit).
+ * Proxied profiles left behind when this hub moved to another address: under an address no saved profile has, with
+ * an id the hub lists. They may still be another hub's, so the caller adopts only those carrying this hub's token.
+ */
+export function hubOrphanCandidates<T extends Pick<StoredServerProfile, 'id' | 'serverURL'>>(
+  profiles: readonly T[],
+  hubURL: string,
+  remotes: readonly Pick<RemoteServer, 'proxy_path'>[],
+): T[] {
+  const registered = registeredRemotes(normalizeServerURL(hubURL), remotes)
+  const saved = new Set(profiles.map(profile => normalizeServerURL(profile.serverURL)))
+  return profiles.filter(profile => {
+    const base = hubProxyBaseURL(profile.serverURL)
+    return base !== null && !saved.has(base) && registered.has(hubProxyRemoteId(profile.serverURL)!)
+  })
+}
+
+/**
+ * Diffs the saved profiles against the hub's remote-server registry, by remote id. This hub's remotes are the
+ * proxied profiles under its URL, plus `adopted` ones (see hubOrphanCandidates), which move under its URL. Of several
+ * profiles for one remote the one with the highest `keepPriority` stays (the caller ranks the active one first, then
+ * local state), else the one under the hub's URL. Profiles of other hubs and direct servers are untouched. A saved remote
+ * follows the hub's name, SSH host and hidden flag for it (a rename, a move, a hide, or another device's edit).
  */
 export function reconcileHubProfiles(
   profiles: readonly Pick<StoredServerProfile, 'id' | 'name' | 'serverURL' | 'sshHost' | 'hidden'>[],
   hubURL: string,
   remotes: readonly Pick<RemoteServer, 'name' | 'proxy_path' | 'ssh_host' | 'hidden'>[],
+  adopted: ReadonlySet<string> = new Set(),
+  keepPriority: (profileId: string) => number = () => 0,
 ): {
   create: { name: string; serverURL: string; sshHost: string; hidden?: boolean }[]
-  update: { id: string; name: string; sshHost: string; hidden: boolean }[]
+  update: { id: string; name: string; sshHost: string; hidden: boolean; serverURL?: string }[]
   removeIds: string[]
 } {
   const hub = normalizeServerURL(hubURL)
-  const prefix = hub + HUB_PROXY_PREFIX
-  const registered = new Map(remotes.map(remote => [normalizeServerURL(hub + remote.proxy_path), remote]))
-  const saved = new Set(profiles.map(profile => normalizeServerURL(profile.serverURL)))
+  const registered = registeredRemotes(hub, remotes)
+  const owned = new Map<string, typeof profiles[number][]>()
+  for (const profile of profiles) {
+    const id = hubProxyRemoteId(profile.serverURL)
+    const ours = hubProxyBaseURL(profile.serverURL) === hub || (adopted.has(profile.id) && id !== null && registered.has(id))
+    if (id !== null && ours) owned.set(id, [...owned.get(id) ?? [], profile])
+  }
+  const underHub = (profile: typeof profiles[number]) => Number(hubProxyBaseURL(profile.serverURL) === hub)
+  const update: { id: string; name: string; sshHost: string; hidden: boolean; serverURL?: string }[] = []
+  const removeIds: string[] = []
+  for (const [id, group] of owned) {
+    const [kept, ...duplicates] = [...group].sort((a, b) => keepPriority(b.id) - keepPriority(a.id) || underHub(b) - underHub(a))
+    removeIds.push(...duplicates.map(profile => profile.id))
+    const entry = registered.get(id)
+    if (!entry) {
+      removeIds.push(kept.id)
+      continue
+    }
+    const { remote, serverURL } = entry
+    const moved = normalizeServerURL(kept.serverURL) !== serverURL
+    if (moved || remote.name !== kept.name || remote.ssh_host !== kept.sshHost || Boolean(remote.hidden) !== Boolean(kept.hidden)) {
+      update.push({ id: kept.id, name: remote.name, sshHost: remote.ssh_host, hidden: Boolean(remote.hidden), ...(moved ? { serverURL } : {}) })
+    }
+  }
   return {
     create: [...registered]
-      .filter(([serverURL]) => !saved.has(serverURL))
-      .map(([serverURL, remote]) => ({ name: remote.name, serverURL, sshHost: remote.ssh_host, ...(remote.hidden ? { hidden: true } : {}) })),
-    update: profiles.flatMap(profile => {
-      const remote = registered.get(normalizeServerURL(profile.serverURL))
-      return remote && (remote.name !== profile.name || remote.ssh_host !== profile.sshHost || Boolean(remote.hidden) !== Boolean(profile.hidden))
-        ? [{ id: profile.id, name: remote.name, sshHost: remote.ssh_host, hidden: Boolean(remote.hidden) }]
-        : []
-    }),
-    removeIds: profiles
-      .filter(profile => {
-        const serverURL = normalizeServerURL(profile.serverURL)
-        return serverURL.startsWith(prefix) && !registered.has(serverURL)
-      })
-      .map(profile => profile.id),
+      .filter(([id]) => !owned.has(id))
+      .map(([, { remote, serverURL }]) => ({ name: remote.name, serverURL, sshHost: remote.ssh_host, ...(remote.hidden ? { hidden: true } : {}) })),
+    update,
+    removeIds,
   }
 }
 
@@ -214,13 +253,18 @@ export function applyStoredServerProfileUpdate(
     : patch.serverIdentity === undefined
       ? current.serverIdentity
       : cleanServerIdentity(patch.serverIdentity)
+  const { secondServerURL: _previousSecond, connectProof, ...rest } = current
+  const secondServerURL = patch.secondServerURL === undefined ? current.secondServerURL : cleanSecondServerURL(patch.secondServerURL, serverURL)
   return {
-    ...current,
+    ...rest,
     name: patch.name === undefined ? current.name : requireProfileName(patch.name),
     serverURL,
     serverIdentity,
     serverConfigured: patch.serverConfigured ?? current.serverConfigured,
     updatedAt: timestamp,
+    ...(secondServerURL ? { secondServerURL } : {}),
+    // The capability is the pinned server's: a replacement's health advertises its own.
+    ...(connectProof && !patch.resetServerIdentity ? { connectProof } : {}),
   }
 }
 
@@ -357,6 +401,7 @@ function normalizeStoredServerProfile(value: unknown, timestamp: string, index: 
   const serverURL = normalizeServerURL(typeof value.serverURL === 'string' ? value.serverURL : DEFAULT_SERVER_URL)
   const serverIdentity = cleanServerIdentity(typeof value.serverIdentity === 'string' ? value.serverIdentity : null)
   const createdAt = cleanTimestamp(value.createdAt) || timestamp
+  const secondServerURL = typeof value.secondServerURL === 'string' ? cleanSecondServerURL(value.secondServerURL, serverURL) : undefined
   return {
     id,
     name: cleanProfileName(typeof value.name === 'string' ? value.name : undefined) || defaultProfileName(serverURL, serverIdentity),
@@ -370,7 +415,15 @@ function normalizeStoredServerProfile(value: unknown, timestamp: string, index: 
     updatedAt: cleanTimestamp(value.updatedAt) || createdAt,
     ...(typeof value.sshHost === 'string' && value.sshHost ? { sshHost: value.sshHost } : {}),
     ...(value.hidden === true ? { hidden: true } : {}),
+    ...(secondServerURL ? { secondServerURL } : {}),
+    ...(value.connectProof === true ? { connectProof: true as const } : {}),
   }
+}
+
+/** A second address: normalized, and none when blank, the same as the primary, or on a hub remote (its hub's applies). */
+function cleanSecondServerURL(value: string | null, serverURL: string): string | undefined {
+  const address = value?.trim() ? normalizeServerURL(value) : ''
+  return address && address !== normalizeServerURL(serverURL) && hubProxyRemoteId(serverURL) === null ? address : undefined
 }
 
 function validateProfiles(profiles: StoredServerProfile[]): void {

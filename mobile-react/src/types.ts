@@ -331,6 +331,13 @@ export interface StoredServerProfile {
   sshHost?: string
   /** A hub remote hidden on the hub, mirrored from its registry: the server picker leaves it out; Manage Servers still lists it. */
   hidden?: boolean
+  /**
+   * Another address of this server, such as its LAN address beside the Tailscale one; used only while it proves to be
+   * this server (connect_proof_v1). A hub's carries its remotes too.
+   */
+  secondServerURL?: string
+  /** Its health on the primary address advertised connect_proof_v1: only then is the second address probed. */
+  connectProof?: true
 }
 
 /** Profile data that is safe to expose to the runtime and UI. */
@@ -389,6 +396,8 @@ export interface UpdateServerProfileInput {
   serverIdentity?: string | null
   resetServerIdentity?: boolean
   serverConfigured?: boolean
+  /** Undefined keeps it; null or an empty string removes it. */
+  secondServerURL?: string | null
 }
 
 export interface Session {
@@ -1625,6 +1634,10 @@ export interface HealthCapabilities {
   browser_tunnel_hosts_v1?: { available: boolean }
   /** Chats on this server can be paired with chats on other servers under its hub. */
   cross_server_mail_v1?: { available: boolean }
+  /** GET /api/connect-proof?nonce= answers without a token, proving a second address is this server (lib/connect-proof). */
+  connect_proof_v1?: { available: boolean; version: number }
+  /** GET /api/sessions/{id} takes prefetch=true: a background read that starts nothing an open would. */
+  session_prefetch_v1?: { available: boolean; version: number }
   [key: string]: JsonValue | InteractiveProviderCapability | CursorBackendCapability | ScheduledJobsCapability | AgentEmergencyAlertsCapability | ProviderJobsAccessControlCapability | AgentTeamMailCapability | CrossChatHandoffsCapability | TeamHubV1Capability | ServerUpdatesCapability | WorkingDirectoryCompletionCapability | RemoteServersCapability | SessionRewindCapability | LocalProviderCommandsCapability | undefined
 }
 

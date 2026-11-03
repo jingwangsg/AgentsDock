@@ -4,7 +4,7 @@ import { Image } from 'expo-image'
 import type { VideoThumbnail } from 'expo-video'
 import { Download, File, Images, Maximize2, Pin, Play } from 'lucide-react-native'
 import type { AgentServerClient } from '../api/AgentServerClient'
-import { capturedConnectionIsCurrent, client, useAppStore } from '../store/useAppStore'
+import { attachmentImageSource, capturedConnectionIsCurrent, client, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
 import { Text } from './AppText'
 import { DeferredLoadBoundary } from './DeferredLoadBoundary'
@@ -302,7 +302,7 @@ function RemoteImagePreview({ file, connection }: { file: AgentFile; connection:
   const colors = usePalette()
   const [failed, setFailed] = useState(false)
   if (failed) return <View style={[styles.center, { backgroundColor: colors.raised }]}><Images size={22} color={colors.muted} /></View>
-  return <Image source={{ uri: connection.client.fileURL(connection.sessionId, file.id), headers: connection.client.authHeaders() }} contentFit="contain" style={StyleSheet.absoluteFill} transition={120} onError={() => setFailed(true)} />
+  return <Image source={attachmentImageSource(connection.client, connection.sessionId, file.id)} contentFit="contain" style={StyleSheet.absoluteFill} transition={120} onError={() => setFailed(true)} />
 }
 
 function VideoThumbnailPreview({ file, connection, enabled }: { file: AgentFile; connection: MediaConnectionScope; enabled: boolean }) {

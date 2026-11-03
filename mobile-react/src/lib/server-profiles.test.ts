@@ -5,6 +5,7 @@ import {
   createStoredServerProfile,
   findDuplicateProfileByIdentity,
   findDuplicateProfileByURL,
+  hubOrphanCandidates,
   hubProxyRemoteId,
   hubRemoteProfileOrder,
   legacyURLCacheNamespace,
@@ -215,6 +216,51 @@ assertEqual(reconcileHubProfiles([hubProfile, { ...savedRemote, hidden: true }],
   { create: [], update: [], removeIds: [] })
 assertEqual(createStoredServerProfile({ serverURL: `${hubURL}/api/remote/bbb`, hidden: true }, 'remote-bbb', timestamp).hidden, true)
 assertEqual('hidden' in createStoredServerProfile({ serverURL: `${hubURL}/api/remote/bbb`, hidden: false }, 'remote-bbb', timestamp), false)
+
+// The hub moved (Tailscale to LAN) under a build that keyed remotes by URL: its remotes were saved again under the
+// new address. Only orphans the caller adopted (they carry this hub's token) count; each remote keeps one profile,
+// the one ranked first, else the one under the hub's URL, and moves under the hub's URL.
+const oldHubURL = 'http://100.64.0.7:7850'
+const oldRemote = { id: 'old-aaa', name: 'osmo', serverURL: `${oldHubURL}/api/remote/aaa`, sshHost: 'osmo_9000' }
+const oldLab = { id: 'old-bbb', name: 'lab', serverURL: `${oldHubURL}/api/remote/bbb`, sshHost: 'lab' }
+const oldGone = { id: 'old-zzz', name: 'gone', serverURL: `${oldHubURL}/api/remote/zzz`, sshHost: 'gone' }
+const newLab = { id: 'new-bbb', name: 'lab', serverURL: `${hubURL}/api/remote/bbb`, sshHost: 'lab' }
+assertEqual(hubOrphanCandidates([hubProfile, oldRemote, oldLab, oldGone, newLab, otherHubRemote], hubURL, registered).map(profile => profile.id),
+  ['old-aaa', 'old-bbb', 'other-hub-remote'])
+assertEqual(hubOrphanCandidates([hubProfile, { id: 'other-hub', serverURL: 'http://other.example:7850' }, otherHubRemote], hubURL, registered), [])
+const adopted = new Set(['old-aaa', 'old-bbb'])
+assertEqual(reconcileHubProfiles([hubProfile, oldRemote, oldLab, oldGone, newLab, otherHubRemote], hubURL, registered, adopted, id => id === 'old-bbb' ? 3 : 0), {
+  create: [],
+  update: [
+    { id: 'old-aaa', name: 'osmo', sshHost: 'osmo_9000', hidden: false, serverURL: `${hubURL}/api/remote/aaa` },
+    { id: 'old-bbb', name: 'lab', sshHost: 'lab', hidden: false, serverURL: `${hubURL}/api/remote/bbb` },
+  ],
+  removeIds: ['new-bbb'],
+})
+// Without local state on either side the one under the hub's URL stays; the active one (ranked first) always does.
+assertEqual(reconcileHubProfiles([hubProfile, oldLab, newLab], hubURL, [registered[1]], adopted).removeIds, ['old-bbb'])
+assertEqual(reconcileHubProfiles([hubProfile, oldLab, newLab], hubURL, [registered[1]], adopted, id => id === 'old-bbb' ? Infinity : 5), {
+  create: [], update: [{ id: 'old-bbb', name: 'lab', sshHost: 'lab', hidden: false, serverURL: `${hubURL}/api/remote/bbb` }], removeIds: ['new-bbb'],
+})
+// An orphan the caller did not adopt (another hub's token) and one with an id the hub does not list stay as they are.
+assertEqual(reconcileHubProfiles([hubProfile, oldLab, oldGone, newLab], hubURL, [registered[1]]), { create: [], update: [], removeIds: [] })
+
+// A second address is stored normalized, and not at all when blank, the same as the primary, or on a hub remote
+// (its hub's applies).
+const withSecond = (serverURL: string, secondServerURL: string) => normalizeStoredProfileSettings({
+  ...duplicateSettings, activeProfileId: 'a', profiles: [{ ...profileA, id: 'a', serverURL, secondServerURL }],
+}).profiles[0].secondServerURL
+assertEqual(withSecond('http://100.81.112.90:7850', '192.168.0.101'), 'http://192.168.0.101:7850')
+assertEqual(withSecond('http://100.81.112.90:7850', ' '), undefined)
+assertEqual(withSecond('http://100.81.112.90:7850', '100.81.112.90:7850'), undefined)
+assertEqual(withSecond('http://100.81.112.90:7850/api/remote/aaa', '192.168.0.101'), undefined)
+const savedHub = createStoredServerProfile({ serverURL: 'http://100.81.112.90:7850', serverIdentity: 'server-hub' }, 'hub', timestamp)
+assertEqual(applyStoredServerProfileUpdate(savedHub, { secondServerURL: '192.168.0.101' }, timestamp).secondServerURL, 'http://192.168.0.101:7850')
+assertEqual('secondServerURL' in applyStoredServerProfileUpdate({ ...savedHub, secondServerURL: 'http://192.168.0.101:7850' }, { secondServerURL: null }, timestamp), false)
+assertEqual(applyStoredServerProfileUpdate({ ...savedHub, secondServerURL: 'http://192.168.0.101:7850' }, { name: 'Mac' }, timestamp).secondServerURL, 'http://192.168.0.101:7850')
+// The learned proof capability stays with the pinned server, and goes when the identity is reset for a replacement.
+assertEqual(applyStoredServerProfileUpdate({ ...savedHub, connectProof: true }, { serverURL: 'http://100.81.112.91:7850' }, timestamp).connectProof, true)
+assertEqual('connectProof' in applyStoredServerProfileUpdate({ ...savedHub, connectProof: true }, { resetServerIdentity: true }, timestamp), false)
 
 // Remotes take the registry's order in the places they already hold; the hub and other profiles stay put.
 assertEqual(

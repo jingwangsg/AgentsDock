@@ -60,15 +60,14 @@ export function createFileTransferRunner<Folder, File extends TransferFile>(depe
         if (!await dependencies.sharingAvailable()) throw new Error('File sharing is unavailable on this device. Use Download to choose a folder instead.')
       }
       checkCurrent()
-      // Resolve credentials only after the picker returns and this chat is
-      // still current. Server file paths are never treated as device paths.
-      const source = request.source()
       const target = await dependencies.createTemporaryFile(filename)
       temporary = target
       checkCurrent()
       report('downloading', { bytesWritten: 0, totalBytes: validByteCount(request.expectedBytes) })
-      // A retry writes the whole file again over what a dropped attempt left in it.
-      const downloaded = await readFileWithRetry(() => dependencies.download(source, target, signal, progress => {
+      // Credentials are resolved only after the picker returns and this chat is still current, and again for each
+      // retry: one after a network change goes through the client's address check. Server file paths are never
+      // treated as device paths. A retry writes the whole file again over what a dropped attempt left in it.
+      const downloaded = await readFileWithRetry(() => dependencies.download(request.source(), target, signal, progress => {
         if (!signal.aborted && request.isCurrent()) {
           const totalBytes = validByteCount(progress.totalBytes) ?? validByteCount(request.expectedBytes)
           const bytesWritten = Math.max(0, validByteCount(progress.bytesWritten) ?? 0)

@@ -141,10 +141,11 @@ try {
   live(event(4, 'subagent_state', { run_id: 'run-1', subagent_id: 'child-1', subagent_status: 'starting' }))
   assert.equal(useAppStore.getState().subagentsBySession[sessionA.id], slice, 'an older record for the same id leaves the slice reference untouched')
 
-  // A running turn starts the 5 s poll; ticks fetch; a pending request is never overlapped.
+  // A running child keeps the 5 s poll; ticks fetch; a pending request is never overlapped.
+  assert.equal(polls().length, 1, 'a running child is polled')
   live(event(7, 'turn_started', { run_id: 'run-1' }))
   assert.ok(useAppStore.getState().activeSessionIds.has(sessionA.id))
-  assert.equal(polls().length, 1, 'an active open chat is polled')
+  assert.equal(polls().length, 1, 'its turn starting adds no second poll')
   polls()[0].tick()
   await flush()
   assert.equal(subagentCalls.length, 2, 'a poll tick fetches the snapshot')
@@ -195,13 +196,73 @@ try {
   assert.equal(subagentCalls.length, callsBeforeRewind + 1, 'history_rewound refetches the snapshot')
   assert.equal(useAppStore.getState().subagentsBySession[sessionA.id], undefined, 'history_rewound clears the rewound chat\'s records')
 
-  // Switching chats stops the previous chat's poll and fetches the new chat once.
+  // A turn with no child is not polled; its end fetches once, which also brings a child its events did not show.
+  const callsBeforeQuietTurn = subagentCalls.length
   live(event(12, 'turn_started', { run_id: 'run-2' }))
+  live(event(13, 'tool_started', { run_id: 'run-2', backend: 'claude', tool_id: 'bash-1', tool: { id: 'bash-1', name: 'Bash', input: { command: 'sleep 60' } } }))
+  live(event(14, 'assistant_message', { run_id: 'run-2', text: 'still working' }))
+  await flush()
+  assert.equal(polls().length, 0, 'a turn without a child has no subagent poll')
+  assert.equal(subagentCalls.length, callsBeforeQuietTurn, 'nor any subagent request while it runs')
+  live(event(15, 'turn_finished', { run_id: 'run-2' }))
+  await flush()
+  assert.equal(subagentCalls.length, callsBeforeQuietTurn + 1, 'the turn end fetches once')
+  assert.equal(polls().length, 0)
+
+  // A Claude agent launched in the background: its Agent tool starts the poll during the turn, and the server's
+  // state keeps it after the turn, until the agent finishes.
+  live(event(16, 'turn_started', { run_id: 'run-3' }))
+  assert.equal(polls().length, 0)
+  live(event(17, 'tool_started', { run_id: 'run-3', backend: 'claude', tool_id: 'agent-1', tool: { id: 'agent-1', name: 'Agent', input: { description: 'Watch the build', run_in_background: true } } }))
+  assert.equal(polls().length, 1, 'an Agent tool starts the poll while its turn runs')
+  live(event(18, 'tool_finished', { run_id: 'run-3', backend: 'claude', tool_id: 'agent-1', output: 'Async agent launched' }))
+  assert.equal(polls().length, 1, 'a background agent keeps running past its launch receipt')
+  subagentRecords = [event(19, 'subagent_state', { run_id: 'run-3', subagent_id: 'task-1', subagent_tool_id: 'agent-1', subagent_status: 'running', backend: 'claude' })]
+  polls()[0].tick()
+  await flush()
+  live(event(20, 'turn_finished', { run_id: 'run-3' }))
+  await flush()
+  assert.ok(!useAppStore.getState().activeSessionIds.has(sessionA.id), 'the turn ended')
+  assert.equal(polls().length, 1, 'the server still reports the background agent running after its turn')
+  subagentRecords = [event(21, 'subagent_state', { run_id: 'run-3', subagent_id: 'task-1', subagent_tool_id: 'agent-1', subagent_status: 'completed', backend: 'claude' })]
+  polls()[0].tick()
+  await flush()
+  assert.equal(polls().length, 0, 'the poll stops when the background agent finishes')
+
+  // An unchanged snapshot (the client hands back the copy it holds on a 304) writes nothing to the store.
+  let writes = 0
+  const unsubscribe = useAppStore.subscribe(() => { writes += 1 })
+  await useAppStore.getState().refreshSubagents(sessionA.id)
+  unsubscribe()
+  assert.equal(writes, 0, 'nothing newer, no store write')
+
+  // Switching chats stops the previous chat's poll and fetches the new chat once.
+  live(event(22, 'subagent_state', { run_id: 'run-3', subagent_id: 'task-2', subagent_status: 'running', backend: 'claude' }))
   assert.equal(polls().length, 1)
   await useAppStore.getState().selectSession(sessionB.id)
   await flush()
   assert.equal(polls().length, 0, 'the poll follows the open chat; chat-b is idle')
   assert.equal(subagentCalls.at(-1), sessionB.id, 'opening the other chat fetches its snapshot')
+
+  // A Codex collaborator: spawn_agent starts the poll, attaching keeps it, and the server's state ends it.
+  const liveB = emit as unknown as (event: Event) => void
+  const codexEvent = (seq: number, type: string, extra: Partial<Event> = {}): Event => ({ ...event(seq, type, { backend: 'codex', ...extra }), session_id: sessionB.id })
+  liveB(codexEvent(6, 'turn_started', { run_id: 'run-b' }))
+  assert.equal(polls().length, 0)
+  liveB(codexEvent(7, 'tool_started', { run_id: 'run-b', tool_id: 'spawn-1', tool: { id: 'spawn-1', name: 'spawn_agent', input: { task_name: 'review_tests' } } }))
+  assert.equal(polls().length, 1, 'spawn_agent starts the poll')
+  liveB(codexEvent(8, 'tool_finished', { run_id: 'run-b', tool_id: 'spawn-1', output: '{"agent_id":"thread-9"}' }))
+  assert.equal(polls().length, 1, 'an attached collaborator keeps the poll')
+  subagentRecords = [codexEvent(9, 'subagent_state', { run_id: 'run-b', subagent_id: 'thread-9', subagent_tool_id: 'spawn-1', subagent_status: 'running' })]
+  polls()[0].tick()
+  await flush()
+  liveB(codexEvent(10, 'turn_finished', { run_id: 'run-b' }))
+  await flush()
+  assert.equal(polls().length, 1, 'a collaborator outlives its turn')
+  subagentRecords = [codexEvent(11, 'subagent_state', { run_id: 'run-b', subagent_id: 'thread-9', subagent_tool_id: 'spawn-1', subagent_status: 'completed' })]
+  polls()[0].tick()
+  await flush()
+  assert.equal(polls().length, 0, 'and the poll ends with it')
 } finally {
   globalThis.setInterval = originalSetInterval
   globalThis.clearInterval = originalClearInterval

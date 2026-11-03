@@ -14,6 +14,7 @@ const nativeAliases = new Map(Object.entries({
   'expo-notifications': 'tests/mocks/expo-notifications.ts',
   '@react-native-async-storage/async-storage': 'tests/mocks/async-storage.ts',
   'expo-secure-store': 'tests/mocks/secure-store.ts',
+  '@react-native-community/netinfo': 'tests/mocks/netinfo.ts',
 }).map(([specifier, target]) => [specifier, resolve(target)]))
 try {
   await build({

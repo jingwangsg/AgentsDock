@@ -10,6 +10,8 @@ export function create<T>(initializer: (set: SetState<T>, get: () => T, api: unk
     const next = typeof value === 'function'
       ? (value as (current: T) => Partial<T> | T)(state)
       : value
+    // As zustand: an updater that returns the current state is no write, and no listener runs.
+    if (Object.is(next, state)) return
     state = replace ? next as T : Object.assign({}, state, next)
     for (const listener of listeners) listener(state, previous)
   }

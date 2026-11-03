@@ -1624,4 +1624,61 @@ try {
   }
 }
 
+// The polled lists (chat list, a chat's subagents and files) send back the ETag of the copy held here; a 304, or a 200
+// a platform HTTP cache answered with that same tag, resolves to that same copy. A server without tags is read in full.
+{
+  const fetchBeforeRevalidation = globalThis.fetch
+  const sent: Array<{ url: string; ifNoneMatch: string | null }> = []
+  let body = { session_id: 'chat', subagents: [{ seq: 4, subagent_id: 'child-1', subagent_status: 'running' }], count: 1, active_count: 1, latest_seq: 4 }
+  let tag: string | null = 'W/"one"'
+  let answer304 = true
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const ifNoneMatch = new Headers(init?.headers).get('If-None-Match')
+    sent.push({ url: String(input), ifNoneMatch })
+    if (answer304 && tag && ifNoneMatch === tag) return Promise.resolve(new Response(null, { status: 304, headers: { ETag: tag } }))
+    return Promise.resolve(new Response(JSON.stringify(String(input).includes('/files?') ? { files: [], total: 0, offset: 0, limit: 60, has_more: false } : String(input).includes('summary=true') ? { sessions: [{ id: 'quiet', title: 'Quiet', backend: 'codex' }] } : body), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json', ...(tag ? { ETag: tag } : {}) },
+    }))
+  }) as typeof fetch
+  try {
+    const revalidating = new AgentServerClient('https://etag.example', 'etag-token')
+    const first = await revalidating.subagents('chat')
+    const unchanged = await revalidating.subagents('chat')
+    assert(sent[0].ifNoneMatch === null && sent[1].ifNoneMatch === 'W/"one"', `The second poll must send back the tag it holds, got ${JSON.stringify(sent)}`)
+    assert(unchanged === first, 'A 304 resolves to the copy already held')
+    answer304 = false
+    assert(await revalidating.subagents('chat') === first, 'A 200 that a platform cache answered with the same tag is the same copy')
+    body = { ...body, subagents: [{ seq: 5, subagent_id: 'child-1', subagent_status: 'completed' }] }
+    tag = 'W/"two"'
+    const changed = await revalidating.subagents('chat')
+    assert(changed !== first && changed.subagents[0].subagent_status === 'completed', 'A new tag replaces the copy')
+    answer304 = true
+    assert(await revalidating.subagents('chat') === changed && sent.at(-1)!.ifNoneMatch === 'W/"two"', 'The new tag is the one sent back next')
+
+    const list = await revalidating.sessions()
+    assert(list[0].emergency_alert === null && await revalidating.sessions() === list, 'The chat list keeps its parsed rows across a 304')
+    const files = await revalidating.files('chat')
+    assert(await revalidating.files('chat') === files, 'The files list keeps its copy across a 304')
+
+    // Only a few lists are held: the least recently read goes first, and is read in full again.
+    for (let index = 0; index < 6; index += 1) await revalidating.subagents(`other-${index}`)
+    sent.length = 0
+    await revalidating.subagents('chat')
+    assert(sent[0].ifNoneMatch === null, `An evicted copy must not send a tag it no longer holds, got ${JSON.stringify(sent)}`)
+
+    // An older server sends no tag: nothing is held and nothing is sent back.
+    tag = null
+    const legacy = new AgentServerClient('https://legacy-etag.example', 'etag-token')
+    const legacyFirst = await legacy.subagents('chat')
+    const legacySecond = await legacy.subagents('chat')
+    assert(sent.filter(record => record.url.startsWith('https://legacy-etag.example')).every(record => record.ifNoneMatch === null), 'An untagged list is never revalidated')
+    assert(legacySecond !== legacyFirst, 'An untagged list is parsed again every time')
+    revalidating.dispose()
+    legacy.dispose()
+  } finally {
+    globalThis.fetch = fetchBeforeRevalidation
+  }
+}
+
 console.log('agent server client scope regressions passed')
