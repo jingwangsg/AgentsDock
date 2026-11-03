@@ -1,5 +1,118 @@
 # Public development log
 
+## 2026-11-03 — Android: less sync traffic, recent chats kept current in the background, a second (LAN) address per server, and a server list that follows the hub (app and server)
+
+- What the phone sent: each chat open read the chat page, its background
+  activity, handoff routes and files list, downloaded every image attachment
+  at full size, read the runtime catalog with `refresh=true` (five seconds of
+  CLI probes on the server) and opened the events stream; while any turn ran,
+  it read the chat's subagent snapshot every 5 s. A busy chat's snapshot was
+  476 KB and the chat list 209 KB, polled every minute; health was 17 KB per
+  poll for each saved server. None of it was compressed.
+- The server gzips the chat list, a chat's subagent snapshot and its files
+  list for clients that accept it, and tags each with a weak ETag of its
+  JSON; a client that sends the tag back while nothing changed gets an empty
+  304. Health is gzipped too (17.3 KB to 5.3 KB on this Mac's hub) but has
+  no tag, since its load and memory figures change on every call. An
+  installed server, whose gateway and execution worker add their own fields
+  to health, still answers it uncompressed. A file download is marked
+  immutable.
+- The app sends back the tag it holds for those lists, and a 304 keeps the
+  copy it has; an unchanged subagent snapshot writes nothing to the store.
+  Android's HTTP stack already revalidated these responses on its own once
+  the server sent tags, so older app builds get the 304s too.
+- The subagent snapshot is polled only while a child runs: during a turn, an
+  Agent or spawn_agent tool starts the poll; afterwards the server's child
+  states keep it while a Claude background agent or a Codex collaborator
+  runs. A turn without children is not polled, and its end still reads the
+  snapshot once.
+- Attachment images are cached on disk under the server's identity, the
+  chat and the file id instead of the URL, so another address of the same
+  server finds them; before, changing the hub address downloaded each image
+  again. The full-screen preview reads the same copy.
+- The runtime catalog is read without `refresh=true` and kept across
+  reconnects to the same server process; Recheck still refreshes it.
+- Opening a chat not viewed for a while read its whole backlog in one
+  request. The app now keeps the 30 most recent chats it has a timeline for
+  up to date in the background, newest first (pinned, then unread chats
+  first among equals; archived and scheduled-job run chats are left out).
+  It reads only the rows after its cached timeline, 40 at a time (20
+  through the hub's proxy), one request at a time, with a pause of 1.5 s
+  (5 s through the proxy) that doubles after a slow or failed answer, and
+  1 MB of responses a minute on average (128 KB through the proxy); one
+  large answer holds the next request until the average is back under it.
+  A chat whose backlog is longer than an open merges gets the window the
+  chat shows on open instead; older history stays on demand. A chat just
+  caught up waits 30 s before it is read again, and one whose read fails
+  waits until it changes. The warming stops while the user opens, scrolls
+  or sends, and while the app is away, and its reads mark nothing read.
+  Opening such a chat then reads only what is newer than the cache.
+- `GET /api/sessions/{id}?...&prefetch=true` marks such a background read:
+  the server returns the same page but starts neither the provider history
+  sync nor the queue repair that an open schedules. Health lists the flag
+  as `session_prefetch_v1`, so a client warms only servers that take it;
+  an older server would take every warming read for an open.
+- A server (a hub included) can have a second address, such as its LAN
+  address beside Tailscale, in Manage Servers. The app uses it only after it
+  proves to be the same server: it sends a fresh nonce (244 random bits) and
+  nothing else to `GET /api/connect-proof`, the one API route without a
+  token, and compares the answer in constant time with HMAC-SHA256, keyed by
+  the profile's token, of the nonce and the server identity pinned for the
+  profile. The request does not follow redirects. Only a server whose health
+  on the primary address advertised the proof is probed, and a profile
+  without a pinned identity never is; resetting the identity for a
+  replacement server clears what the profile learned. A failed, refused or
+  silent proof (2.5 s), a missing route or another identity keeps the
+  primary.
+- A proof holds for the second address, the pinned identity and the token it
+  was made with, and only on the network it was made on. The app checks the
+  second address when it starts, after a server switch or a connection
+  edit, when the network changes, when it returns to the foreground and when
+  the primary fails. When the network changes or the app leaves the
+  foreground, requests on their way to the second address are aborted and
+  its client sends nothing until the address proves itself again; a download
+  that retries asks for its credentials again. A connection lost at the
+  second address goes back to the primary. A hub's remotes go through its
+  second address too. Manage Servers and the server switcher show when the
+  second address is in use, and the open chat stays open when the
+  connection moves.
+- Hub remotes in the server list are matched by the hub and the remote's id
+  rather than the full URL. Changing the hub's address used to save every
+  remote again under the new address; now the remotes move with the hub.
+  Remotes left under an earlier hub address are taken back when the hub
+  lists their id and they carry the hub's token, one profile per remote is
+  kept (the active one, else the one with more cached chats, unread, pins
+  and drafts), and the others are removed with their tokens. Another hub's
+  profiles are never matched.
+
+Measured on the emulator through a metering proxy, bytes on the wire with
+requests, before (build 84 and the server from main) and after (build 85 and
+this server):
+
+| Action | Before | After |
+| --- | --- | --- |
+| Open the chat with images the first time | 1,436 KB (images 1,426 KB) | the images once per device, also across addresses |
+| Open it again | 5.8 KB | 4.8 KB; files and subagents answered 304 |
+| Cold restart with the chat open | 21 requests, 73.7 KB | 17 requests, 30.4 KB |
+| Two idle minutes with the chat open | 47.4 KB | 17.5 KB |
+| 70 s turn without subagents | 17 snapshot requests, 8.8 KB | 1 (a 304 at the turn's end) |
+| Turn with a background Claude agent | 20 polls, 26.8 KB | 18 polls, 15 answered 304, 10.5 KB |
+| Images after four moves between the addresses | not measured | none downloaded |
+
+On this Mac's hub (read-only requests), the chat list is 209 KB plain and
+21 KB gzipped, and a 304 is 167 bytes.
+
+```text
+Change and expected user behavior: opening a chat again, an unchanged poll and a change of the hub's address send almost nothing; a chat not viewed for a while opens with only its newest rows; a turn without subagents is not polled; the phone uses the hub's LAN address once it proves to be the same server, and goes back to Tailscale when it does not; each hub remote appears once in the server list.
+Source commit / app build / server version: branch fix/android-sync-and-dual-address; Android sideload build 85; server 1.0.7-beta.11 (the hub needs a restart, and remotes a redeploy, for the server parts).
+Test surface: isolated native app (emulator, sideload release build) against isolated AgentsServers on this Mac, with a metering proxy on each address; the running hub with read-only GET requests.
+Actions exercised and observed outcomes: (1) build 84 against an isolated hub listing two remotes: changing the hub's address in Manage Servers created a second profile for each remote; build 85 started on that saved state kept one profile per remote and the active hub, removed the other two with their tokens, and a later address change moved both remotes without creating any. (2) A second address that is the same server: on the first launch, on a cold start, back from the background and after each Wi-Fi change, the first request it received was the proof, with no credential, and then the connection moved there; the open chat stayed open; a remote of the hub went through it as well, and the remote's 502 (its tunnel was down) kept the address. (3) The same second address forwarded to another AgentsServer with its own token and identity, followed by two network changes: it received two proof requests, none with a credential, and the connection stayed on the primary; over the whole run that server received only proof requests from the app. (4) Same chats before and after: the table above. (5) A turn added 89 rows to a chat that was not open: a build without the warming read none of them until the chat was opened, then read them in one request after row 39 (3.4 KB); with build 85, the next turn's rows came in three background pages of up to 40 rows (5.8 KB over 72 s, prefetch=true in the server's access log) while another chat was open, nothing was marked read, and opening the chat then read only the rows after the warmed timeline (row 307, an empty page of 1.1 KB).
+Real boundaries exercised; any mocked/stubbed boundaries: the app's real HTTP and WebSocket transports, the server's token middleware and hub proxy, the Claude CLI for the turns, Android's network change. The remotes were registry entries with unreachable hosts. Not exercised: iOS (unit tests and typecheck only, including its image cache size bound), a real phone on a real LAN, Codex collaborators on the device (unit tests only), the Canvas sheet on the device, the warming through the hub's proxy (its pace is unit-tested only).
+Focused regression / typecheck / production build: mobile typecheck and the full mobile suite; store tests for the second address (proof, cold start, server switch and connection edits, fallbacks, network change, foreground, lost connection, a replacement server), the background warming (chat selection and order, cap, one request at a time, pauses, the tail window, a failing chat, waiting for the open chat's sync, foreground only, only servers that list the flag, nothing marked read), the hub mirror (address change and duplicate collapse), the poll rule, ETag revalidation and the attachment cache key; server tests for the proof route, revalidation, component health of an installed server and the prefetch flag, and the eight server shards; the sideload release build.
+Remaining limitations or blocked acceptance: the proof cannot detect a relay. A device at the second address on another network that can itself reach the server (from the internet, or from the same Wi-Fi while the Mac is there too and the server listens on all interfaces) could pass the nonce to the server and its answer back, and then receive the token. `/api/connect-proof` answers anyone who can reach the server, which allows guessing the token offline, so the token must be random (as generated). A terminal or browser tab open at the second address reconnects on its own if the network changes before Android reports it. Each network change Android reports while the second address is in use sends the connection to the primary and back. After the update, each attachment image is downloaded once more under its new cache key. The hub's remotes gzip and revalidate only after a redeploy. A cold start reconnects twice, as it did before.
+Availability: local package (Android build 85); the hub needs a restart for the server parts.
+```
+
 ## 2026-11-03 — Canvas: opened Canvases are cached on the device, and the compiled bundle is smaller (desktop, Android, server)
 
 - Opening a Canvas of a chat on a remote server downloaded its record (the
