@@ -1,5 +1,67 @@
 # Public development log
 
+## 2026-11-03 — Desktop: recent chats kept current in the background, and polled lists revalidated (app)
+
+- Opening a chat that had not been viewed for a while caught up all at once.
+  The app showed the cached timeline and subscribed from its last cached row,
+  so the event stream replayed every newer row while a page of up to 480 rows
+  after that row came over HTTP as well; a longer backlog was replaced by the
+  window the chat shows on open. In the measurement below, 273 new rows were
+  260 KB of page JSON (17 KB gzipped) and a 25 KB stream replay.
+- The desktop now keeps the 30 most recent chats it has a cached timeline for
+  up to date in the background, with the rules the Android app got in build
+  85: most recent activity first (pinned, then unread chats first among
+  equals); archived and scheduled-job run chats and the chats open in a pane
+  are left out. The app reads the rows after a chat's cached timeline, 40 at
+  a time (20 for a remote behind a hub, this Mac's or another one), one
+  request at a time, with a pause of 1.5 s (5 s for a remote) that doubles
+  after a slow or failed answer, and 1 MB of responses a minute on average
+  (128 KB for a remote). A chat whose backlog is longer than an open merges
+  gets the window the chat shows on open; older history stays on demand. A
+  chat just caught up waits 30 s before it is read again, and one whose read
+  fails or brings no rows waits until it changes.
+- The rows go into the app's chat cache, where an open reads them, and into
+  the window's copy of the chat if it holds one; a copy the new rows do not
+  join is dropped, so the next open reads the cache. Opening the chat then
+  asks only for rows after the warmed ones. A page whose chat was opened or
+  changed while it was on its way is dropped.
+- The warming waits while the user types, clicks or scrolls (until 3 s after
+  the last input), and while a chat opens, an older page loads or a message
+  is sent. Its reads carry `prefetch=true` and mark nothing read, and the chat
+  list keeps its own rows. Only servers whose health lists
+  `session_prefetch_v1` are warmed. Only the active server is warmed.
+- The chat list, a chat's subagent snapshot and its files list are requested
+  with the ETag of their last answer, and a 304 keeps that answer. The
+  desktop's requests go through Node's fetch, which keeps no HTTP cache, so
+  these lists were downloaded in full on every poll; the chat list is polled
+  every 30 s. On this Mac's hub the list is 212 KB, neither compressed nor
+  tagged until the hub restarts on the current server (then 21 KB gzipped,
+  and a 304 of 167 bytes).
+
+Measured with an isolated server (real Claude turns) behind a metering proxy,
+main's build 140 against this branch, each on copies of the same server state
+and app data; bytes on the wire, gzipped where the server compresses, with the
+JSON size in parentheses:
+
+| Action | Before (build 140) | After |
+| --- | --- | --- |
+| Open a cached chat 273 rows behind | page 17.4 KB (260 KB), stream replay 24.6 KB | page 0.9 KB (2.1 KB), stream 1.5 KB |
+| Background reads before that open | none | 10 pages for two chats over 14 s, 38.7 KB (365 KB), one at a time, at least 1.5 s apart |
+| Reopen it after one more turn (46 rows), the window still holding it | page 4.4 KB (45 KB), stream 4.5 KB | page 0.9 KB (2.1 KB), stream 0.4 KB; subagents and files answered 304 |
+| Background reads for that turn | none | 2 pages 30 s apart, 6.3 KB (48 KB) |
+| Chat list polls over 4 minutes (4 chats) | 7 full answers, 4.7 KB | 3 full answers and 4 empty 304s, 2.1 KB |
+
+```text
+Change and expected user behavior: a chat not viewed for a while opens with only its newest rows, because the app read its backlog in the background in small paced pages; unchanged polled lists come back as empty 304s.
+Source commit / app build / server version: branch feat/desktop-background-warming; desktop package build 141; server 1.0.7-beta.11 from main, unchanged.
+Test surface: isolated native app built from the branch and from main (isolated user data, driven over CDP) against an isolated server behind a metering proxy; the running hub with read-only GET requests.
+Actions exercised and observed outcomes: (1) Two cached chats 273 and 91 rows behind while the app showed a third: the branch read both in 10 background pages (prefetch=true in the server's access log, none in build 140's run); opening the first asked for rows after 283 and got an empty page, where build 140 asked after row 10 and replayed all 273 rows. Neither chat was marked read by the background reads, and the one never opened stayed unread. (2) After the chat was left and got one more turn, the branch read the new rows in 2 pages, and the reopen showed the window's copy and asked after row 335; build 140 asked after row 283. (3) Electron input events (a mouse wheel and a key every 400 ms for 20 s) while pages remained: no background read during the input, the next one 3.0 s after it. (4) Table above.
+Real boundaries exercised; any mocked/stubbed boundaries: the app's HTTP and WebSocket transports and chat cache, the server's page route with prefetch, its list ETags and access log, the Claude CLI for the turns. The input came from webContents.sendInputEvent through the main process's inspector; CDP input events do not reach the app's input hooks. Not exercised end to end: a remote behind a hub (its page size, pause and budget are unit-tested), the window for a backlog over 480 rows (unit-tested), the per-minute budget holding a read back (unit-tested; the measured backlog stayed under it). After the first open, the server imported from the shared Claude transcript a turn added in an earlier run on another copy of the state (4 to 6 rows, on the stream after the open's page).
+Focused regression / typecheck / production build: warming rules and service tests (order, cap, left-out chats, one request in flight, pauses and their doubling, the per-minute budget, a remote's pace and budget, the backlog window, a failing chat, a page dropped when its chat changed on the way, input and requests in flight, a profile switch, only servers that list the flag, nothing marked read, the chat list untouched), renderer tests for the window's copy, client tests for prefetch and ETag revalidation; electron typecheck, full vitest (5498 tests) and production build.
+Remaining limitations or blocked acceptance: only the active server is warmed. On the first open of a warmed unread chat the window sent its read mark three times (its read effects fire together and race the open's page); at startup the open chat was sometimes read twice when a health check landed while its stream connected, on build 140 too. The server still prepares provider-history proofs for prefetch reads. The hub compresses and tags the lists only after it restarts on the current server.
+Availability: local package (desktop build 141); no server update needed.
+```
+
 ## 2026-11-03 — Android: less sync traffic, recent chats kept current in the background, a second (LAN) address per server, and a server list that follows the hub (app and server)
 
 - What the phone sent: each chat open read the chat page, its background
