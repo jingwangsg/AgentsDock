@@ -30,6 +30,14 @@ export const CANVAS_PAGE_MESSAGE_SOURCE = 'agentsdock-canvas'
 /** A Canvas name is the stem of `<name>.canvas.tsx`; it is also a URL path segment. */
 export const CANVAS_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 
+/** Compared without key order: the server stores a state with sorted keys, a page reports its keys in its own order. */
+export function sameCanvasState(a: Record<string, unknown> | undefined, b: Record<string, unknown> | undefined): boolean {
+  const sorted = (value: unknown): string => JSON.stringify(value ?? {}, (_key, item: unknown) => item && typeof item === 'object' && !Array.isArray(item)
+    ? Object.fromEntries(Object.entries(item).sort(([x], [y]) => x < y ? -1 : x > y ? 1 : 0))
+    : item)
+  return sorted(a) === sorted(b)
+}
+
 /** `reloadKey` only changes the URL so the iframe remounts; parseCanvasURL ignores it. */
 export function canvasPageURL(resource: CanvasPageResource & { reloadKey?: string }): string {
   const encoded = [resource.profileId, String(resource.profileGeneration), resource.sessionId, resource.name].map(encodeURIComponent)

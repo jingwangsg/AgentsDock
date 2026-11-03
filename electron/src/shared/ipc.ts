@@ -614,6 +614,8 @@ export interface AgentsDockAPI {
   canvas: {
     list(sessionId: string): Promise<{ canvases: CanvasSummary[] }>
     get(sessionId: string, name: string): Promise<CanvasRecord>
+    /** The canvas kept from an earlier open, without asking the server; null when there is none. */
+    cached(sessionId: string, name: string): Promise<CanvasRecord | null>
     /** Saves the Canvas as a standalone interactive HTML page through a save dialog; null when the user cancels. */
     exportHtml(sessionId: string, name: string, theme: CanvasHostTheme): Promise<string | null>
     putState(sessionId: string, name: string, state: Record<string, unknown>): Promise<{ state: Record<string, unknown> }>

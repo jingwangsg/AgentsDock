@@ -15,6 +15,8 @@ import type { ChatShareMode, CreateChatShareInput } from '../shared/chat-shares'
 import type { WorkspaceGitAction, WorkspaceGitStatus, WorkspaceGitView } from '../shared/workspace-git'
 import type { CanvasCommentAnchor, CanvasCommentInput, CanvasCommentThread, CanvasRecord, CanvasSummary, CodexKillWritersResult, CreateSurfaceInput, SessionExportFormat, Surface, UpdateSurfaceInput } from '../shared/types'
 import { buildCanvasPage, type CanvasHostTheme } from './canvas-protocol'
+import { sameCanvasState } from '../shared/canvas'
+import { CanvasCache } from './canvas-cache'
 import { parseMailHintPageAcknowledgment, TEAM_MAIL_HINTS_ENABLED, type MailHintPageAcknowledgment, type MailHintScope } from '../shared/team-mail-hints'
 import { TeamMailHintController } from './team-mail-hint-controller'
 import { ActivityHealthProjection, type ActivityHealthRequest } from './activity-health'
@@ -396,6 +398,8 @@ export interface AppServiceOptions {
   clipboardTempRoot?: string
   /** macOS completion banners; injected so tests observe the banner path without real windows. */
   notificationPopups?: NotificationPopupController
+  /** Test seam; production keeps it in the user data directory. */
+  canvasCache?: CanvasCache
 }
 
 /** Bundles and scripts that macOS would run, not merely open, when handed to openPath. */
@@ -404,6 +408,7 @@ const LAUNCHING_PATH_RE = /\.(?:app|command|tool|terminal|workflow|action|pkg|mp
 export class AppService {
   readonly settings: SettingsStore
   readonly cache: LocalCache
+  private readonly canvasCache: CanvasCache
   client: AgentServerClient
 
   private serverId: string
@@ -542,6 +547,7 @@ export class AppService {
     appLog('startup', 'settings loaded')
     appLog('startup', 'opening local cache')
     this.cache = options.cache ?? new LocalCache()
+    this.canvasCache = options.canvasCache ?? new CanvasCache(join(app.getPath('userData'), 'canvas-cache'))
     this.mailHints = new TeamMailHintController(options.mailHintsEnabled ?? TEAM_MAIL_HINTS_ENABLED, this.cache,
       projection => this.emit('team:mail-hints', projection))
     this.pinSync = new PinSyncCoordinator(this.cache)
@@ -2233,6 +2239,7 @@ export class AppService {
       // persistence subsequently fails, safe cache loss is preferable to
       // retaining confidential rows for a profile the user chose to remove.
       this.cache.removeServerNamespaces(cacheNamespaces)
+      this.canvasCache.removeServerNamespaces(cacheNamespaces)
       this.settings.removeProfile(profileId)
       this.sideQuestions.cancelProfile(profileId)
     } catch (error) { throw error }
@@ -4945,12 +4952,76 @@ export class AppService {
     return this.withScope(client => client.killCodexWriters(sessionId))
   }
 
+  /**
+   * Always a new request: a turn's events re-list to find an edit, which an earlier list may predate. getCanvas, which
+   * the pane calls together with this, checks its cached copy against the same response.
+   */
   async listCanvases(sessionId: string): Promise<{ canvases: CanvasSummary[] }> {
-    return this.withScope(client => client.listCanvases(sessionId))
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    const key = `${scope.generation}:${sessionId}`
+    const list = scope.client.listCanvases(sessionId).finally(() => {
+      if (this.canvasListsInFlight.get(key) === list) this.canvasListsInFlight.delete(key)
+    })
+    this.canvasListsInFlight.set(key, list)
+    const result = await list
+    this.assertCurrentScope(scope)
+    return result
   }
 
+  private readonly canvasListsInFlight = new Map<string, ReturnType<AgentServerClient['listCanvases']>>()
+  private readonly canvasDownloads = new Map<string, Promise<CanvasRecord>>()
+
+  /** The cached copy from an earlier open, without asking the server; null when there is none. */
+  cachedCanvas(sessionId: string, name: string): Promise<CanvasRecord | null> {
+    return this.canvasCache.record(this.captureScope().namespace, sessionId, name)
+  }
+
+  /**
+   * The canvas as the server has it now. A cached copy whose revision, size and runtime version the server still
+   * lists has the current bundle: then only the list and the state, which the page saves without a new revision,
+   * are fetched.
+   */
   async getCanvas(sessionId: string, name: string): Promise<CanvasRecord> {
-    return this.withScope(client => client.getCanvas(sessionId, name))
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    const cached = await this.canvasCache.record(scope.namespace, sessionId, name)
+    let record: CanvasRecord | null = null
+    let listed: CanvasSummary | undefined
+    let bundleCurrent = false
+    if (cached) {
+      const [list, { state }] = await Promise.all([
+        this.canvasListsInFlight.get(`${scope.generation}:${sessionId}`) ?? scope.client.listCanvases(sessionId),
+        scope.client.getCanvasState(sessionId, name)
+      ])
+      listed = list.canvases.find(canvas => canvas.name === name)
+      // The revision is the file's mtime, which some file systems keep in whole seconds: the size catches most
+      // edits within one second. A source with CRLF line ends never matches and is downloaded each time.
+      bundleCurrent = listed?.revision === cached.revision && listed.size === Buffer.byteLength(cached.source)
+        && list.capability?.runtime_version === cached.runtime_version
+      if (bundleCurrent) record = sameCanvasState(state, cached.state) ? cached : { ...cached, state }
+    }
+    if (!record) {
+      // A turn's start and end each reload the pane, often while the first download still runs: the second joins
+      // it, unless the list it was checked against names a newer revision than the download brought.
+      const key = `${scope.generation}:${sessionId}:${name}`
+      let download = this.canvasDownloads.get(key)
+      if (!download) {
+        download = scope.client.getCanvas(sessionId, name).finally(() => {
+          if (this.canvasDownloads.get(key) === download) this.canvasDownloads.delete(key)
+        })
+        this.canvasDownloads.set(key, download)
+      }
+      record = await download
+      if (listed && record.revision !== listed.revision) record = await scope.client.getCanvas(sessionId, name)
+    }
+    this.assertCurrentScope(scope)
+    // The same object comes back only when the cached copy is current, state included: nothing to write.
+    if (record !== cached) {
+      if (bundleCurrent) await this.canvasCache.putState(scope.namespace, sessionId, name, record.state)
+      else await this.canvasCache.putRecord(scope.namespace, sessionId, name, record)
+    }
+    return record
   }
 
   /** Aggregates the whole cached history so the panel is not limited to the renderer's event window. */
@@ -4969,10 +5040,26 @@ export class AppService {
   }
 
   async putCanvasState(sessionId: string, name: string, state: Record<string, unknown>): Promise<{ state: Record<string, unknown> }> {
-    return this.withScope(client => client.putCanvasState(sessionId, name, state))
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    const saved = await scope.client.putCanvasState(sessionId, name, state)
+    this.assertCurrentScope(scope)
+    // The next open shows the cached copy before it asks the server, so the copy carries the state the page saved.
+    await this.canvasCache.putState(scope.namespace, sessionId, name, saved.state)
+    return saved
   }
 
-  /** Canvas source edits and comment threads: one scoped call each, like the state PUT above. */
+  /** Saves an edited source and caches the record the server compiled from it: the pane's next page is built from it. */
+  async putCanvasSource(sessionId: string, name: string, source: string, baseRevision: number): Promise<CanvasRecord> {
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    const record = await scope.client.putCanvasSource(sessionId, name, source, baseRevision)
+    this.assertCurrentScope(scope)
+    await this.canvasCache.putRecord(scope.namespace, sessionId, name, record)
+    return record
+  }
+
+  /** Canvas comment threads: one scoped call each; the Canvas cache does not hold them. */
   async canvasCall<T>(call: (client: AgentServerClient) => Promise<T>): Promise<T> {
     const scope = this.captureScope()
     await this.ensureValidatedScope(scope)
@@ -4980,9 +5067,6 @@ export class AppService {
     this.assertCurrentScope(scope)
     return result
   }
-
-  /** shell.html + vendor.js per server and runtime version; the bundle itself changes per canvas. */
-  private readonly canvasRuntimeCache = new Map<string, { shell: string; vendor: string }>()
 
   /** Document for an agentsdock-canvas:// frame: the compiled report wrapped in the server's runtime. */
   async canvasPageResponse(
@@ -4994,23 +5078,30 @@ export class AppService {
   ): Promise<Response> {
     const scope = this.captureScope()
     if (scope.profileId !== profileId || scope.generation !== profileGeneration) throw staleProfileError()
-    await this.ensureValidatedScope(scope)
-    this.assertCurrentScope(scope)
-    const record = await scope.client.getCanvas(sessionId, name)
+    // The pane gives the frame its address once it holds a record, from the cache or cached by getCanvas or the
+    // source save. The page is built from that copy without a second download, and before the profile's first
+    // health check; only a missing record or runtime goes to the server.
+    let record = await this.canvasCache.record(scope.namespace, sessionId, name)
+    if (!record) {
+      await this.ensureValidatedScope(scope)
+      record = await scope.client.getCanvas(sessionId, name)
+    }
     this.assertCurrentScope(scope)
     if (record.diagnostics || !record.javascript) {
       throw new Error(`The Canvas did not compile: ${record.diagnostics ?? 'the compiled bundle is empty.'}`)
     }
-    const cacheKey = `${scope.profileId}:${record.runtime_version ?? ''}`
-    let runtime = this.canvasRuntimeCache.get(cacheKey)
+    const version = record.runtime_version ?? ''
+    let runtime = await this.canvasCache.runtime(scope.namespace, version)
     if (!runtime) {
+      await this.ensureValidatedScope(scope)
       const [shell, vendor] = await Promise.all([
         scope.client.canvasRuntimeAsset('shell.html'),
         scope.client.canvasRuntimeAsset('vendor.js')
       ])
       this.assertCurrentScope(scope)
       runtime = { shell, vendor }
-      this.canvasRuntimeCache.set(cacheKey, runtime)
+      // The route serves the server's current runtime, which a cached record from before a server update predates.
+      if (version === this.health?.capabilities?.canvas_v1?.runtime_version) await this.canvasCache.putRuntime(scope.namespace, version, runtime)
     }
     return new Response(buildCanvasPage({ shell: runtime.shell, vendor: runtime.vendor, javascript: record.javascript, state: record.state ?? {}, theme }), {
       status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }
@@ -7307,6 +7398,7 @@ export class AppService {
       }
       try {
         this.cache.removeServerNamespaces(namespaces)
+        this.canvasCache.removeServerNamespaces(namespaces)
       } catch (error) {
         failures.push(`workspace cache cleanup failed: ${errorText(error)}`)
       }

@@ -1910,12 +1910,16 @@ export class AgentServerClient {
     return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/entries?${query}`)
   }
 
-  listCanvases(sessionId: string): Promise<{ canvases: CanvasSummary[] }> {
+  listCanvases(sessionId: string): Promise<{ canvases: CanvasSummary[]; capability?: { runtime_version?: string | null } }> {
     return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/canvases`)
   }
 
   getCanvas(sessionId: string, name: string): Promise<CanvasRecord> {
     return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}`)
+  }
+
+  getCanvasState(sessionId: string, name: string): Promise<{ state: Record<string, unknown> }> {
+    return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}/state`)
   }
 
   putCanvasState(sessionId: string, name: string, state: Record<string, unknown>): Promise<{ state: Record<string, unknown> }> {

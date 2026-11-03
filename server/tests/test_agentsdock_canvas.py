@@ -104,6 +104,8 @@ class CanvasTests(unittest.TestCase):
         first = canvas.build(path)
         assert first["diagnostics"] is None
         assert "CanvasModule" in first["javascript"]
+        # Clients download the bundle over remote links; a source map would carry the source a second time.
+        assert "sourceMappingURL" not in first["javascript"]
         assert first["runtime_version"] == canvas.runtime_version()
         cache = json.loads(canvas.build_cache_path(path).read_text())
         assert cache["source_sha256"]

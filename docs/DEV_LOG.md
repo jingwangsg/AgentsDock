@@ -1,5 +1,65 @@
 # Public development log
 
+## 2026-11-03 — Canvas: opened Canvases are cached on the device, and the compiled bundle is smaller (desktop, Android, server)
+
+- Opening a Canvas of a chat on a remote server downloaded its record (the
+  source and the compiled report) twice on the desktop, once for the pane and
+  once for its page, and the runtime (`vendor.js`, 277 KB gzipped) once per
+  app run. Through the hub, one record download of two remote canvases (202 KB
+  and 285 KB of source) took 3.8 to 14.3 s for 300 to 408 KB gzipped, and each
+  open waited for two of them.
+- The desktop now caches the last record of each canvas, its state, and the
+  runtime of each runtime version on disk (`canvas-cache` in the app's data
+  directory, at most 256 MiB, the entries written longest ago go first), under
+  the server's identity, so every address of a server shares them. A canvas
+  opened before shows its cached copy at once, also after a restart and before
+  the server answers its first health check. The app then reads the chat's
+  canvas list and the canvas's state (under 1 KB together) and downloads the
+  record only when the server lists another revision, size or runtime
+  version. The page reloads only when the record, the runtime or the state
+  differs; the same state with its keys in another order does not count. The
+  page is built from the cached copy, not from a second download. Removing or
+  resetting a server profile removes its cached canvases.
+- When a turn edits the open canvas, the pane reloads its page once, with the
+  new revision. Before, the turn's start and end each reloaded the page and
+  downloaded the record again; a second request for the same canvas now joins
+  a running download.
+- The Android Canvas sheet caches canvases the same way in its cache
+  directory (at most 64 MiB) and checks them against the same list and state.
+- The server's Canvas compiler no longer appends an inline source map, which
+  repeated the source in base64: the record of the 202 KB report is 242 KB
+  gzipped instead of 410 KB. Each canvas compiles once more after the server
+  update, and each client downloads the runtime once more.
+- Cache entries are not touched when read. On the test Mac an on-access
+  malware scanner checks a file again after its time changes: the first read
+  of the runtime after a restart took 0.5 s when a read had touched it, 3 ms
+  otherwise.
+
+Through a proxy that limits the link to 100 KiB/s with a 0.5 s round trip,
+for the 202 KB report: time until the page reported ready (for the agent edit,
+until the new text was on the page), and bytes over the link.
+
+| Server | Desktop | First open | Open again | Open after restart | Agent edit while open |
+| --- | --- | --- | --- | --- | --- |
+| not updated | before | 12.6 s, 1,095 KB | 9.1 s, 816 KB | 12.6 s, 1,095 KB | 23.5 s, 2,043 KB |
+| not updated | after | 8.7 s, 687 KB | 0.11 s, 0.8 KB | 0.26 s, 0.8 KB | 6.7 s, 411 KB |
+| updated | before | 9.4 s, 757 KB | 5.8 s, 479 KB | 9.2 s, 757 KB | 14.6 s, 1,199 KB |
+| updated | after | 6.3 s, 518 KB | 0.08 s, 0.8 KB | 0.31 s, 0.8 KB | 5.1 s, 243 KB |
+
+The first open after a restart that follows a new download took 0.67 to
+0.76 s, because the scanner checks the newly written files once.
+
+```text
+Change and expected user behavior: a Canvas opened before shows at once from the device, also after a restart, and is downloaded again only when it changed; a Canvas the agent edits during a turn is reloaded once; the compiled bundle is 41% smaller after a server update.
+Source commit / app build / server version: branch feat/remote-canvas-cache; desktop package build 140; the compiler change needs the server update; Android in the next APK.
+Test surface: isolated native app built from the branch (isolated user data, driven over CDP) against an isolated server behind a rate-limited proxy; the running hub with read-only GET requests.
+Actions exercised and observed outcomes: opened the Canvas from Outputs & sources, closed and reopened it, restarted the app twice and reopened it, with the old and the new app against the old and the new server (table above); edited the source on the server and started a turn, and the new text appeared after one page reload with one download.
+Real boundaries exercised; any mocked/stubbed boundaries: the app's main process, protocol handler, disk cache and server routes. The link was a local proxy; the hub proxy was not in the path; the agent's edit was a file write followed by a turn that failed for lack of a provider token, which emits the same turn events. Android ran unit and contract tests only; the emulator check is pending because another session used the emulator.
+Focused regression / typecheck / production build: cache, service and pane tests (cached render, revalidation, key order, compile retry, stale loads, one download per change, runtime version guard, state entry); electron typecheck, full vitest and production build; mobile typecheck, unit and contract tests; the eight server test shards.
+Remaining limitations or blocked acceptance: on a file system that keeps whole-second times, an edit within the same second that keeps the source size is noticed only at the next change; a source with CRLF line ends is downloaded at every open; Android keeps a removed profile's cached Canvases until the system clears its cache; two profiles of one server at different addresses were not exercised.
+Availability: local package; the hub and remotes need a restart or redeploy for the compiler change; nothing deployed.
+```
+
 ## 2026-11-02 — Activity digest: search across chats, and --since in hours (server script)
 
 - The digest assistant's script `server/scripts/activity_digest.py` gains

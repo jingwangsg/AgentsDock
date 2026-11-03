@@ -389,6 +389,7 @@ const api: AgentsDockAPI = {
   canvas: {
     list: sessionId => ipcRenderer.invoke('canvas:list', sessionId),
     get: (sessionId, name) => ipcRenderer.invoke('canvas:get', sessionId, name),
+    cached: (sessionId, name) => ipcRenderer.invoke('canvas:cached', sessionId, name),
     exportHtml: (sessionId, name, theme) => ipcRenderer.invoke('canvas:export-html', sessionId, name, theme),
     putState: (sessionId, name, state) => ipcRenderer.invoke('canvas:put-state', sessionId, name, state),
     putSource: (sessionId, name, source, baseRevision) => ipcRenderer.invoke('canvas:put-source', sessionId, name, source, baseRevision),
