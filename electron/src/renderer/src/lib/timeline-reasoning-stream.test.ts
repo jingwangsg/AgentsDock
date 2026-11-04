@@ -41,6 +41,40 @@ describe('transient reasoning presentation', () => {
     expect(overlayReasoningStream(rows, semantic, [], 'chat')).toBe(rows)
   })
 
+  it('adds a summary streamed after a cross-chat message to the activity row after that message', () => {
+    // 2026-11-05: the timeline repeated "Progress" and its commentary while such a summary streamed.
+    const initial = project([
+      start,
+      event(2, 'reasoning_summary', { item_id: 'commentary-1', phase: 'commentary', text: 'I will check the source first.' }),
+      event(3, 'chat_conversation_message_registered', { conversation_mode: 'async_route_v1', message_id: 'message-1' }),
+      event(4, 'tool_started', { tool_id: 'tool-1', tool: { name: 'read_file' } })
+    ])
+    const live = overlayReasoningStream(initial.rows, initial.semantic, [{ ...stream, after_seq: 4 }], 'chat')
+    const keys = live.map(row => row.key)
+    expect(keys).toEqual([...new Set(keys)])
+    expect(live.flatMap(row => row.kind === 'progress' ? [row.events.map(event => event.type)] : []))
+      .toEqual([['reasoning_summary'], ['tool_started', 'reasoning_summary']])
+  })
+
+  it('keys a summary streaming between a sent message and its reply like its saved row', () => {
+    // The part between a sent message and the reply has no saved events yet, so it has no row.
+    const events = [
+      start,
+      event(2, 'tool_started', { tool_id: 'send-1', tool: { name: 'exec_command' } }),
+      event(3, 'chat_conversation_message_registered', { conversation_mode: 'async_route_v1', message_id: 'message-1' }),
+      event(4, 'tool_finished', { tool_id: 'send-1', tool: { name: 'exec_command' } }),
+      event(5, 'chat_conversation_message_received', { run_id: undefined, conversation_mode: 'async_route_v1', message_id: 'reply-1' })
+    ]
+    const initial = project(events)
+    const live = overlayReasoningStream(initial.rows, initial.semantic, [{ ...stream, after_seq: 4 }], 'chat')
+    const keys = live.map(row => row.key)
+    expect(keys).toEqual([...new Set(keys)])
+    const saved = project([...events, event(6, 'reasoning_summary', { item_id: stream.item_id, phase: 'summary', text: 'Saved', reasoning_after_seq: 4 })])
+    const rowOf = (rows: typeof live) => rows.find(row => row.kind === 'progress' && row.events.some(event => event.item_id === stream.item_id))
+    expect(rowOf(live)?.key).toBe(rowOf(saved.rows)?.key)
+    expect(rowOf(live)).toMatchObject({ continues: true, active: false, afterSeq: 3, throughSeq: 5 })
+  })
+
   it('updates only the owning row and keeps summary/tool chronology through durable completion', () => {
     const tool = event(2, 'tool_started', { tool_id: 'tool-1', tool: { name: 'read_file' } })
     const initial = project([start, tool])

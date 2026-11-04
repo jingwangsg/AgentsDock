@@ -1,5 +1,29 @@
 # Public development log
 
+## 2026-11-05 — Desktop: a Codex run that sends a message no longer repeats its earlier progress (app)
+
+- When a Codex run sent a message to another chat, the desktop split its activity
+  at that message: the work before it became a closed "Progress" row, and the work
+  after it a new row. A reasoning summary that Codex was still writing after the
+  message was matched only against the first row, missed it, and was shown as a new
+  row under the first row's key. The timeline list then repeated the first row: a
+  chat showed "Progress" and the same commentary six times while the run worked.
+  The live summary now goes to the row after the message.
+- When a reply arrived while such a summary was still being written, the part
+  between the two messages had no row yet, and the same duplicate appeared. The
+  summary now gets the row that part will have once it is saved.
+
+```text
+Change and expected user behavior: in a Codex chat whose run sends a cross-chat message and keeps working, the work before the message appears once, as one "Progress" row.
+Source commit / app build / server version: branch fix/progress-commentary-duplicates; desktop build from this tree (main build for comparison); server 1.0.7-beta.11 (unchanged).
+Test surface: the desktop app built from main and from the branch, each with an isolated profile on an isolated server with the real Codex provider; the reported chat's events replayed through the timeline projection.
+Actions exercised and observed outcomes: (1) A Codex chat was asked to send a message to a second chat over an @-mentioned route and then run eight commands, reasoning before each. Main: once summaries streamed after the message, the timeline showed two "Progress" rows above "Worked for 1m 10s". Branch: one "Progress" row through 8 summaries, then "Worked for 1m 15s". (2) The reported chat's events, with a live summary before each saved one: main's overlay produced a duplicate row key for each of the 11 summaries after the message; the branch produced none for all 14.
+Real boundaries exercised; any mocked/stubbed boundaries: desktop app ↔ server HTTP and event stream, the live reasoning stream, Codex, an AgentsDock provider action sending a cross-chat message. A reply arriving while a summary streams was exercised only in unit tests.
+Focused regression / typecheck / production build: tests for a summary streaming after a sent message and for one streaming when a reply arrives (both fail on main's overlay); typecheck; renderer lib and component suites; desktop production build.
+Remaining limitations or blocked acceptance: none known for this path. Mobile has no live reasoning overlay and was not affected.
+Availability: source only until a desktop build is installed; no server update needed.
+```
+
 ## 2026-11-04 — "Create new agent" keeps its server choice when the chat's own server answers slowly (hub)
 
 - The New agent dialog offers a Server choice (this server, the hub, the other
