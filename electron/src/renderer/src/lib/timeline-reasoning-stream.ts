@@ -1,4 +1,5 @@
 import type { Event, ReasoningSummaryStreamItem } from '@shared/types'
+import { crossChatSemanticKey } from '@shared/semantic-timeline'
 import { isPublicCommentary, type ProgressItem, type RenderTimelineItem, type TimelineItem } from './timeline'
 
 /** Presentation identity shared by the live snapshot and its durable completion. */
@@ -51,8 +52,12 @@ export function overlayReasoningStream(
     const previousAnswer = owner.assistant.findLast(event => !isPublicCommentary(event) && event.seq < seq)
     const suffix = previousAnswer ? `:after:${previousAnswer.id}` : ''
     const prefix = `${owner.key}:activity${suffix}`
+    // splitProgressAtMessages gives the activity after a cross-chat message its
+    // own row, keyed `${prefix}:after:message:<message key>`. Matching only
+    // `prefix` added a second row with the first row's key, and the timeline
+    // repeated rows (2026-11-05).
     const index = result.findIndex(row => row.kind === 'progress'
-      && row.key === prefix
+      && (row.key === prefix || row.key.startsWith(`${prefix}:after:message:`))
       && (row.afterSeq == null || seq > row.afterSeq)
       && (row.throughSeq == null || seq <= row.throughSeq))
     if (result === rows) result = [...rows]
@@ -63,11 +68,23 @@ export function overlayReasoningStream(
         events: [...row.events, event], sourceEvents: [...(row.sourceEvents ?? row.events), event]
       }
     } else {
+      // No row covers seq: the activity has no visible row yet, or
+      // splitProgressAtMessages dropped the empty part between two messages
+      // (a reply that arrived while this summary streams). In the second case
+      // take that part's saved key, range and flags.
+      const first = result.find((row): row is ProgressItem => row.kind === 'progress' && row.key === prefix)
+      const messages = first ? result.flatMap(row => row.kind === 'system' ? row.mailboxMessages ?? [row] : [])
+        .filter(message => message.seq >= first.seq && crossChatSemanticKey(message.event) !== null)
+        .sort((left, right) => left.seq - right.seq) : []
+      const cutBefore = messages.findLast(message => message.seq < seq)
+      const cutAfter = messages.find(message => message.seq > seq)
+      const split = cutBefore ? `:after:message:${cutBefore.key}` : ''
       const row: ProgressItem = {
-        kind: 'progress', id: `${owner.id}:activity${suffix}`, key: prefix, seq,
-        events: [event], sourceEvents: [event], active: true, hasFinalResponse: false,
+        kind: 'progress', id: `${owner.id}:activity${suffix}${split}`, key: `${prefix}${split}`, seq,
+        events: [event], sourceEvents: [event], active: !cutAfter, hasFinalResponse: false,
+        ...(cutAfter ? { continues: true } : {}), toolStartSequences: first?.toolStartSequences,
         startedAt: previousAnswer ? item.ts : owner.startedAt ?? item.ts,
-        afterSeq: previousAnswer?.seq ?? owner.afterSeq, throughSeq: owner.throughSeq
+        afterSeq: cutBefore?.seq ?? previousAnswer?.seq ?? owner.afterSeq, throughSeq: cutAfter?.seq ?? owner.throughSeq
       }
       const before = result.findIndex(row => row.seq > seq)
       result.splice(before < 0 ? result.length : before, 0, row)
