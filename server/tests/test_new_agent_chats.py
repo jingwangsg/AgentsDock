@@ -1,11 +1,15 @@
 """Chats the composer's "Create new agent" makes on another server: the hub creates them, the composer pairs them under the chip's label."""
 from __future__ import annotations
 
+import asyncio
+import socket
 import tempfile
 import unittest
 from contextlib import ExitStack, contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+
+import httpx
 
 import agent_server
 import cross_server_mail
@@ -108,6 +112,35 @@ class HubCreateTests(unittest.IsolatedAsyncioTestCase):
             snapshot = await agent_server.list_cross_server_chats()
         self.assertEqual([(server["server_identity"], server["default_cwd"]) for server in snapshot["servers"]],
                          [("srv-hub", home), ("srv-remote", "/home/gpu")])
+
+    async def test_chat_list_keeps_a_remote_whose_search_timed_out(self):
+        # 2026-11-04: the client's own server stalled past the search timeout, the hub left it out, and
+        # the composer then offered no server choice for "Create new agent". A refused connection is still left out.
+        async def answer(reader, writer):
+            await reader.readuntil(b"\r\n\r\n")
+            body = b'{"chats": [{"id": "sess_1"}]}'
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s" % (len(body), body))
+            await writer.drain()
+            writer.close()
+
+        fine = await asyncio.start_server(answer, "127.0.0.1", 0)
+        stalled = socket.create_server(("127.0.0.1", 0))  # listens, never accepts: no answer
+        refused = socket.socket()
+        refused.bind(("127.0.0.1", 0))
+        ports = [fine.sockets[0].getsockname()[1], stalled.getsockname()[1], refused.getsockname()[1]]
+        refused.close()  # nothing listens there: the connection is refused
+        try:
+            async with httpx.AsyncClient(trust_env=False) as http:
+                ends = {identity: cross_server_mail.RemoteEnd(http, SimpleNamespace(name=identity, hidden=False, local_port=port, token="t"), identity)
+                        for identity, port in zip(("srv-fine", "srv-timed-out", "srv-refused"), ports)}
+                with patch.object(cross_server_mail, "SEARCH_TIMEOUT", 0.3), \
+                        patch.object(agent_server.CROSS_SERVER_RELAY, "ends", return_value=ends):
+                    snapshot = await agent_server.list_cross_server_chats()
+        finally:
+            fine.close()
+            stalled.close()
+        self.assertEqual([(server["server_identity"], server["chats"]) for server in snapshot["servers"]],
+                         [("srv-fine", [{"id": "sess_1"}]), ("srv-timed-out", [])])
 
     async def test_local_end_creates_a_named_chat_in_process(self):
         with fresh_store() as store:
