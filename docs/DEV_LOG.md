@@ -1,5 +1,30 @@
 # Public development log
 
+## 2026-11-04 — "Create new agent" keeps its server choice when the chat's own server answers slowly (hub)
+
+- The New agent dialog offers a Server choice (this server, the hub, the other
+  remotes) once the hub lists the servers that can pair. The hub asks every
+  remote for its chats and waits 4 s for each, and a remote that answered later
+  was left out. When that remote was the one the chat runs on (a cluster
+  remote stalled 4.8 s), the desktop and mobile composers took the missing
+  server as unable to pair: the dialog showed no Server field, and the @ picker
+  no other server's chats.
+- A remote that took the request but did not answer within 4 s is now listed
+  without its chats. A remote whose tunnel is down, or that refuses the
+  connection, is still left out. A remote that hangs while its ssh connection
+  stays up is listed too; choosing it for a new agent fails after 15 s.
+
+```text
+Change and expected user behavior: in a chat on a remote that is slow to list its chats, "Create new agent" still shows the Server choice, and the @ picker lists other servers' chats.
+Source commit / app build / server version: branch fix/cross-server-list-keeps-slow-servers; no client change (desktop 141 code); server 1.0.7-beta.11.
+Test surface: an isolated hub and remote on this Mac, the remote's chat-list requests delayed 6 s by a TCP forwarder standing in for its ssh tunnel; the desktop app built from this tree, with an isolated profile on that remote through the hub.
+Actions exercised and observed outcomes: (1) GET /api/cross-server/chats during the delay: main answered after 4.0 s without the remote; the branch answered after 4.0 s with the remote listed without chats. (2) Desktop: opened the remote's chat, typed "@", chose "Create new agent" and waited 7 s. Main: Agent, Folder, Working directory, Model, Reasoning, with no Server field. Branch: Agent, Server ("This server · slowbox", "Hub"), Folder, Working directory, Model, Reasoning. (3) In the reported case the hub log shows the chat's server answering none of three chat searches within 4 s while the dialog was open, and nothing returning through its tunnel for 4.8 s.
+Real boundaries exercised; any mocked/stubbed boundaries: desktop composer, the main process's hub request, the hub endpoint and relay, and the remote server's chat search over TCP; the ssh tunnel was a local forwarder (fake ssh). Mobile was not exercised; it reads the same hub list with the same rule.
+Focused regression / typecheck / production build: a test with a real HTTP client against a server that answers, one that never answers and a refused port (fails on main); the cross-server and new-agent test modules; all 8 server shards; desktop production build (client unchanged).
+Remaining limitations or blocked acceptance: a remote that hangs with its ssh connection up stays listed until the tunnel drops; creating a chat there fails after 15 s, and the chat may still appear if the remote recovers. The @ picker lists no chats for a remote that answered too slowly.
+Availability: source only; needs a hub restart (remote servers unchanged).
+```
+
 ## 2026-11-03 — Claude chats: a message Claude has started on keeps its run, however long Claude thinks first (server)
 
 - A message sent to a Claude chat while Claude was finishing its answer, or

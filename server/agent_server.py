@@ -73,6 +73,7 @@ from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Reques
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.routing import APIRoute
+import httpx
 from markdown_it import MarkdownIt
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from starlette.routing import Match
@@ -102685,6 +102686,10 @@ async def list_cross_server_chats() -> dict[str, Any]:
     """Chats on the hub and on every reachable remote that supports cross-server mail."""
     ends = list(CROSS_SERVER_RELAY.ends().values())
     results = await asyncio.gather(*(end.chats() for end in ends), return_exceptions=True)
+    # A remote that took the chat search but did not answer in time (a 4.8 s stall on 2026-11-04)
+    # stays listed, without chats: a client whose own server is missing from the list offers no
+    # other server at all. It may be frozen, not just busy; a down tunnel refuses the request.
+    results = [[] if isinstance(chats, httpx.ReadTimeout) else chats for chats in results]
     return {
         "servers": [
             {"server_identity": end.identity, "name": end.name, "chats": chats,
@@ -102692,7 +102697,7 @@ async def list_cross_server_chats() -> dict[str, Any]:
              "hidden": isinstance(end, cross_server_mail.RemoteEnd) and end.server.hidden,
              # The placeholder of "Create new agent"'s empty Working directory field.
              "default_cwd": end.default_cwd}
-            # An unreachable server is left out: only live servers' chats can be picked.
+            # Any other failure leaves the server out: only live servers' chats can be picked.
             for end, chats in zip(ends, results) if not isinstance(chats, BaseException)
         ],
         # Always true here: a hub older than POST /api/cross-server/chats omits it, and
