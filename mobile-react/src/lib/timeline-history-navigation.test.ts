@@ -98,5 +98,10 @@ assert.equal(
   SEARCH_TIMELINE_MAINTAIN_VISIBLE_POSITION,
   'detached search windows must not let bottom anchoring displace the selected result',
 )
+assert.equal(
+  'disabled' in SEARCH_TIMELINE_MAINTAIN_VISIBLE_POSITION,
+  false,
+  "search windows must keep maintainVisibleContentPosition on; toggling it re-flattens the list's views and crashed Android",
+)
 
 console.log('timeline history navigation tests passed')

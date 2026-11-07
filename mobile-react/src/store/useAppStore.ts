@@ -2405,7 +2405,23 @@ export const useAppStore = create<AppState>((set, get) => ({
       )
       const files = mergeFiles([], filesFromEvents(events))
       const projected = projectPresentableHistory(events, files)
-      if (!projected || !timelineTargetIsRepresented(projected, { eventId: result.event_id, seq: result.seq })) {
+      // Search returns the newest copy of a run's final answer, so a hit can be
+      // its turn_finished. The timeline drops a turn_finished whose result_text
+      // repeats an assistant_text (appendAssistant), so open that assistant_text.
+      // A turn_finished matched by its message (an import's end) keeps no row.
+      let target = { eventId: result.event_id, seq: result.seq }
+      const hit = events.find(event => event.id === result.event_id)
+      if (projected && hit?.type === 'turn_finished' && hit.result_text?.trim() && !timelineTargetIsRepresented(projected, target)) {
+        const repeated = hit.result_text.replace(/\s+/g, ' ').trim()
+        const answer = [...events].reverse().find(event =>
+          event.type === 'assistant_text'
+          && event.run_id === hit.run_id
+          && event.seq < hit.seq
+          && event.text?.replace(/\s+/g, ' ').trim() === repeated,
+        )
+        if (answer) target = { eventId: answer.id, seq: answer.seq }
+      }
+      if (!projected || !timelineTargetIsRepresented(projected, target)) {
         set({ error: 'The matching message is no longer available in this chat.' })
         return false
       }
@@ -2445,8 +2461,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           beforeCursor: nextBefore,
           snapshot,
           detached: true,
-          anchorEventId: result.event_id,
-          anchorSeq: result.seq,
+          anchorEventId: target.eventId,
+          anchorSeq: target.seq,
           anchorRevision: seekRevision,
         },
       })

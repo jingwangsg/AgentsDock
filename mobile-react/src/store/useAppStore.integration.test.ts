@@ -2051,7 +2051,46 @@ try {
       historyBeforeCanceledSeek,
       'canceling a pending seek must preserve the detached history already on screen',
     )
+    // 2026-11-07: search returned the run's turn_finished, whose result_text repeats the run's assistant_text.
+    const answeredEvent = (id: string, seq: number, type: string, fields: Partial<Event>): Event => ({
+      id, session_id: 'shared-session', seq, type, ts: timestamp, run_id: 'answered-run', ...fields,
+    })
+    activeClient.sessionPage = async (_sessionId, options) => ({
+      session: liveSession,
+      events: options?.after != null
+        ? [answeredEvent('answered-finish', 610, 'turn_finished', { result_text: 'One GB300 case is faster.' })]
+        : [answeredEvent('answered-prompt', 600, 'turn_started', { prompt: 'Is JAX faster?' }),
+          answeredEvent('answered-text', 608, 'assistant_text', { text: 'One GB300 case is faster.' })],
+      queued_turns: [],
+      has_more: false,
+      before: 600,
+      next_before: null,
+      semantic_paging: true,
+      total: 920,
+      latest_seq: 920,
+    })
+    assert.equal(await useAppStore.getState().seekTimelineResult({
+      session_id: 'shared-session',
+      event_id: 'answered-finish',
+      seq: 610,
+      role: 'assistant',
+      snippet: 'GB300 case',
+    }, generation), true, 'a hit on the turn_finished copy of an answer opens that answer')
+    assert.equal(useAppStore.getState().historyWindow?.anchorEventId, 'answered-text')
+    assert.equal(useAppStore.getState().historyWindow?.anchorSeq, 608)
     useAppStore.getState().exitHistory()
+    const answeredPage = activeClient.sessionPage
+    activeClient.sessionPage = async (sessionId, options) => options?.after != null
+      ? { ...await answeredPage(sessionId, options), events: [answeredEvent('import-finish', 612, 'turn_finished', { result_text: '', message: 'Imported history replay finished.' })] }
+      : answeredPage(sessionId, options)
+    assert.equal(await useAppStore.getState().seekTimelineResult({
+      session_id: 'shared-session',
+      event_id: 'import-finish',
+      seq: 612,
+      role: 'assistant',
+      snippet: 'replay finished',
+    }, generation), false, 'a turn_finished matched by its message must not open an unrelated answer')
+    useAppStore.setState({ error: null })
     useAppStore.setState({ health: healthBeforeTimelineSeek })
 
     const canceledHistoryGate = deferred()

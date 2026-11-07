@@ -15,8 +15,13 @@ export const LIVE_TIMELINE_MAINTAIN_VISIBLE_POSITION = {
   autoscrollToBottomThreshold: -1,
 } as const
 
+// load-bearing: differ from the live config only in startRenderingFromBottom.
+// timelineMaintainVisiblePosition switches between the two; a `disabled` here
+// toggles maintainVisibleContentPosition, which flips the ScrollView's
+// collapsableChildren and re-flattens the list's views. Android crashed in
+// Fabric's mount code ("Unable to find viewState for tag", 2026-11-07).
 export const SEARCH_TIMELINE_MAINTAIN_VISIBLE_POSITION = {
-  disabled: true,
+  startRenderingFromBottom: false,
 } as const
 
 export function timelineMaintainVisiblePosition(searchTargetAlignmentLocked: boolean) {
