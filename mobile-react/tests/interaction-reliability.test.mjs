@@ -260,7 +260,7 @@ test('chat search validates locally and dismisses its keyboard reliably', () => 
   assert.match(store, /const seekIntent = \+\+timelineSeekIntentEpoch[\s\S]*?seekIntent !== timelineSeekIntentEpoch/)
   assert.match(store, /cancelTimelineSeek\(\) \{[\s\S]*?timelineSeekIntentEpoch \+= 1[\s\S]*?historyPagingEpoch \+= 1/)
   assert.match(store, /Promise\.all\(\[[\s\S]*?timelineSeekPage\(scope, result\.session_id,[\s\S]*?before: result\.seq[\s\S]*?after: Math\.max\(0, result\.seq - 1\)/)
-  assert.match(store, /detached: true,[\s\S]*?anchorEventId: result\.event_id,[\s\S]*?anchorSeq: result\.seq/)
+  assert.match(store, /detached: true,[\s\S]*?anchorEventId: target\.eventId,[\s\S]*?anchorSeq: target\.seq/)
   assert.match(timeline, /maintainVisibleContentPosition=\{timelineMaintainVisiblePosition\(Boolean\(activeHistoryWindow\?\.detached && searchTargetAlignmentLocked\)\)\}/)
   assert.match(timeline, /initialScrollIndex=\{activeHistoryWindow\?\.detached && seekTargetIndex >= 0 \? seekTargetIndex : undefined\}/)
   assert.match(timeline, /for \(const delay of \[0, 140, 420\]\)/)
