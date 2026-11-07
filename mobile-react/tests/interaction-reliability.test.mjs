@@ -415,7 +415,7 @@ test('paged history stays continuous with the live bottom under one native ancho
   assert.match(timelineMemory, /export function mergeHistoryWithLiveSnapshot/)
   assert.match(timelineMemory, /events = mergeEvents\(history\.events, live\.events\)/)
   assert.match(timeline, /maintainVisibleContentPosition=\{timelineMaintainVisiblePosition\(Boolean\(activeHistoryWindow\?\.detached && searchTargetAlignmentLocked\)\)\}/)
-  assert.match(timelineHistoryNavigation, /SEARCH_TIMELINE_MAINTAIN_VISIBLE_POSITION = \{[\s\S]*?disabled: true/)
+  assert.match(timelineHistoryNavigation, /SEARCH_TIMELINE_MAINTAIN_VISIBLE_POSITION = \{[\s\S]*?startRenderingFromBottom: false/)
   assert.match(timelineHistoryNavigation, /LIVE_TIMELINE_MAINTAIN_VISIBLE_POSITION = \{[\s\S]*?startRenderingFromBottom: true/)
   assert.doesNotMatch(timeline, /PagingAnchor|pagingAnchor|getFirstVisibleIndex|getLayout|scrollToOffset/)
   assert.match(timeline, /const latestLiveSeq = liveSnapshot\?\.latestSeq/)

@@ -1,5 +1,32 @@
 # Public development log
 
+## 2026-11-07 — Android: a search result on a final answer opens that answer, and opening a result no longer closes the app (app)
+
+- A run's final answer is saved twice: as the answer the timeline shows, and
+  again in the run's end record. Search returns each chat's newest match, so a
+  word from a Codex final answer matched the end record, which the timeline has
+  no row for, and tapping the result showed "The matching message is no longer
+  available in this chat." The result now opens the answer. Claude chats were
+  not affected: their timeline shows the answer from the end record.
+- A result opens in a search window that switched the list's
+  maintainVisibleContentPosition off while it placed the result, and back on
+  0.9 s later or at the first drag. Each switch changes which of the list's
+  views React Native flattens, and on Android the app sometimes crashed in that
+  step ("AgentsDock keeps stopping"). The window now keeps the setting on and
+  stops only the bottom alignment while it places the result; the result lands
+  at the same position as before.
+
+```text
+Change and expected user behavior: tapping a search result that matched a final answer opens the chat at that answer; opening a search result does not close the app.
+Source commit / app build / server version: branch fix/mobile-search-final-answer; the branch's JavaScript bundle in a re-signed copy of Android 85, and Android 85 for comparison; server 1.0.7-beta.11 (unchanged).
+Test surface: Android emulator (agentsdock_fold) with an isolated server holding a Claude chat, a Codex chat and a nine-turn Codex chat, all made with the real providers.
+Actions exercised and observed outcomes: (1) Searched a word from the Codex chat's answer (the hit is the run's end record) and tapped the result: Android 85 showed the banner; the branch opened "Viewing search result" with the answer. (2) Opened a result in the Claude chat, which opens on both builds, 6 times per build (4 times after opening the Codex chat first, 2 from the Claude chat itself): Android 85 closed with "AgentsDock keeps stopping" 5 times (RetryableMountingLayerException); the branch did not close in any of its 9 openings in this round. (3) In the nine-turn chat, a result on turn 5's answer: the answer row had identical on-screen bounds with the old and the new window setting.
+Real boundaries exercised; any mocked/stubbed boundaries: the app's search, page and event requests to the server; Claude and Codex runs. Taps were sent with adb.
+Focused regression / typecheck / production build: a store integration test for a hit on a run's end record (fails on main); a unit test that the search window keeps maintainVisibleContentPosition on; typecheck; the CI mobile steps and every tests/*.test.mjs (81/81 on the branch and on main).
+Remaining limitations or blocked acceptance: a result that matched a run's end record by its message rather than an answer (for example the end of an imported history) still shows the banner. iOS was not exercised (same JavaScript; the crash was seen on Android). The crash mechanism is inferred from React Native's ScrollView source (collapsableChildren follows maintainVisibleContentPosition) and from the crash coming within 50 ms of the switch; which view was missing was not identified.
+Availability: Android 86 sideload build.
+```
+
 ## 2026-11-05 — Desktop: a Codex run that sends a message no longer repeats its earlier progress (app)
 
 - When a Codex run sent a message to another chat, the desktop split its activity
