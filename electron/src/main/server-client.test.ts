@@ -2732,21 +2732,19 @@ describe('AgentServerClient live stream', () => {
     expect(calls[0].headers.authorization).toBeUndefined()
   })
 
-  it('starts a remote attach through the hub admin route with the snake_case body', async () => {
-    const calls: Array<{ method: string; url: string; headers: IncomingMessage['headers']; body: string }> = []
+  it('asks the hub to restart itself through its admin route', async () => {
+    const calls: Array<{ method: string; url: string; headers: IncomingMessage['headers'] }> = []
     await withLocalHTTPServer(async (request, response) => {
-      const body = await incomingBody(request)
-      calls.push({ method: request.method ?? '', url: request.url ?? '', headers: request.headers, body })
+      calls.push({ method: request.method ?? '', url: request.url ?? '', headers: request.headers })
       response.statusCode = 202
       response.setHeader('Content-Type', 'application/json')
-      response.end(JSON.stringify({ job_id: 'job-1' }))
+      response.end(JSON.stringify({ restarting: true }))
     }, async baseURL => {
       const client = new AgentServerClient(baseURL, 'chat-secret')
-      await expect(client.startRemoteAttach({ sshHost: 'nv_gb300', installDir: '/mnt/lustre/.agentsdock-server' })).resolves.toEqual({ job_id: 'job-1' })
+      await expect(client.restartHub()).resolves.toEqual({ restarting: true })
     })
 
-    expect(calls.map(call => [call.method, call.url])).toEqual([['POST', '/api/admin/remote-servers/attach']])
-    expect(JSON.parse(calls[0].body)).toEqual({ ssh_host: 'nv_gb300', install_dir: '/mnt/lustre/.agentsdock-server' })
+    expect(calls.map(call => [call.method, call.url])).toEqual([['POST', '/api/admin/remote-servers/hub/restart']])
     expect(calls[0].headers['x-agentsdock-token']).toBe('chat-secret')
   })
 

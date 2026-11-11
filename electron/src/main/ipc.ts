@@ -1,10 +1,11 @@
-import { app, BrowserWindow, clipboard, ipcMain, shell, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
 import type { AppService } from './service'
 import { appLog } from './logger'
+import { t } from '../shared/i18n'
 import type { AppUpdateManager } from './updater'
 import { ServerSetupManager } from './server-setup'
 import { join } from 'node:path'
-import { localHubConfigDirs, localHubPairingUrl } from './local-hub'
+import { localHubConfigDirs } from './local-hub'
 import { acknowledgeWindowCloseFlush, closeWindowAfterRendererFlush } from './window-close'
 import type { LazyTeamHubService } from './team-hub-lazy-service'
 import { LOCAL_SESSION_IMPORT_HARD_LIST_LIMIT, parseBulkImportSessionItems } from '../shared/local-session-import'
@@ -249,9 +250,6 @@ export function registerIpc(
   handleWithEvent('remote-servers:deploy', (event, input) => service.deployRemoteServerViaHub(input, progress => {
     if (!event.sender.isDestroyed()) event.sender.send('server:setup-progress', progress)
   }))
-  handleWithEvent('remote-servers:attach', (event, input) => service.attachRemoteServerViaHub(input, progress => {
-    if (!event.sender.isDestroyed()) event.sender.send('server:setup-progress', progress)
-  }))
   // The add form's channel: the edit form shows a move's log the same way, and a move holds the hub's one
   // deploy slot, so no add runs beside it.
   handleWithEvent('remote-servers:move', (event, profileId, input) => service.moveHubRemote(profileId, input, progress => {
@@ -271,10 +269,38 @@ export function registerIpc(
   handle('servers:update-cli', (profileId, backend) => service.updateServerRuntimeCli(profileId, backend))
   handle('hub:adopt-local-token', token => service.retryLocalHubToken(typeof token === 'string' ? token : undefined))
   handle('hub:local-token-files', () => localHubConfigDirs().map(dir => join(dir, 'env')))
-  handle('hub:pairing-url', () => localHubPairingUrl())
+  handle('hub:pairing-url', () => service.hubPairingUrl())
   handle('hub:start-local-server', () => service.startLocalHub())
   handle('hub:restart-local-server', force => service.restartLocalHub(force === true))
   handle('hub:copy-token', () => service.copyHubToken())
+  // Mirror mode replaces every profile at once, so AgentsDock quits and starts again on the new set. The windows close
+  // first and save their drafts to the profiles they have; the change is saved after that, in will-quit. A window
+  // that cannot save its drafts cancels the quit (native:close-flush-complete): the change is dropped and the request
+  // fails. The request's promise otherwise never settles, since the app quits.
+  let modeChange: { apply: () => void; cancel: (error: Error) => void } | null = null
+  app.on('will-quit', () => {
+    const change = modeChange
+    if (!change) return
+    modeChange = null
+    try {
+      change.apply()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      appLog('hub', 'could not change mirror mode', { message })
+      dialog.showErrorBox(t('mirror.changeFailed'), message)
+    }
+    app.relaunch()
+  })
+  const quitToChangeMode = (apply: () => void) => new Promise<never>((_resolve, reject) => {
+    modeChange?.cancel(new Error(t('mirror.quitCancelled')))
+    modeChange = { apply, cancel: reject }
+    app.quit()
+  })
+  handle('hub:start-mirror', async input => {
+    const hub = await service.checkMirrorHub(input)
+    return quitToChangeMode(() => service.startMirror(hub))
+  })
+  handle('hub:stop-mirror', () => quitToChangeMode(() => service.stopMirror()))
 
   handle('sessions:list', () => service.listSessions())
   handle('sessions:create', input => service.createSession(input))
@@ -536,6 +562,10 @@ export function registerIpc(
   ipcMain.removeHandler('native:close-flush-complete')
   ipcMain.handle('native:close-flush-complete', (event, requestId, saved) => {
     requireTrustedSender(event, 'native:close-flush-complete')
+    if (saved === false && modeChange) {
+      modeChange.cancel(new Error(t('mirror.quitCancelled')))
+      modeChange = null
+    }
     return acknowledgeWindowCloseFlush(BrowserWindow.fromWebContents(event.sender), requestId, saved !== false)
   })
   return serverSetup

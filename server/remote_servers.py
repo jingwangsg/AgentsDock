@@ -88,8 +88,6 @@ UPLOAD_RETRIES = 8
 UPLOAD_RETRY_DELAY = 5.0
 
 DEFAULT_INSTALL_DIR = "~/.agentsdock-server"
-# install.sh's default AGENTS_SERVER_CONFIG_DIR: where a server installed with install.sh (a Mac's own server) keeps its env.
-INSTALL_SH_CONFIG_DIR = "~/.config/agents-server"
 SKY_CA_BUNDLE = Path.home() / ".sky" / "certs" / "requests-ca-bundle.pem"
 # An aws@ cluster's ssh entry opens an AWS SSM session, which needs AWS credentials: a temporary
 # STS session that the cluster itself mints (see aws_session_file); one credentials file per cluster.
@@ -207,8 +205,6 @@ class RemoteServer(BaseModel):
     local_port: int
     token: str
     created_at: str
-    # Registered by attach: another hub set this install up and updates it, so this hub never redeploys it.
-    attached: bool = False
     # Left out of the lists clients offer for choosing a server; Settings still lists it, and its tunnels,
     # chats and ssh alias stay as they are.
     hidden: bool = False
@@ -324,19 +320,6 @@ class RemoteDeployRequest(BaseModel):
         return value if value == 0 else validate_port(value)
 
 
-class RemoteAttachRequest(BaseModel):
-    """Register an install another hub deployed: nothing is uploaded and the server keeps its port and token."""
-
-    ssh_host: str
-    install_dir: str = DEFAULT_INSTALL_DIR
-    name: str | None = None
-    # Same one-time use as RemoteDeployRequest.password.
-    password: str | None = Field(default=None, repr=False)
-
-    _host = field_validator("ssh_host")(classmethod(lambda cls, value: validate_ssh_host(value)))
-    _dir = field_validator("install_dir")(classmethod(lambda cls, value: validate_remote_dir(value)))
-
-
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -345,7 +328,16 @@ def load_registry(path: Path) -> list[RemoteServer]:
     if not path.exists():
         return []
     raw = json.loads(path.read_text("utf-8"))
-    return [RemoteServer.model_validate(item) for item in raw.get("servers", [])]
+    servers = []
+    for item in raw.get("servers", []):
+        # load-bearing: the removed attach registered another hub's or Mac's install. Loaded as this hub's
+        # own, Redeploy and Update all would overwrite it, so it is not loaded, and the next save removes it from
+        # the file (2026-11-11).
+        if item.get("attached"):
+            logger.warning("dropping remote %s (%s): it was attached from another hub's install", item.get("name"), item.get("ssh_host"))
+            continue
+        servers.append(RemoteServer.model_validate(item))
+    return servers
 
 
 def load_forward_registry(path: Path) -> list[SSHForward]:
@@ -1410,7 +1402,7 @@ class DeployJob:
 
 @dataclass(kw_only=True)
 class ChildDeployJob(DeployJob):
-    """One remote's job inside a parent job (update-all, or attaching a hub's remotes): its progress also lands in the parent's log, labelled."""
+    """One remote's job inside a parent job (update-all): its progress also lands in the parent's log, labelled."""
 
     parent: DeployJob
     label: str
@@ -1576,7 +1568,6 @@ class RemoteServerManager:
         manage_tunnels: bool = True,
         revive: Callable[[RemoteServer], Awaitable[None]] = start_remote_server,
         ssh_aliases: bool = False,
-        own_identity: Callable[[], str] = lambda: "",
     ) -> None:
         self.path = state_dir / "remote-servers.json"
         self.forward_path = state_dir / "ssh-forwards.json"
@@ -1586,8 +1577,6 @@ class RemoteServerManager:
         # The ssh host a deploy is bootstrapping: it stops and restarts that server itself. The host alone, since an
         # entry update() moved still names the default directory until the deploy finishes.
         self._bootstrapping: str | None = None
-        # This hub's own server identity: a hub it attaches may list this hub among its remotes.
-        self.own_identity = own_identity
         # Keep an ssh alias per oci@, aws@ or osmo@ remote in SSH_ALIAS_DIR (see _keep_ssh_alias).
         self.ssh_aliases = ssh_aliases
         self.servers: dict[str, RemoteServer] = {}
@@ -1892,8 +1881,8 @@ class RemoteServerManager:
 
     # -- deploy ---------------------------------------------------------------
 
-    def start_deploy(self, request: RemoteDeployRequest | RemoteAttachRequest | None, *, redeploy_id: str | None = None) -> DeployJob:
-        if any(job.task is not None and not job.task.done() for job in self.jobs.values()):
+    def start_deploy(self, request: RemoteDeployRequest | None, *, redeploy_id: str | None = None) -> DeployJob:
+        if self.job_running():
             raise HTTPException(status_code=409, detail="Another remote deployment is already running.")
         if redeploy_id is not None and redeploy_id not in self.servers:
             raise HTTPException(status_code=404, detail="Unknown remote server.")
@@ -1919,6 +1908,9 @@ class RemoteServerManager:
     def job(self, job_id: str) -> DeployJob | None:
         return self.jobs.get(job_id)
 
+    def job_running(self) -> bool:
+        return any(job.task is not None and not job.task.done() for job in self.jobs.values())
+
     # -- update all -----------------------------------------------------------
 
     async def servers_with_running_chats(self, hub_running_count: int) -> list[dict[str, Any]]:
@@ -1927,7 +1919,7 @@ class RemoteServerManager:
         The remotes are probed at once: a frozen remote holds its probe for HEALTH_REQUEST_TIMEOUT, and
         the client's request has its own 30 s limit."""
         running: list[dict[str, Any]] = [{"id": None, "running": hub_running_count}] if hub_running_count else []
-        redeployed = [server for server in self.servers.values() if not server.attached]
+        redeployed = list(self.servers.values())
         for server, health in zip(redeployed, await asyncio.gather(*(self.probe_health(server) for server in redeployed))):
             count = len(health.get("active") or []) if health is not None else None
             if count != 0:
@@ -1962,7 +1954,7 @@ class RemoteServerManager:
                 detail = str((response.json() or {}).get("detail") or "")
             raise RuntimeError(detail or f"HTTP {response.status_code}")
         result = response.json()
-        # load-bearing: .get - an attached or not-yet-redeployed remote runs a server that sends no "action".
+        # load-bearing: .get - a not-yet-redeployed remote runs a server that sends no "action".
         return str((result.get("diagnostic") or {}).get("version") or ""), result.get("action") == "install"
 
     async def _update_all(self, job: DeployJob, hub_update_cli: Callable[[str], Awaitable[tuple[str, bool]]],
@@ -1989,19 +1981,16 @@ class RemoteServerManager:
 
         try:
             for server in list(self.servers.values()):
-                if server.attached:
-                    job.progress("redeploy", f"{server.name}: attached from another hub, not redeployed.")
-                else:
-                    child = ChildDeployJob(job_id=f"{job.job_id}:{server.id}", parent=job, label=server.name)
-                    await self._deploy(child, None, server.id)
-                    # _deploy swallows its own cancellation; a cancelled update-all must not go on to the next server.
-                    task = asyncio.current_task()
-                    if task is not None and task.cancelling():
-                        raise asyncio.CancelledError
-                    if child.error:
-                        failures.append(f"{server.name}: {child.error}")
-                    # The entry the deploy saved: it may carry a new token.
-                    server = self.servers.get(server.id, server)
+                child = ChildDeployJob(job_id=f"{job.job_id}:{server.id}", parent=job, label=server.name)
+                await self._deploy(child, None, server.id)
+                # _deploy swallows its own cancellation; a cancelled update-all must not go on to the next server.
+                task = asyncio.current_task()
+                if task is not None and task.cancelling():
+                    raise asyncio.CancelledError
+                if child.error:
+                    failures.append(f"{server.name}: {child.error}")
+                # The entry the deploy saved: it may carry a new token.
+                server = self.servers.get(server.id, server)
                 await update_clis(server.name, lambda backend, server=server: self.update_cli(server, backend))
             await update_clis("hub", hub_update_cli)
             job.progress("restart", "Restarting the hub…")
@@ -2030,11 +2019,10 @@ class RemoteServerManager:
         job.task.cancel()
         return True
 
-    async def _deploy(self, job: DeployJob, request: RemoteDeployRequest | RemoteAttachRequest | None, redeploy_id: str | None) -> None:
+    async def _deploy(self, job: DeployJob, request: RemoteDeployRequest | None, redeploy_id: str | None) -> None:
         ssh_host = ""  # the except reads it; the lookups below can raise first, and "" names no Sky host
         try:
             existing = self.servers[redeploy_id] if redeploy_id else None
-            attach = isinstance(request, RemoteAttachRequest)
             if existing is not None:
                 # Not the entry's port: until a move's deploy finishes it is the previous install's (after a finished
                 # deploy the two are equal). The bootstrap stops whatever serves the port it is given and writes it into
@@ -2047,7 +2035,7 @@ class RemoteServerManager:
             else:
                 assert request is not None
                 ssh_host, install_dir = request.ssh_host, request.install_dir
-                requested_port = request.port if isinstance(request, RemoteDeployRequest) else 0
+                requested_port = request.port
 
             if request is not None and request.password and ssh_host.startswith(("oci@", "aws@", "osmo@")):
                 raise RuntimeError("oci@, aws@ and osmo@ targets are reached through the cluster CLI; leave the password empty.")
@@ -2066,7 +2054,7 @@ class RemoteServerManager:
             # (install_dir when there is no other). Without AGENTSDOCK_OSMO_HOME that would be the shared
             # ~/.agentsdock-server, which names no target and may hold another workflow's install.
             earlier_dir = (default_install_dir(ssh_host, by_pool=False)
-                           if from_default and not attach and cluster_home(ssh_host, by_pool=False) else install_dir)
+                           if from_default and cluster_home(ssh_host, by_pool=False) else install_dir)
             if existing is not None and any(other.id != existing.id and other.ssh_host == ssh_host and other.install_dir == earlier_dir
                                             for other in self.servers.values()):
                 # Another entry owns that install: a moved entry taking it too would list one server twice.
@@ -2074,10 +2062,9 @@ class RemoteServerManager:
             if request is not None and request.password:
                 job.progress("connect", f"Installing this hub's SSH key on {ssh_host} with the password…")
                 await self._install_key(job, route, request.password)
-            # An attach that keeps the default directory also finds a machine's own install.sh server. A deploy
-            # into a pool home also finds the target's earlier install, which holds its chats; as the second
-            # directory, the probe takes it only when the pool home has no install.
-            probe_dirs = [install_dir, INSTALL_SH_CONFIG_DIR] if attach and request.install_dir == DEFAULT_INSTALL_DIR else [install_dir]
+            # A deploy into a pool home also finds the target's earlier install, which holds its chats; as the
+            # second directory, the probe takes it only when the pool home has no install.
+            probe_dirs = [install_dir]
             if earlier_dir != install_dir:
                 probe_dirs.append(earlier_dir)
             probe_lines = await self._run_ssh(job, route, [*remote_shell_args(route.destination), *probe_dirs], stdin=PROBE_SCRIPT.read_bytes(), idle_timeout=60)
@@ -2089,7 +2076,7 @@ class RemoteServerManager:
                 install_dir, home = probe["install_dir"], cluster_home(ssh_host, by_pool=False)
                 requested_port = 0
                 job.progress("connect", f"Found an existing install at {install_dir}; deploying there to keep its chats.")
-            if from_default and existing is None and not attach:
+            if from_default and existing is None:
                 # start_deploy looked for this install before the pool was known: a registered one is updated.
                 existing = next((server for server in self.servers.values()
                                  if server.ssh_host == ssh_host and server.install_dir == install_dir), None)
@@ -2100,45 +2087,31 @@ class RemoteServerManager:
             # then receive the CLIs and logins, and the next container drops them.
             if home and install_dir.rpartition("/")[0] == home:
                 probe["home"] = home
-            if attach and not (probe.get("existing_port") and probe.get("existing_token")):
-                raise RuntimeError(f"No AgentsServer install was found at {install_dir} on {ssh_host}. Deploy a new server instead.")
-            if attach and existing is None:
-                # Attaching an install registered here already (a hub attached again to pick up the
-                # remotes it added since) refreshes that entry instead of listing the server twice.
-                existing = next((server for server in self.servers.values()
-                                 if server.ssh_host == ssh_host and server.install_dir == probe["install_dir"]), None)
             remote_port = requested_port or probe.get("existing_port") or probe["free_port"]
             job.progress("connect", f"Host: {probe.get('os')} {probe.get('arch')}, uid {probe.get('uid')}, home {probe['home']}; remote port {remote_port}.")
 
-            if attach:
-                # An attach reads the install's port and token and changes nothing on the host: whoever
-                # installed it (another hub, or install.sh on that machine) keeps its updates, its Claude
-                # token and its restarts. The tunnel's revive runs <install_dir>/start.sh, which only a
-                # hub-deployed install has; launchd restarts an install.sh server.
-                result = {"remote_port": probe["existing_port"], "install_dir": probe["install_dir"], "access_token": probe["existing_token"]}
-            else:
-                if not probe.get("tmux"):
-                    job.progress("connect", "tmux is not installed on the host; setup will try to install it.")
-                job.progress("download", f"Uploading AgentsServer source to {ssh_host}…")
-                tarball = await asyncio.to_thread(build_source_tarball, self.source_dir)
-                await self._upload(job, route, install_dir, tarball)
-                job.progress("install", f"Installing AgentsServer on {ssh_host}…")
-                args = [*remote_shell_args(route.destination), install_dir, str(remote_port), probe["home"]]
-                if existing is not None:
-                    args.append("restart")
-                # The hub's own long-lived Claude token (`claude setup-token`) rides at the head of the
-                # script on stdin: never in argv, ps output or the job log.
-                token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
-                prelude = f"AGENTSDOCK_CLAUDE_TOKEN={shlex.quote(token)}\n".encode() if token else b""
-                self._bootstrapping = ssh_host
-                try:
-                    result_lines = await self._run_ssh(
-                        job, route, args, stdin=prelude + BOOTSTRAP_SCRIPT.read_bytes(), idle_timeout=180,
-                        on_line=lambda line: job.progress("install", setup_log_message(line) or "") if setup_log_message(line) else None,
-                    )
-                finally:
-                    self._bootstrapping = None
-                result = parse_setup_result(result_lines)
+            if not probe.get("tmux"):
+                job.progress("connect", "tmux is not installed on the host; setup will try to install it.")
+            job.progress("download", f"Uploading AgentsServer source to {ssh_host}…")
+            tarball = await asyncio.to_thread(build_source_tarball, self.source_dir)
+            await self._upload(job, route, install_dir, tarball)
+            job.progress("install", f"Installing AgentsServer on {ssh_host}…")
+            args = [*remote_shell_args(route.destination), install_dir, str(remote_port), probe["home"]]
+            if existing is not None:
+                args.append("restart")
+            # The hub's own long-lived Claude token (`claude setup-token`) rides at the head of the
+            # script on stdin: never in argv, ps output or the job log.
+            token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
+            prelude = f"AGENTSDOCK_CLAUDE_TOKEN={shlex.quote(token)}\n".encode() if token else b""
+            self._bootstrapping = ssh_host
+            try:
+                result_lines = await self._run_ssh(
+                    job, route, args, stdin=prelude + BOOTSTRAP_SCRIPT.read_bytes(), idle_timeout=180,
+                    on_line=lambda line: job.progress("install", setup_log_message(line) or "") if setup_log_message(line) else None,
+                )
+            finally:
+                self._bootstrapping = None
+            result = parse_setup_result(result_lines)
 
             job.progress("service", "Opening the SSH tunnel…")
             if existing is not None:
@@ -2146,10 +2119,8 @@ class RemoteServerManager:
                 server = self.servers.get(existing.id)
                 if server is None:
                     raise RuntimeError("The remote server was removed during the deployment.")
-                # A deploy over an attached entry (a move) installs this hub's own server there; an attach keeps the entry's owner.
-                if (server.attached and not attach) or server.remote_port != result["remote_port"] or server.install_dir != result["install_dir"] or server.token != result["access_token"]:
-                    server = server.model_copy(update={"remote_port": result["remote_port"], "install_dir": result["install_dir"], "token": result["access_token"],
-                                                       "attached": attach and server.attached})
+                if server.remote_port != result["remote_port"] or server.install_dir != result["install_dir"] or server.token != result["access_token"]:
+                    server = server.model_copy(update={"remote_port": result["remote_port"], "install_dir": result["install_dir"], "token": result["access_token"]})
                     self.servers[server.id] = server
                     self._save()
                     self._ensure_tunnel(server)
@@ -2163,7 +2134,6 @@ class RemoteServerManager:
                     local_port=find_free_local_port(self._reserved_ports()),
                     token=result["access_token"],
                     created_at=now_iso(),
-                    attached=attach,
                 )
                 self.servers[server.id] = server
                 self._save()
@@ -2172,11 +2142,7 @@ class RemoteServerManager:
             job.progress("health", "Waiting for the server behind the tunnel…")
             health = await self._wait_health(server)
             job.server = server
-            failures = await self._attach_hub_remotes(job, server) if attach and not isinstance(job, ChildDeployJob) else []
             job.progress("complete", f"AgentsServer {health.get('version') or ''} is reachable through the hub.".replace("  ", " "))
-            if failures:
-                # After the "complete" line, so a failure is not the step shown as done.
-                job.progress("connect", f"Not attached: {'; '.join(failures)}")
         except asyncio.CancelledError:
             job.error = "Deployment cancelled."
             job.progress(job.phase, job.error)
@@ -2192,80 +2158,6 @@ class RemoteServerManager:
                 with suppress(ProcessLookupError):
                     job.proc.kill()
             job.proc = None
-
-    async def _attach_hub_remotes(self, job: DeployJob, hub: RemoteServer) -> list[str]:
-        """Attach every remote the attached hub lists, so this hub reaches each one directly; returns the failures.
-
-        Skipped: a remote whose server identity is registered here already (this hub's own server
-        included), or whose host and directory are. Attaching the hub again picks up remotes it added since.
-        """
-        headers = {"X-AgentsDock-Token": hub.token}
-        try:
-            response = await self.http.get(f"http://127.0.0.1:{hub.local_port}{ADMIN_PATH}", headers=headers, timeout=HEALTH_REQUEST_TIMEOUT)
-            response.raise_for_status()
-            hub_remotes = response.json()["servers"]
-        except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
-            return [f"the servers {hub.name} manages could not be read: {exc or exc.__class__.__name__}"]
-        if not hub_remotes:
-            return []
-
-        # Each remote's identity as the other hub reaches it: a remote known here needs no ssh, and the
-        # host name, resolved by this Mac's own ssh config, must reach the same server.
-        async def identity_through_hub(remote: dict[str, Any]) -> str | None:
-            with suppress(httpx.HTTPError, ValueError, AttributeError):
-                response = await self.http.get(f"http://127.0.0.1:{hub.local_port}{PROXY_PREFIX}/{remote['id']}/api/health",
-                                               headers=headers, timeout=HEALTH_REQUEST_TIMEOUT)
-                if response.status_code == 200:
-                    return response.json().get("server_identity")
-            return None
-
-        registered, expected = await asyncio.gather(
-            asyncio.gather(*(self.probe_health(server) for server in self.servers.values())),
-            asyncio.gather(*(identity_through_hub(remote) for remote in hub_remotes)),
-        )
-        known_identities = {self.own_identity(), *((health or {}).get("server_identity") for health in registered)} - {None, ""}
-        job.progress("connect", f"{hub.name} is a hub; attaching the servers it manages…")
-        failures: list[str] = []
-        for remote, identity in zip(hub_remotes, expected):
-            name = str(remote.get("name") or remote.get("ssh_host"))
-            try:
-                if identity in known_identities or any(server.ssh_host == remote.get("ssh_host") and server.install_dir == remote.get("install_dir")
-                                                       for server in self.servers.values()):
-                    job.progress("connect", f"{name}: already registered on this hub.")
-                    continue
-                request = RemoteAttachRequest(ssh_host=remote.get("ssh_host"), install_dir=remote.get("install_dir"), name=name)
-                child = ChildDeployJob(job_id=f"{job.job_id}:{remote.get('id')}", parent=job, label=name)
-                registered_ids = set(self.servers)
-                await self._deploy(child, request, None)
-                # _deploy swallows its own cancellation; a cancelled attach must not go on to the next server.
-                task = asyncio.current_task()
-                if task is not None and task.cancelling():
-                    raise asyncio.CancelledError
-                if child.error or child.server is None:
-                    failures.append(f"{name}: {child.error}")
-                    continue
-                if child.server.id in registered_ids:
-                    # The probe found an install registered here under another spelling of its directory.
-                    job.progress("connect", f"{name}: already registered on this hub.")
-                    continue
-                # The identity is readable only through the new entry's tunnel, so these entries are attached first.
-                reached = ((await self.probe_health(child.server)) or {}).get("server_identity")
-                if reached is not None and reached in known_identities:
-                    await self.remove(child.server.id)
-                    job.progress("connect", f"{name}: already registered on this hub.")
-                    continue
-                if reached is not None and identity not in (None, reached):
-                    await self.remove(child.server.id)
-                    failures.append(f"{name}: {request.ssh_host} reaches another server from this hub")
-                    continue
-                known_identities |= {reached or identity} - {None}
-                if remote.get("hidden"):
-                    self.update(child.server.id, RemoteServerUpdate(hidden=True))
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 - one remote's failure must not fail the attach of the hub
-                failures.append(f"{name}: {getattr(exc, 'detail', None) or exc or exc.__class__.__name__}")
-        return failures
 
     async def _install_key(self, job: DeployJob, route: SSHRoute, password: str) -> None:
         """Append this hub's public key to the host's authorized_keys, authenticating once with the password.
@@ -2488,10 +2380,12 @@ def register_remote_server_routes(
         authorize_admin(request)
         return {"job_id": manager.start_deploy(body).job_id}
 
-    @app.post(f"{ADMIN_PATH}/attach", status_code=202)
-    async def remote_servers_attach(request: Request, body: RemoteAttachRequest) -> dict[str, Any]:
+    @app.post(f"{ADMIN_PATH}/attach")
+    async def remote_servers_attach(request: Request) -> None:
+        # Desktop 142 and Android 86 still offer Attach; desktop mirror mode replaced it (2026-11-11).
+        # Remove this route once the Android app drops that choice.
         authorize_admin(request)
-        return {"job_id": manager.start_deploy(body).job_id}
+        raise HTTPException(status_code=410, detail="Attaching an existing server was removed. Deploy the server from this hub instead.")
 
     @app.get(f"{ADMIN_PATH}/deploy/{{job_id}}")
     async def remote_servers_deploy_status(request: Request, job_id: str) -> dict[str, Any]:
@@ -2519,12 +2413,21 @@ def register_remote_server_routes(
         job = manager.start_update_all(hub_update_cli=hub_update_cli, hub_restart=hub_restart)
         return JSONResponse({"job_id": job.job_id}, status_code=202)
 
+    @app.post(f"{ADMIN_PATH}/hub/restart", status_code=202)
+    async def remote_servers_restart_hub(request: Request) -> dict[str, Any]:
+        """Restart this hub through launchd: a desktop mirroring it from another Mac cannot run launchctl here."""
+        authorize_admin(request)
+        # Two Macs can manage this hub: a restart would end a deploy the other one started.
+        if manager.job_running():
+            raise HTTPException(status_code=409, detail="A remote deployment is running; restart the hub after it finishes.")
+        error = await hub_restart()
+        if error:
+            raise HTTPException(status_code=409, detail=error)
+        return {"restarting": True}
+
     @app.post(f"{ADMIN_PATH}/{{remote_id}}/redeploy", status_code=202)
     async def remote_servers_redeploy(request: Request, remote_id: str) -> dict[str, Any]:
         authorize_admin(request)
-        server = manager.servers.get(remote_id)
-        if server is not None and server.attached:
-            raise HTTPException(status_code=409, detail="This server was attached from another hub's install; redeploy it from that hub.")
         return {"job_id": manager.start_deploy(None, redeploy_id=remote_id).job_id}
 
     @app.patch(f"{ADMIN_PATH}/{{remote_id}}")

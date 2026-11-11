@@ -193,7 +193,6 @@ const api: AgentsDockAPI = {
   // arrives on the same 'server:setup-progress' event as `setup.run`.
   remoteServers: {
     deploy: input => ipcRenderer.invoke('remote-servers:deploy', input),
-    attach: input => ipcRenderer.invoke('remote-servers:attach', input),
     cancel: () => ipcRenderer.invoke('remote-servers:cancel'),
     remove: profileId => ipcRenderer.invoke('remote-servers:remove', profileId),
     setHidden: (profileId, hidden) => ipcRenderer.invoke('remote-servers:set-hidden', profileId, hidden),
@@ -208,7 +207,9 @@ const api: AgentsDockAPI = {
     pairingUrl: () => ipcRenderer.invoke('hub:pairing-url'),
     startLocalServer: () => ipcRenderer.invoke('hub:start-local-server'),
     restartLocalServer: force => ipcRenderer.invoke('hub:restart-local-server', force),
-    copyToken: () => ipcRenderer.invoke('hub:copy-token')
+    copyToken: () => ipcRenderer.invoke('hub:copy-token'),
+    startMirror: input => ipcRenderer.invoke('hub:start-mirror', input),
+    stopMirror: () => ipcRenderer.invoke('hub:stop-mirror')
   },
   sessions: {
     list: () => ipcRenderer.invoke('sessions:list'),

@@ -514,8 +514,8 @@ class Relay:
         if sides != {(source.identity, item.get("source_session_id")),
                      (item.get("target_server_identity"), item.get("target_session_id"))}:
             # A removed pair fails its mail when its halves are uninstalled. Not
-            # failing here leaves the item to another hub that attached this
-            # remote and created the pair; naming this hub makes only this hub skip
+            # failing here leaves the item to another hub that lists this remote
+            # and created the pair; naming this hub makes only this hub skip
             # the item for `retry_after` seconds, so that hub still reads it at once.
             if expired:
                 await source.record_result(item["id"], "failed", "No hub delivered this message within 24 hours.")

@@ -795,6 +795,11 @@ export function ServerOnboardingDialog() {
   }, [connected, installing, intent])
   useEffect(() => {
     const show = (event: Event) => {
+      // Mirror mode: everything runs on the other Mac, so this Mac never installs or starts a server of its own.
+      if (useAppStore.getState().mirrorHubUrl) {
+        useAppStore.getState().setError(t('mirror.noLocalSetup'))
+        return
+      }
       const detail = (event as CustomEvent<{ intent?: ServerSetupIntent; origin?: TeamNetworkHostOrigin }>).detail
       const nextIntent: ServerSetupIntent = detail?.intent === 'update-beta'
         ? 'update-beta'

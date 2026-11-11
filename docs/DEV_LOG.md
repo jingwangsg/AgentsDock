@@ -1,5 +1,34 @@
 # Public development log
 
+## 2026-11-11 — Desktop: mirror another Mac's hub; attaching a server is removed (desktop and server)
+
+- Settings → Server has "Mirror another Mac". With that Mac's hub address and
+  access token (both under Pair a phone there), AgentsDock restarts with that
+  hub as `local`: its chats, folders, terminals and remote servers. Chats,
+  terminals and browser tabs started on this Mac run on that Mac, in its paths.
+  This Mac's own server is neither shown nor started while mirroring, and its
+  chats come back with "Stop mirroring". Zed opens the other Mac's paths over
+  ssh to the same host.
+- Hub management works from the mirroring Mac: Restart (and the restart that
+  starts Update & redeploy all) asks the hub to restart itself through launchd,
+  phone pairing shows the hub's address, and a chat's local preview opens in
+  the in-app browser, which reaches the other Mac's localhost.
+- Attaching another hub's or Mac's server is removed. Add server only deploys,
+  and a hub leaves out registry entries attach made, so Redeploy and Update all
+  never overwrite another hub's install. The Android app still shows Attach;
+  the server now answers it with a message saying it was removed.
+
+```text
+Change and expected user behavior: a second Mac's desktop shows the first Mac's chats, terminals and servers, runs what it starts there, and returns to its own server on Stop mirroring.
+Source commit / app build / server version: branch feat/desktop-mirror-mode; desktop built from this tree; servers from this tree (1.0.7-beta.11 plus the branch).
+Test surface: one Mac standing in for two: an isolated "Mac A" hub on the tailnet address with a registered remote, an isolated server for "Mac B's own server" on the desktop's default address (port rewritten in a copy of the built app), and the desktop with its own user data, driven over CDP.
+Actions exercised and observed outcomes: (1) Mirror another Mac with a wrong token: "100.81.112.90:7931 did not accept that access token."; with the right token the app restarted on Mac A's chats, and the server menu listed `local` (Mac A) and Mac A's remote, not Mac B's server. (2) A new chat from Mac B was created on Mac A only; a real Claude turn printed Mac A's working and state directories. A terminal opened from Mac B ran on Mac A (its shell printed Mac A's state directory). A local preview in the outputs panel opened as an in-app browser tab created on Mac A. (3) Restart from Mac B: a hub not run by launchd answered with that reason; the same hub run as a LaunchAgent restarted (new instance id, launchd run count 2) and the row read "Restarted.". (4) Guided setup, opened the way the app's buttons do, showed that this Mac does not install its own server while mirroring. (5) Stop mirroring restarted the app on Mac B's own chats and deleted the mirrored hub's saved tokens from the Keychain. (6) A first build switched the profiles before the windows closed; their draft save failed and cancelled the quit. The change is now saved after the windows close.
+Real boundaries exercised; any mocked/stubbed boundaries: desktop ↔ both servers over HTTP and WebSocket on the tailnet address, Claude, launchd, the macOS Keychain. Not exercised: Zed over ssh (this Mac's sshd refuses key logins), a cancelled quit (unit-tested), two physical Macs, the Android app's Attach.
+Focused regression / typecheck / production build: settings mirror set, hub check and restart, IPC quit order and cancellation, server-management UI, onboarding guard, local preview, attach removal, restart route (refused during a deploy); desktop typecheck and full suite (288 files); all 8 server shards; desktop production build.
+Remaining limitations or blocked acceptance: Restart from a mirroring Mac needs a hub on this server version (an older hub answers 404). A hub that loaded attached entries before keeps their ssh alias files. Team Network on a mirroring Mac keeps its loopback-only checks. The Android Attach choice stays until a mobile update.
+Availability: source only until a desktop build is installed and the hub runs this server version.
+```
+
 ## 2026-11-07 — Android: a search result on a final answer opens that answer, and opening a result no longer closes the app (app)
 
 - A run's final answer is saved twice: as the answer the timeline shows, and

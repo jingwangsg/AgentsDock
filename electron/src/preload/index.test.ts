@@ -117,13 +117,13 @@ describe('preload session IPC bridge', () => {
     expect(electronHarness.invoke).toHaveBeenCalledWith('server-setup:run', input)
   })
 
-  it('forwards a remote server attach with its input unchanged', async () => {
-    electronHarness.invoke.mockResolvedValue({ id: 'gb300' })
-    const input = { sshHost: 'nv_gb300', installDir: '/mnt/lustre/.agentsdock-server' }
+  it('forwards a mirror start with its input unchanged', async () => {
+    electronHarness.invoke.mockResolvedValue(undefined)
+    const input = { hubUrl: 'http://mac-a.tailnet.ts.net:7850', accessToken: 'mac-a-token' }
 
-    await electronHarness.exposed?.remoteServers.attach(input)
+    await electronHarness.exposed?.hub.startMirror(input)
 
-    expect(electronHarness.invoke).toHaveBeenCalledWith('remote-servers:attach', input)
+    expect(electronHarness.invoke).toHaveBeenCalledWith('hub:start-mirror', input)
   })
 
   it('forwards live Team Network role configuration with only the originating scope and named role', async () => {

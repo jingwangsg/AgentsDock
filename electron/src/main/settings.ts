@@ -44,10 +44,18 @@ interface StoredSettingsV1 {
   serverSetupComplete?: boolean
 }
 
-export interface StoredSettingsV2 {
-  schemaVersion: 2
+export interface StoredProfileSet {
   activeProfileId: string
   profiles: StoredServerProfile[]
+}
+
+export interface StoredSettingsV2 extends StoredProfileSet {
+  schemaVersion: 2
+  /**
+   * Mirror mode: this Mac uses another Mac's hub. While set, these profiles are in use; the top-level `profiles`
+   * (this Mac's own) stay unchanged until mirroring stops.
+   */
+  mirror?: StoredProfileSet & { hubUrl: string }
 }
 
 export interface StoredServerProfile {
@@ -67,6 +75,14 @@ export interface StoredServerProfile {
   updatedAt: string
   /** Durable cleanup work left after an explicit server-authority reset. */
   retiredServerNamespaces?: string[]
+}
+
+/** Another Mac's hub, checked before this Mac mirrors it (AppService.checkMirrorHub). */
+export interface CheckedMirrorHub {
+  hubUrl: string
+  serverIdentity: string | null
+  accessToken: string
+  sshHost: string | null
 }
 
 export interface ServerProfileRuntimeState {
@@ -159,7 +175,8 @@ export class SettingsStore {
       // Presence is display metadata, never proof that authentication can read it.
       hasAccessToken: hasStoredAccessToken(profile),
       serverIdentity: profile.serverIdentity ?? null,
-      serverSetupComplete: profile.serverSetupComplete
+      serverSetupComplete: profile.serverSetupComplete,
+      ...(this.value.mirror ? { mirrorHubUrl: this.value.mirror.hubUrl } : {})
     }
   }
 
@@ -169,7 +186,7 @@ export class SettingsStore {
   }
 
   listProfiles(runtime: Readonly<Record<string, ServerProfileRuntimeState>> | ((profile: PublicServerProfile) => ServerProfileRuntimeState) = {}): PublicServerProfile[] {
-    return this.value.profiles.map(profile => {
+    return this.profileSetInUse.profiles.map(profile => {
       const metadata = this.publicProfile(profile)
       return typeof runtime === 'function'
         ? publicProfile(profile, metadata.hasAccessToken, runtime(metadata))
@@ -182,13 +199,13 @@ export class SettingsStore {
   }
 
   getProfile(profileId: string, runtime?: ServerProfileRuntimeState): PublicServerProfile | null {
-    const profile = this.value.profiles.find(candidate => candidate.id === profileId)
+    const profile = this.profileSetInUse.profiles.find(candidate => candidate.id === profileId)
     return profile ? this.publicProfile(profile, runtime) : null
   }
 
   /** Scope fencing needs configured metadata, not a secure-storage token read. */
   getProfileMetadata(profileId: string): Pick<PublicServerProfile, 'id' | 'name' | 'serverUrl' | 'serverIdentity'> | null {
-    const profile = this.value.profiles.find(candidate => candidate.id === profileId)
+    const profile = this.profileSetInUse.profiles.find(candidate => candidate.id === profileId)
     return profile ? {
       id: profile.id,
       name: profile.name,
@@ -197,13 +214,13 @@ export class SettingsStore {
     } : null
   }
 
-  getActiveProfileId(): string { return this.value.activeProfileId }
+  getActiveProfileId(): string { return this.profileSetInUse.activeProfileId }
 
-  serverUrl(profileId = this.value.activeProfileId): string {
+  serverUrl(profileId = this.profileSetInUse.activeProfileId): string {
     return normalizeServerURL(this.requireProfile(profileId).serverUrl)
   }
 
-  serverIdentity(profileId = this.value.activeProfileId): string | null {
+  serverIdentity(profileId = this.profileSetInUse.activeProfileId): string | null {
     return cleanIdentity(this.requireProfile(profileId).serverIdentity)
   }
 
@@ -215,11 +232,11 @@ export class SettingsStore {
     this.updateProfile(profileId, { retiredServerNamespaces: normalizeRetiredNamespaces(namespaces) })
   }
 
-  accessToken(profileId = this.value.activeProfileId): string {
+  accessToken(profileId = this.profileSetInUse.activeProfileId): string {
     return this.readProfileToken(this.requireProfile(profileId))
   }
 
-  accessTokenForConnection(profileId = this.value.activeProfileId): string {
+  accessTokenForConnection(profileId = this.profileSetInUse.activeProfileId): string {
     const profile = this.requireProfile(profileId)
     const token = this.readProfileToken(profile)
     if (!token && hasStoredAccessToken(profile)) throw new Error(UNREADABLE_ACCESS_TOKEN_ERROR)
@@ -227,7 +244,7 @@ export class SettingsStore {
   }
 
   /** Coalesce only concurrent authentication reads, never retain a settled secret. */
-  accessTokenForConnectionAsync(profileId = this.value.activeProfileId): Promise<string> {
+  accessTokenForConnectionAsync(profileId = this.profileSetInUse.activeProfileId): Promise<string> {
     const profile = this.requireProfile(profileId)
     const revision = this.connectionRevision(profileId)
     const pending = this.credentialReads.get(profileId)
@@ -259,9 +276,9 @@ export class SettingsStore {
   addProfile(input: AddServerProfileInput): PublicServerProfile {
     const serverUrl = normalizeServerURL(input.serverUrl)
     const serverIdentity = cleanIdentity(input.serverIdentity)
-    const duplicateURL = this.value.profiles.find(profile => normalizeServerURL(profile.serverUrl) === serverUrl)
+    const duplicateURL = this.profileSetInUse.profiles.find(profile => normalizeServerURL(profile.serverUrl) === serverUrl)
     if (duplicateURL) throw new Error(`A server profile already uses ${serverUrl}.`)
-    const duplicateIdentity = serverIdentity && this.value.profiles.find(profile => profile.serverIdentity === serverIdentity)
+    const duplicateIdentity = serverIdentity && this.profileSetInUse.profiles.find(profile => profile.serverIdentity === serverIdentity)
     if (duplicateIdentity) throw new Error(`Server identity ${serverIdentity} already belongs to “${duplicateIdentity.name}”.`)
 
     const id = this.uniqueProfileId()
@@ -282,8 +299,9 @@ export class SettingsStore {
       : unchangedCredential(profile)
     profile = credential.profile
     const next = cloneSettings(this.value)
-    next.profiles.push(profile)
-    if (input.setActive) next.activeProfileId = id
+    const nextSet = profileSetInUse(next)
+    nextSet.profiles.push(profile)
+    if (input.setActive) nextSet.activeProfileId = id
     try {
       this.persist(next)
       credential.commit()
@@ -315,9 +333,9 @@ export class SettingsStore {
         : normalizeRetiredNamespaces(patch.retiredServerNamespaces),
       updatedAt: this.now()
     }
-    const duplicateURL = this.value.profiles.find(profile => profile.id !== profileId && normalizeServerURL(profile.serverUrl) === updated.serverUrl)
+    const duplicateURL = this.profileSetInUse.profiles.find(profile => profile.id !== profileId && normalizeServerURL(profile.serverUrl) === updated.serverUrl)
     if (duplicateURL) throw new Error(`A server profile already uses ${updated.serverUrl}.`)
-    const duplicateIdentity = updated.serverIdentity && this.value.profiles.find(profile => profile.id !== profileId && profile.serverIdentity === updated.serverIdentity)
+    const duplicateIdentity = updated.serverIdentity && this.profileSetInUse.profiles.find(profile => profile.id !== profileId && profile.serverIdentity === updated.serverIdentity)
     if (duplicateIdentity) throw new Error(`Server identity ${updated.serverIdentity} already belongs to “${duplicateIdentity.name}”.`)
 
     if (!keepsCredential || updated.serverUrl !== current.serverUrl || updated.serverIdentity !== current.serverIdentity) {
@@ -328,7 +346,8 @@ export class SettingsStore {
       ? unchangedCredential(updated)
       : this.stageAccessToken(updated, patch.accessToken ?? '')
     const next = cloneSettings(this.value)
-    next.profiles = next.profiles.map(profile => profile.id === profileId ? credential.profile : profile)
+    const nextSet = profileSetInUse(next)
+    nextSet.profiles = nextSet.profiles.map(profile => profile.id === profileId ? credential.profile : profile)
     try {
       this.persist(next)
       credential.commit()
@@ -341,44 +360,90 @@ export class SettingsStore {
 
   setActiveProfile(profileId: string): PublicServerProfile {
     const profile = this.requireProfile(profileId)
-    if (profileId !== this.value.activeProfileId) {
+    if (profileId !== this.profileSetInUse.activeProfileId) {
       const next = cloneSettings(this.value)
-      next.activeProfileId = profileId
+      profileSetInUse(next).activeProfileId = profileId
       this.persist(next)
     }
     return this.publicProfile(profile)
   }
 
   reorderProfiles(profileIds: string[]): PublicServerProfile[] {
-    if (profileIds.length !== this.value.profiles.length || new Set(profileIds).size !== profileIds.length) {
+    if (profileIds.length !== this.profileSetInUse.profiles.length || new Set(profileIds).size !== profileIds.length) {
       throw new Error('Server profile order must contain every profile exactly once.')
     }
-    const byId = new Map(this.value.profiles.map(profile => [profile.id, profile]))
+    const byId = new Map(this.profileSetInUse.profiles.map(profile => [profile.id, profile]))
     if (profileIds.some(id => !byId.has(id))) throw new Error('Server profile order contains an unknown profile.')
     const next = cloneSettings(this.value)
-    next.profiles = profileIds.map(id => byId.get(id)!)
+    profileSetInUse(next).profiles = profileIds.map(id => byId.get(id)!)
     this.persist(next)
     return this.listProfiles()
   }
 
   removeProfile(profileId: string, replacementProfileId?: string): void {
     const profile = this.requireProfile(profileId)
-    if (this.value.profiles.length === 1) throw new Error('AgentsDock must keep at least one server profile.')
+    if (this.profileSetInUse.profiles.length === 1) throw new Error('AgentsDock must keep at least one server profile.')
     const next = cloneSettings(this.value)
-    next.profiles = next.profiles.filter(candidate => candidate.id !== profileId)
-    if (this.value.activeProfileId === profileId) {
-      if (!replacementProfileId || replacementProfileId === profileId || !next.profiles.some(candidate => candidate.id === replacementProfileId)) {
+    const nextSet = profileSetInUse(next)
+    nextSet.profiles = nextSet.profiles.filter(candidate => candidate.id !== profileId)
+    if (this.profileSetInUse.activeProfileId === profileId) {
+      if (!replacementProfileId || replacementProfileId === profileId || !nextSet.profiles.some(candidate => candidate.id === replacementProfileId)) {
         throw new Error('Select a replacement server profile before removing the active profile.')
       }
-      next.activeProfileId = replacementProfileId
+      nextSet.activeProfileId = replacementProfileId
     }
     this.persist(next)
     this.invalidateCredentialRead(profileId)
     if (this.useKeychain) this.keychain.delete(profileKeychainAccount(profileId))
   }
 
+  mirrorHubUrl(): string | null { return this.value.mirror?.hubUrl ?? null }
+
+  /**
+   * Mirror mode: the hub at `input.hubUrl` (another Mac's) becomes this Mac's hub, named `local` as on that Mac.
+   * This Mac's own profiles are kept as they are for stopMirror().
+   */
+  startMirror(input: CheckedMirrorHub): void {
+    // load-bearing: a second mirror set would replace the first one and orphan its saved tokens.
+    if (this.value.mirror) throw new Error('This Mac already mirrors another Mac. Stop mirroring first.')
+    const serverUrl = normalizeServerURL(input.hubUrl)
+    const timestamp = this.now()
+    const credential = this.stageAccessToken({
+      id: this.uniqueProfileId(),
+      name: 'local',
+      serverUrl,
+      serverIdentity: cleanIdentity(input.serverIdentity),
+      serverSetupComplete: true,
+      ...optionalSshHost(cleanSshHost(input.sshHost)),
+      createdAt: timestamp,
+      updatedAt: timestamp
+    }, input.accessToken)
+    const next = cloneSettings(this.value)
+    next.mirror = { hubUrl: serverUrl, activeProfileId: credential.profile.id, profiles: [credential.profile] }
+    try {
+      this.persist(next)
+      credential.commit()
+    } catch (error) {
+      credential.rollback()
+      throw error
+    }
+  }
+
+  /** Back to this Mac's own hub; the mirrored hub's profiles and their saved tokens are deleted. */
+  stopMirror(): void {
+    const mirror = this.value.mirror
+    if (!mirror) return
+    const next = cloneSettings(this.value)
+    delete next.mirror
+    this.persist(next)
+    for (const profile of mirror.profiles) {
+      this.invalidateCredentialRead(profile.id)
+      if (this.useKeychain) this.keychain.delete(profileKeychainAccount(profile.id))
+    }
+  }
+
   setServerIdentity(serverIdentity: string | null | undefined): void {
-    this.setProfileServerIdentity(this.value.activeProfileId, serverIdentity)
+    this.setProfileServerIdentity(this.profileSetInUse.activeProfileId, serverIdentity)
   }
 
   setProfileServerIdentity(profileId: string, serverIdentity: string | null | undefined): void {
@@ -392,7 +457,7 @@ export class SettingsStore {
   }
 
   markServerSetupComplete(serverIdentity?: string | null): void {
-    this.markProfileServerSetupComplete(this.value.activeProfileId, serverIdentity)
+    this.markProfileServerSetupComplete(this.profileSetInUse.activeProfileId, serverIdentity)
   }
 
   markProfileServerSetupComplete(profileId: string, serverIdentity?: string | null): void {
@@ -442,7 +507,7 @@ export class SettingsStore {
         try {
           const backup = parseStoredSettings(readFileSync(this.backupPath, 'utf8'), this.now)
           if (backup.kind === 'v2') {
-            for (const profile of backup.value.profiles) deniedProfileIds.add(profile.id)
+            for (const profile of allStoredProfiles(backup.value)) deniedProfileIds.add(profile.id)
           }
         } catch { /* a corrupt backup grants no authority either */ }
       }
@@ -604,20 +669,23 @@ export class SettingsStore {
     }
   }
 
-  private activeStoredProfile(): StoredServerProfile { return this.requireProfile(this.value.activeProfileId) }
+  /** The profiles in use: the mirrored hub's while mirroring, else this Mac's own. */
+  private get profileSetInUse(): StoredProfileSet { return profileSetInUse(this.value) }
+
+  private activeStoredProfile(): StoredServerProfile { return this.requireProfile(this.profileSetInUse.activeProfileId) }
 
   private publicProfile(profile: StoredServerProfile, runtime?: ServerProfileRuntimeState): PublicServerProfile {
     return publicProfile(profile, hasStoredAccessToken(profile), runtime)
   }
 
   private requireProfile(profileId: string): StoredServerProfile {
-    const profile = this.value.profiles.find(candidate => candidate.id === profileId)
+    const profile = this.profileSetInUse.profiles.find(candidate => candidate.id === profileId)
     if (!profile) throw new Error(`Unknown server profile: ${profileId}`)
     return profile
   }
 
   private uniqueProfileId(
-    existing = this.value?.profiles ?? [],
+    existing = this.value ? allStoredProfiles(this.value) : [],
     deniedProfileIds: ReadonlySet<string> = new Set()
   ): string {
     const ids = new Set([...existing.map(profile => profile.id), ...deniedProfileIds])
@@ -702,7 +770,8 @@ export class SettingsStore {
     if (!token || !this.keychain.write(profileKeychainAccount(profile.id), token)) return
     const next = cloneSettings(this.value)
     const updated = { ...profile, keychainAccessToken: true, updatedAt: this.now() }
-    next.profiles = next.profiles.map(candidate => candidate.id === profile.id ? updated : candidate)
+    const nextSet = profileSetInUse(next)
+    nextSet.profiles = nextSet.profiles.map(candidate => candidate.id === profile.id ? updated : candidate)
     try {
       this.persist(next)
     } catch {
@@ -809,6 +878,11 @@ function defaultProfileName(serverUrl: string, serverIdentity: string | null): s
   }
 }
 
+function profileSetInUse(value: StoredSettingsV2): StoredProfileSet { return value.mirror ?? value }
+
+/** Both sets' profiles: a profile's ID also names its saved token (profileKeychainAccount). */
+function allStoredProfiles(value: StoredSettingsV2): StoredServerProfile[] { return [...value.profiles, ...(value.mirror?.profiles ?? [])] }
+
 function cloneSettings(value: StoredSettingsV2): StoredSettingsV2 {
   return JSON.parse(JSON.stringify(value)) as StoredSettingsV2
 }
@@ -825,17 +899,25 @@ function parseStoredSettings(raw: string, now: () => string): { kind: 'v1'; valu
 }
 
 function normalizeSettingsV2(value: Record<string, unknown>, now: () => string): StoredSettingsV2 {
-  if (!Array.isArray(value.profiles) || value.profiles.length === 0) throw new Error('Settings must contain at least one server profile.')
   const timestamp = now()
+  const normalized: StoredSettingsV2 = { schemaVersion: 2, ...normalizeProfileSet(value, timestamp) }
+  if (value.mirror !== undefined) {
+    if (!isRecord(value.mirror) || typeof value.mirror.hubUrl !== 'string') throw new Error('The mirrored hub settings are invalid.')
+    normalized.mirror = { hubUrl: normalizeServerURL(value.mirror.hubUrl), ...normalizeProfileSet(value.mirror, timestamp) }
+  }
+  validateSettings(normalized)
+  return normalized
+}
+
+function normalizeProfileSet(value: Record<string, unknown>, timestamp: string): StoredProfileSet {
+  if (!Array.isArray(value.profiles) || value.profiles.length === 0) throw new Error('Settings must contain at least one server profile.')
   const profiles = value.profiles.map((entry, index) => normalizeProfile(entry, timestamp, index))
   const ids = new Set(profiles.map(profile => profile.id))
   if (ids.size !== profiles.length) throw new Error('Server profile IDs must be unique.')
   const activeProfileId = typeof value.activeProfileId === 'string' && ids.has(value.activeProfileId)
     ? value.activeProfileId
     : profiles[0].id
-  const normalized: StoredSettingsV2 = { schemaVersion: 2, activeProfileId, profiles }
-  validateSettings(normalized)
-  return normalized
+  return { activeProfileId, profiles }
 }
 
 function normalizeProfile(value: unknown, timestamp: string, index: number): StoredServerProfile {
@@ -868,7 +950,16 @@ function normalizeProfile(value: unknown, timestamp: string, index: number): Sto
 }
 
 function validateSettings(value: StoredSettingsV2): void {
-  if (value.schemaVersion !== 2 || !value.profiles.length) throw new Error('Invalid schema v2 settings.')
+  if (value.schemaVersion !== 2) throw new Error('Invalid schema v2 settings.')
+  validateProfileSet(value)
+  if (!value.mirror) return
+  validateProfileSet(value.mirror)
+  const ids = new Set(value.profiles.map(profile => profile.id))
+  if (value.mirror.profiles.some(profile => ids.has(profile.id))) throw new Error('A mirrored hub profile reuses an ID of this Mac\'s profiles.')
+}
+
+function validateProfileSet(value: StoredProfileSet): void {
+  if (!value.profiles.length) throw new Error('Invalid schema v2 settings.')
   const ids = new Set<string>()
   for (const profile of value.profiles) {
     if (!profile.id || ids.has(profile.id)) throw new Error('Server profile IDs must be non-empty and unique.')

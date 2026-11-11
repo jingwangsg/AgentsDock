@@ -41,7 +41,7 @@ REMOTE_TOKEN = "remote-token-" + "r" * 40
 # The real rs.refresh_sky_ssh_entry, saved before RemoteServerTests.setUp stubs it, for the test of the function itself.
 REFRESH_SKY_SSH_ENTRY = rs.refresh_sky_ssh_entry
 
-# Plays the host for deploy/attach jobs: answers the probe and the bootstrap from
+# Plays the host for deploy jobs: answers the probe and the bootstrap from
 # host.json and logs each call's full argv, its SSL_CERT_FILE, and ``tail``, the part
 # after ``bash -s --`` (None for a plain remote command such as the upload's ``cat >``).
 FAKE_SSH = r'''#!{python}
@@ -74,7 +74,7 @@ if tail is not None and len(tail) <= 2:  # probe: bash -s -- <install_dir> [<fal
     install_dir = tail[-1] if installs is not None and tail[0] not in installs and tail[-1] in installs else tail[0]
     port = host["existing_port"] if installs is None else installs.get(install_dir)
     print("AGENTSDOCK_TUNNEL_PROBE=" + json.dumps(dict(os="Linux", arch="x86_64", uid=1000, home="/h", tmux=True, free_port=7850, existing_port=port,
-                                                      existing_token=host["token"] if port else None, install_dir=install_dir)))
+                                                      install_dir=install_dir)))
 elif tail is not None:  # bootstrap: bash -s -- <install_dir> <port> <home> [restart]
     if host.get("bootstrap_failure"):  # the host's script prints these lines and fails
         print("\n".join(host["bootstrap_failure"]))
@@ -418,18 +418,19 @@ class RemoteServerTests(unittest.TestCase):
         assert [server.id for server in rs.load_registry(manager.path)] == expected
         assert rs.capability(manager)["ids"] == expected
 
+    def test_loading_leaves_out_an_entry_the_removed_attach_registered(self) -> None:
+        path = self.tmp_path / "remote-servers.json"
+        own, attached = make_server(), make_server(id="attachedatta", name="mac-a", ssh_host="mac-a")
+        path.write_text(json.dumps({"servers": [own.model_dump(), {**attached.model_dump(), "attached": True}]}))
+        with self.assertLogs("agents-server", level="WARNING") as logs:
+            assert rs.load_registry(path) == [own]
+        assert "dropping remote mac-a (mac-a)" in logs.output[0]
+
     def test_deploy_request_defaults_and_port_zero(self) -> None:
         request = rs.RemoteDeployRequest(ssh_host="user@host")
         assert request.install_dir == "~/.agentsdock-server" and request.port == 0
         with self.assertRaises(ValidationError):
             rs.RemoteDeployRequest(ssh_host="host", port=22)
-
-    def test_attach_request_validates_like_deploy(self) -> None:
-        request = rs.RemoteAttachRequest(ssh_host="user@host")
-        assert request.install_dir == "~/.agentsdock-server" and request.name is None and not hasattr(request, "port")
-        for payload in [{"ssh_host": "-oProxyCommand=curl evil"}, {"ssh_host": "host", "install_dir": "/tmp/with space"}]:
-            with self.assertRaises(ValidationError):
-                rs.RemoteAttachRequest(**payload)
 
     # --- ssh argv and supervisor decisions ------------------------------------
 
@@ -886,7 +887,7 @@ time.sleep(30)
         self.enterContext(mock.patch.object(rs.RemoteServerManager, "_wait_health", mock.AsyncMock(return_value={"version": "1.2.3"})))
         return state / "calls.jsonl"
 
-    def run_job(self, request: rs.RemoteAttachRequest) -> tuple[rs.RemoteServerManager, rs.DeployJob]:
+    def run_job(self, request: rs.RemoteDeployRequest) -> tuple[rs.RemoteServerManager, rs.DeployJob]:
         manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path, manage_tunnels=False)
 
         async def main() -> rs.DeployJob:
@@ -972,28 +973,6 @@ time.sleep(30)
             assert derived.split()[:2] == generated.split()[:2]
             assert (home / ".ssh" / "id_ed25519").exists() and not (home / ".ssh" / "id_ed25519.pub").exists()
 
-    def test_attach_registers_the_existing_install_without_uploading_or_restarting(self) -> None:
-        calls = self.fake_host(existing_port=7860)
-        manager, job = self.run_job(rs.RemoteAttachRequest(ssh_host="osmo_9000", install_dir="/mnt/lustre/.agentsdock-server"))
-        assert job.done and job.error is None, job.log
-        [server] = rs.load_registry(manager.path)
-        assert (server.name, server.ssh_host, server.install_dir, server.remote_port, server.token) == ("osmo_9000", "osmo_9000", "/mnt/lustre/.agentsdock-server", 7860, REMOTE_TOKEN)
-        # No tunnel runs here, so the attach reports that the server's own list could not be read.
-        assert job.server == server and server.attached and "complete" in {entry["phase"] for entry in job.log}
-        # The probe is the only ssh session: no upload and no bootstrap, so nothing on the host changes.
-        sessions = [json.loads(line)["tail"] for line in calls.read_text().splitlines()]
-        assert sessions == [["/mnt/lustre/.agentsdock-server"]]
-        assert not {"download", "install"} & {entry["phase"] for entry in job.log}
-
-    def test_attach_with_the_default_directory_also_probes_the_install_sh_config_dir(self) -> None:
-        calls = self.fake_host(existing_port=7850)
-        manager, job = self.run_job(rs.RemoteAttachRequest(ssh_host="mac-a"))
-        assert job.done and job.error is None, job.log
-        [probe] = [json.loads(line)["tail"] for line in calls.read_text().splitlines()]
-        assert probe == [rs.DEFAULT_INSTALL_DIR, rs.INSTALL_SH_CONFIG_DIR]
-        # The fake host reports the first directory; the probe test below covers choosing the fallback.
-        assert rs.load_registry(manager.path)[0].install_dir == rs.DEFAULT_INSTALL_DIR
-
     def test_the_probe_reads_either_env_format_and_takes_the_fallback_only_without_an_install(self) -> None:
         def probe(*dirs: Path) -> dict:
             proc = subprocess.run(["bash", "-s", "--", *map(str, dirs)], input=rs.PROBE_SCRIPT.read_bytes(), capture_output=True, timeout=30)
@@ -1006,114 +985,15 @@ time.sleep(30)
         # install.sh writes plain NAME=value lines.
         (config / "env").write_text(f"AGENTSDOCK_AGENT_PORT=7999\nAGENTSDOCK_AGENT_TOKEN={REMOTE_TOKEN}\n")
         found = probe(deployed, config)
-        assert (found["install_dir"], found["existing_port"], found["existing_token"]) == (str(config), 7999, REMOTE_TOKEN)
+        assert (found["install_dir"], found["existing_port"]) == (str(config), 7999)
         # A hub-deployed env (export, possibly quoted) wins over the fallback.
         (deployed / "env").write_text(f'export AGENTSDOCK_AGENT_PORT="7998"\nexport AGENTSDOCK_AGENT_TOKEN={HUB_TOKEN}\n')
         found = probe(deployed, config)
-        assert (found["install_dir"], found["existing_port"], found["existing_token"]) == (str(deployed), 7998, HUB_TOKEN)
+        assert (found["install_dir"], found["existing_port"]) == (str(deployed), 7998)
+        # The bootstrap reports the token the hub keeps; the probe has no use for it.
+        assert "existing_token" not in found
         missing = probe(self.tmp_path / "missing")
-        assert (missing["existing_port"], missing["existing_token"]) == (None, None)
-
-    def test_attaching_a_hub_attaches_its_remotes_except_ones_registered_here(self) -> None:
-        calls = self.fake_host(existing_port=7860)
-        own, lab = "c" * 24, "b" * 24
-        # Each listed remote: (entry, identity as the other hub reaches it, identity as this hub's ssh reaches it).
-        listed = {
-            "r1": ({"name": "lab", "ssh_host": "lab", "install_dir": "/srv/agents"}, lab, lab),
-            # Registered on this hub already under the same host and directory.
-            "r2": ({"name": "osmo", "ssh_host": "osmo_9000", "install_dir": "/mnt/lustre/.agentsdock-server"}, "e" * 24, "e" * 24),
-            # This hub's own server, attached by the other hub: skipped without ssh.
-            "r3": ({"name": "mac-b", "ssh_host": "mac-b", "install_dir": "/Users/me/.config/agents-server"}, own, own),
-            # The same server as r1 under another host name: skipped without ssh once r1 is attached.
-            "r4": ({"name": "lab-again", "ssh_host": "lab-alias", "install_dir": "/srv/agents"}, lab, lab),
-            "r5": ({"name": "quiet", "ssh_host": "quiet-host", "install_dir": "/srv/quiet", "hidden": True}, "d" * 24, "d" * 24),
-            "r6": ({"name": "bad", "ssh_host": "bad host", "install_dir": "/srv/bad"}, "f" * 24, None),
-            # Neither hub can read these identities yet; neither one is taken for a duplicate of the other.
-            "r7": ({"name": "slow-1", "ssh_host": "slow-1", "install_dir": "/srv/slow"}, None, None),
-            "r8": ({"name": "slow-2", "ssh_host": "slow-2", "install_dir": "/srv/slow"}, None, None),
-            # The host name resolves to another machine from this hub's ssh config.
-            "r9": ({"name": "elsewhere", "ssh_host": "shared-alias", "install_dir": "/srv/agents"}, "9" * 24, "8" * 24),
-        }
-        reached = {"mac-a": "a" * 24, "osmo_9000": "e" * 24} | {entry["ssh_host"]: here for entry, _, here in listed.values()}
-
-        async def probe_health(_manager: rs.RemoteServerManager, server: rs.RemoteServer) -> dict:
-            return {"server_identity": reached[server.ssh_host]} if reached[server.ssh_host] else {}
-
-        async def hub_get(url: str, **kwargs) -> httpx.Response:
-            request = httpx.Request("GET", url)
-            if url.endswith("/api/admin/remote-servers"):
-                return httpx.Response(200, json={"servers": [{"id": key, **entry} for key, (entry, _, _) in listed.items()]}, request=request)
-            identity = listed[url.split("/api/remote/")[1].split("/")[0]][1]
-            return httpx.Response(200, json={"server_identity": identity}, request=request) if identity else httpx.Response(502, request=request)
-
-        self.enterContext(mock.patch.object(rs.RemoteServerManager, "probe_health", autospec=True, side_effect=probe_health))
-        manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path, manage_tunnels=False, own_identity=lambda: own)
-        manager.servers["registered01"] = make_server(id="registered01", ssh_host="osmo_9000", install_dir="/mnt/lustre/.agentsdock-server")
-        hub_requests = mock.AsyncMock(side_effect=hub_get)
-        self.enterContext(mock.patch.object(manager.http, "get", hub_requests))
-
-        async def main() -> rs.DeployJob:
-            job = manager.start_deploy(rs.RemoteAttachRequest(ssh_host="mac-a", name="mac-a"))
-            await job.task
-            await manager.stop()
-            return job
-
-        job = asyncio.run(main())
-        assert job.done and job.error is None, job.log
-        attached = rs.load_registry(manager.path)
-        assert [(server.ssh_host, server.hidden, server.attached) for server in attached] == [
-            ("osmo_9000", False, False), ("mac-a", False, True), ("lab", False, True), ("quiet-host", True, True),
-            ("slow-1", False, True), ("slow-2", False, True)]
-        # The hub's list and its remotes' health are read with the hub's own token, through its tunnel.
-        hub = f"http://127.0.0.1:{attached[1].local_port}"
-        assert hub_requests.await_args_list[0] == mock.call(f"{hub}/api/admin/remote-servers", headers={"X-AgentsDock-Token": REMOTE_TOKEN}, timeout=rs.HEALTH_REQUEST_TIMEOUT)
-        assert mock.call(f"{hub}/api/remote/r9/api/health", headers={"X-AgentsDock-Token": REMOTE_TOKEN}, timeout=rs.HEALTH_REQUEST_TIMEOUT) in hub_requests.await_args_list
-        messages = [entry["message"] for entry in job.log]
-        assert [message for message in messages if message.endswith("already registered on this hub.")] == [
-            "osmo: already registered on this hub.", "mac-b: already registered on this hub.", "lab-again: already registered on this hub."]
-        # Failures come after the "complete" line, which stays the attached hub's own.
-        assert messages[-2].startswith("AgentsServer") and job.log[-2]["phase"] == "complete"
-        assert messages[-1].startswith("Not attached: bad: ") and messages[-1].endswith("elsewhere: shared-alias reaches another server from this hub")
-        # Every ssh session was a probe, and none went to a remote skipped by its identity.
-        sessions = [json.loads(line)["argv"] for line in calls.read_text().splitlines()]
-        assert all(len(argv[argv.index("--") + 1:]) <= 2 for argv in sessions)
-        assert not {"mac-b", "lab-alias"} & {arg for argv in sessions for arg in argv}
-
-    def test_attaching_a_registered_install_again_keeps_one_entry(self) -> None:
-        self.fake_host(existing_port=7860)
-        manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path, manage_tunnels=False)
-
-        async def main() -> list[rs.DeployJob]:
-            await manager.start()
-            jobs = []
-            for _ in range(2):
-                job = manager.start_deploy(rs.RemoteAttachRequest(ssh_host="mac-a", install_dir="/Users/me/.config/agents-server"))
-                await job.task
-                jobs.append(job)
-            await manager.stop()
-            return jobs
-
-        first, second = asyncio.run(main())
-        assert first.error is None and second.error is None, second.log
-        [server] = rs.load_registry(manager.path)
-        assert second.server == server and first.server.id == server.id and server.attached
-
-    def test_a_deploy_over_an_attached_entry_makes_it_this_hubs_install(self) -> None:
-        self.fake_host(existing_port=7860)
-        manager, _ = self.run_job(rs.RemoteAttachRequest(ssh_host="osmo_9000", install_dir="/mnt/lustre/.agentsdock-server"))
-        [server] = rs.load_registry(manager.path)
-
-        async def main() -> rs.DeployJob:
-            await manager.start()
-            # The path a move takes (update → start_deploy); the redeploy route refuses attached entries.
-            job = manager.start_deploy(None, redeploy_id=server.id)
-            await job.task
-            await manager.stop()
-            return job
-
-        job = asyncio.run(main())
-        assert job.error is None, job.log
-        assert not rs.load_registry(manager.path)[0].attached
+        assert missing["existing_port"] is None
 
     def test_a_deploy_naming_a_registered_install_updates_that_entry_and_keeps_its_id(self) -> None:
         self.fake_host(existing_port=7860)
@@ -1136,7 +1016,7 @@ time.sleep(30)
 
     def test_a_rename_during_a_redeploy_survives_its_write_back(self) -> None:
         self.fake_host(existing_port=7860)
-        manager, _ = self.run_job(rs.RemoteAttachRequest(ssh_host="osmo_9000", install_dir="/mnt/lustre/.agentsdock-server"))
+        manager, _ = self.run_job(rs.RemoteDeployRequest(ssh_host="osmo_9000", install_dir="/mnt/lustre/.agentsdock-server"))
         [server] = rs.load_registry(manager.path)
         # The redeploy reports a new token, so it writes the entry back.
         host = self.tmp_path / "host" / "host.json"
@@ -1752,13 +1632,13 @@ if sys.argv[-1] == "k8s-cluster":
         self.enterContext(mock.patch.object(rs, "isolated_proxy_args", mock.AsyncMock(return_value=["-o", "ProxyCommand=x"])))
         self.enterContext(mock.patch.dict(os.environ, {"AGENTSDOCK_OSMO_HOME": "/mnt/osmo-home/u", "AGENTSDOCK_OCI_HOME": "/mnt/oci-home/u/"}))
         for host, home in (("osmo@wf-running", "/mnt/osmo-home/u"), ("oci@sky-cluster", "/mnt/oci-home/u")):
-            manager, job = self.run_job(rs.RemoteAttachRequest(ssh_host=host))
+            manager, job = self.run_job(rs.RemoteDeployRequest(ssh_host=host))
             assert job.done and job.error is None, job.log
             server = next(server for server in rs.load_registry(manager.path) if server.ssh_host == host)
             assert server.install_dir == f"{home}/.agentsdock-server-{host.split('@')[1]}"
-        # Sky's websocket proxy runs inside the oci@ ssh call (the last one) and needs the CA bundle there.
+        # Sky's websocket proxy runs inside each oci@ ssh call (probe, upload, bootstrap) and needs the CA bundle there.
         records = [json.loads(line) for line in calls.read_text().splitlines()]
-        assert [record["ca"] for record in records[1:]] == [str(ca)]
+        assert [record["ca"] for record in records] == [None] * 3 + [str(ca)] * 3
         # A deploy runs the server with the cluster home even though the probe, finding no login there yet, offered the container's ~.
         _, job = self.run_job(rs.RemoteDeployRequest(ssh_host="oci@sky-cluster"))
         assert job.done and job.error is None, job.log
@@ -2088,38 +1968,6 @@ time.sleep(30)
         assert all(argv[:len(route.options)] == route.options and argv[-3] == "-L" and argv[-1] == "root@wf-running" for argv in argvs)
         assert sum(argv[-2] == f"127.0.0.1:{running_port}:127.0.0.1:7850" for argv in argvs) == 1
 
-    def test_attach_fails_when_the_host_has_no_install(self) -> None:
-        calls = self.fake_host(existing_port=None)
-        manager, job = self.run_job(rs.RemoteAttachRequest(ssh_host="osmo_9000"))
-        assert job.done and job.error == "No AgentsServer install was found at ~/.agentsdock-server on osmo_9000. Deploy a new server instead."
-        assert len(calls.read_text().splitlines()) == 1  # the probe only; the bootstrap never ran
-        assert rs.load_registry(manager.path) == []
-
-    def test_attach_route_runs_the_job_and_validates_the_body(self) -> None:
-        self.fake_host(existing_port=7860)
-
-        async def main() -> None:
-            manager, _remote, _dead, hub_port, close = await hub_with_fake(self.tmp_path)
-            try:
-                async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{hub_port}") as client:
-                    # hub_with_fake registers osmo_9000's default directory; another one makes this a new entry, not a refresh.
-                    response = await client.post("/api/admin/remote-servers/attach", json={"ssh_host": "osmo_9000", "install_dir": "/mnt/lustre/other-install", "name": "lustre"})
-                    assert response.status_code == 202, response.text
-                    job = manager.jobs[response.json()["job_id"]]
-                    assert job.task is not None
-                    await job.task
-                    view = (await client.get(f"/api/admin/remote-servers/deploy/{job.job_id}")).json()
-                    assert view["done"] and view["error"] is None, view["log"]
-                    assert (view["server"]["name"], view["server"]["remote_port"]) == ("lustre", 7860) and "token" not in view["server"]
-                    # Another hub owns an attached install: this hub neither uploads to nor restarts it.
-                    refused = await client.post(f"/api/admin/remote-servers/{view['server']['id']}/redeploy")
-                    assert refused.status_code == 409 and "attached" in refused.json()["detail"]
-                    assert (await client.post("/api/admin/remote-servers/attach", json={"ssh_host": "bad host"})).status_code == 422
-            finally:
-                await close()
-
-        asyncio.run(main())
-
     def test_update_all_redeploys_each_remote_updates_every_cli_and_restarts_the_hub_last(self) -> None:
         order: list[tuple[str, ...]] = []
         hooks = hub_hooks(hub_running_chat_count=lambda: 2)
@@ -2143,8 +1991,6 @@ time.sleep(30)
 
         async def main() -> None:
             manager, remote, dead, hub_port, close = await hub_with_fake(self.tmp_path, hooks=hooks)
-            attached = make_server(id="attachedatta", name="attached", local_port=free_port(), attached=True)
-            manager.servers[attached.id] = attached
             real_update_cli = manager.update_cli
 
             async def update_cli(server, backend):
@@ -2158,7 +2004,7 @@ time.sleep(30)
                     with mock.patch.object(manager, "_deploy", fake_deploy), mock.patch.object(manager, "update_cli", update_cli), \
                             mock.patch.object(manager, "probe_health", probes):
                         # Without force, the servers whose chats would stop are reported and nothing runs: the hub by
-                        # its own count, a remote by its health, an unreachable remote as unknown, an attached one never.
+                        # its own count, a remote by its health, an unreachable remote as unknown.
                         blocked = await client.post("/api/admin/remote-servers/update-all", json={})
                         assert blocked.status_code == 200 and blocked.json() == {"running": [
                             {"id": None, "running": 2}, {"id": remote.id, "name": remote.name, "running": 1}, {"id": dead.id, "name": "dead", "running": None},
@@ -2181,16 +2027,56 @@ time.sleep(30)
             assert order == [
                 ("redeploy", remote.id), ("cli", remote.id, "claude"), ("cli", remote.id, "codex"),
                 ("redeploy", dead.id), ("cli", dead.id, "claude"), ("cli", dead.id, "codex"),
-                ("cli", attached.id, "claude"), ("cli", attached.id, "codex"),
                 ("hub-cli", "claude"), ("hub-cli", "codex"), ("restart",),
             ]
             messages = [entry["message"] for entry in view["log"]]
             assert f"{remote.name}: Uploading the server…" in messages and f"{remote.name}: Claude Code claude-2.0" in messages
             assert f"{remote.name}: installed Codex codex-2.0" in messages
-            assert "attached: attached from another hub, not redeployed." in messages and "hub: Codex codex-hub-9.9" in messages
+            assert "hub: Codex codex-hub-9.9" in messages
             assert messages[-1] == "Restarting the hub…" and view["phase"] == "restart" and view["done"] and view["restarting"]
             # A remote's failures are reported; the hub still restarts.
-            assert view["error"].startswith("dead: ssh exited 255; dead: Claude Code: ") and "attached: Codex: " in view["error"]
+            assert view["error"].startswith("dead: ssh exited 255; dead: Claude Code: ")
+
+        asyncio.run(main())
+
+    def test_the_hub_restart_route_asks_launchd_and_reports_why_it_cannot(self) -> None:
+        hooks = hub_hooks()
+
+        async def main() -> None:
+            manager, _, _, hub_port, close = await hub_with_fake(self.tmp_path, hooks=hooks)
+            try:
+                async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{hub_port}") as client:
+                    started = await client.post("/api/admin/remote-servers/hub/restart")
+                    assert started.status_code == 202 and started.json() == {"restarting": True}
+                    assert hooks.hub_restart.await_count == 1
+                    hooks.hub_restart.return_value = "This server is not run by launchd, so it cannot restart itself; restart it by hand."
+                    refused = await client.post("/api/admin/remote-servers/hub/restart")
+                    assert refused.status_code == 409 and refused.json()["detail"] == hooks.hub_restart.return_value
+                    # A deploy another client started is not cut off.
+                    finish = asyncio.Event()
+                    deploying = rs.DeployJob(job_id="deploying")
+                    deploying.task = asyncio.create_task(finish.wait())
+                    manager.jobs[deploying.job_id] = deploying
+                    blocked = await client.post("/api/admin/remote-servers/hub/restart")
+                    assert blocked.status_code == 409 and "deployment is running" in blocked.json()["detail"]
+                    assert hooks.hub_restart.await_count == 2
+                    finish.set()
+                    await deploying.task
+            finally:
+                await close()
+
+        asyncio.run(main())
+
+    def test_the_removed_attach_route_answers_older_apps_with_a_reason(self) -> None:
+        async def main() -> None:
+            manager, _, _, hub_port, close = await hub_with_fake(self.tmp_path)
+            try:
+                async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{hub_port}") as client:
+                    response = await client.post("/api/admin/remote-servers/attach", json={"ssh_host": "mac-a"})
+                    assert response.status_code == 410 and "Deploy the server from this hub instead" in response.json()["detail"]
+                    assert manager.jobs == {}
+            finally:
+                await close()
 
         asyncio.run(main())
 
@@ -2247,11 +2133,6 @@ time.sleep(30)
         assert not any(record["stdin_head"].startswith("AGENTSDOCK_CLAUDE_TOKEN") for record in (probe, upload))
         assert all(token not in json.dumps(record["argv"]) for record in (probe, upload, bootstrap))
         assert token not in json.dumps(job.log)
-        # An attach keeps the install's own Claude token: the hub's never reaches the host.
-        calls.unlink()
-        _, job = self.run_job(rs.RemoteAttachRequest(ssh_host="osmo_9000", install_dir="/mnt/lustre/.agentsdock-server"))
-        assert job.done and job.error is None, job.log
-        assert token not in calls.read_text()
 
     def test_bootstrap_points_the_env_at_its_install_and_takes_the_hubs_claude_token_once(self) -> None:
         # $HOME/.local/bin is the first PATH entry the script prepends, so fakes

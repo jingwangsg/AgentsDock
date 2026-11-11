@@ -362,7 +362,7 @@ describe('AppSettingsDialog', () => {
 
 describe('ServerOnboardingDialog', () => {
   afterEach(cleanup)
-  beforeEach(() => useAppStore.setState({ connected: false, health: null, profiles: [], activeProfileId: null, profileGeneration: 1, switchingProfileId: null, error: null }))
+  beforeEach(() => useAppStore.setState({ connected: false, health: null, profiles: [], activeProfileId: null, profileGeneration: 1, switchingProfileId: null, error: null, mirrorHubUrl: null }))
 
   const hub = (overrides: Partial<PublicServerProfile> = {}): PublicServerProfile => ({
     id: 'hub', name: 'This Mac', serverUrl: 'http://127.0.0.1:7850', serverIdentity: null,
@@ -397,6 +397,17 @@ describe('ServerOnboardingDialog', () => {
     expect(screen.queryByLabelText('Server URL')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('AgentsServer port')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Remote machine|This computer|Connect manually/ })).not.toBeInTheDocument()
+  })
+
+  it('never opens guided setup while this Mac mirrors another Mac\'s hub', async () => {
+    mockAgentsDock()
+    useAppStore.setState({ mirrorHubUrl: 'http://mac-a.tailnet.ts.net:7850' })
+    render(<ServerOnboardingDialog />)
+    await waitFor(() => expect(window.agentsDock.setup.capabilities).toHaveBeenCalled())
+
+    act(() => { window.dispatchEvent(new CustomEvent('agentsdock:server-setup', { detail: { intent: 'setup' } })) })
+    expect(screen.queryByRole('heading', { name: 'Set up AgentsServer' })).not.toBeInTheDocument()
+    expect(useAppStore.getState().error).toBe("This Mac mirrors another Mac's hub, so it does not install or start a server of its own. Install and update servers on that Mac.")
   })
 
   it('stays closed when the hub already has a token or a remote is the active server', async () => {

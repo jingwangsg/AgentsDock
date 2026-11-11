@@ -88,7 +88,6 @@ import type {
   ClaudeSendNowResponse,
   QueuedTurn,
   RemoteServer,
-  RemoteServerAttachInput,
   RemoteServerDeployInput,
   RemoteServerDeployJob,
   RemoteServerMoveInput,
@@ -954,12 +953,6 @@ export class AgentServerClient {
       body: JSON.stringify({ ssh_host: input.sshHost, install_dir: input.installDir, name: input.name, password: input.password })
     })
   }
-  startRemoteAttach(input: RemoteServerAttachInput): Promise<{ job_id: string }> {
-    return this.privilegedNativeRequest('/api/admin/remote-servers/attach', {
-      method: 'POST',
-      body: JSON.stringify({ ssh_host: input.sshHost, install_dir: input.installDir, name: input.name, password: input.password })
-    })
-  }
   remoteDeployStatus(jobId: string): Promise<RemoteServerDeployJob> {
     return this.privilegedNativeRequest(`/api/admin/remote-servers/deploy/${encodeURIComponent(jobId)}`)
   }
@@ -971,6 +964,10 @@ export class AgentServerClient {
   }
   reorderRemoteServers(ids: string[]): Promise<void> {
     return this.privilegedNativeRequest('/api/admin/remote-servers/order', { method: 'PUT', body: JSON.stringify({ ids }) }, undefined, 204)
+  }
+  /** The hub restarts itself through launchd; a Mac mirroring it cannot reach that Mac's launchctl. */
+  restartHub(): Promise<{ restarting: boolean }> {
+    return this.privilegedNativeRequest('/api/admin/remote-servers/hub/restart', { method: 'POST' })
   }
   startRemoteRedeploy(remoteId: string): Promise<{ job_id: string }> {
     return this.privilegedNativeRequest(`/api/admin/remote-servers/${encodeURIComponent(remoteId)}/redeploy`, { method: 'POST' })
@@ -3555,7 +3552,7 @@ function isPrivilegedNativeControlTarget(
     return !target.search && method === 'GET'
   }
   if (path === '/api/admin/remote-servers/deploy') return !target.search && method === 'POST'
-  if (path === '/api/admin/remote-servers/attach') return !target.search && method === 'POST'
+  if (path === '/api/admin/remote-servers/hub/restart') return !target.search && method === 'POST'
   if (path === '/api/admin/remote-servers/order') return !target.search && method === 'PUT'
   if (/^\/api\/admin\/remote-servers\/[A-Za-z0-9_-]{1,128}$/.test(path)) return !target.search && (method === 'DELETE' || method === 'PATCH')
   if (/^\/api\/admin\/remote-servers\/[A-Za-z0-9_-]{1,128}\/redeploy$/.test(path)) return !target.search && method === 'POST'

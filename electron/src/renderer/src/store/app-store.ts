@@ -188,6 +188,8 @@ interface PendingLiveEventBatch extends LiveEventBatch {
 interface AppState {
   initialized: boolean
   profiles: PublicServerProfile[]
+  /** Set in mirror mode: the other Mac's hub, which stands in for this Mac's server. Fixed until the app restarts. */
+  mirrorHubUrl: string | null
   activeProfileId: string | null
   profileGeneration: number
   switchingProfileId: string | null
@@ -538,6 +540,7 @@ function sameWebAddress(stored: string | null, link: string): boolean {
 export const useAppStore = create<AppState>((set, get) => ({
   initialized: false,
   profiles: [],
+  mirrorHubUrl: null,
   activeProfileId: null,
   profileGeneration: 0,
   switchingProfileId: null,
@@ -3296,6 +3299,7 @@ function workspaceStateFromBootstrap(
     initialized,
     storageFull: Boolean(payload.storageFull || useAppStore.getState().storageFull),
     profiles: payload.profiles ?? [],
+    mirrorHubUrl: payload.settings.mirrorHubUrl ?? null,
     activeProfileId: payload.activeProfileId ?? null,
     profileGeneration: payload.profileGeneration ?? 0,
     switchingProfileId: null,
