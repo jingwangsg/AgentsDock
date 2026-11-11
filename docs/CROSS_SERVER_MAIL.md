@@ -101,8 +101,8 @@ with that profile's token (the hub token); any other server is its own hub.
   pair fails its undelivered mail. A failure shows on the sender's timeline.
 - An item whose pair is not in this hub's registry is not failed: the hub
   reports it as pending with its own identity (`hub`), and the server leaves
-  the item out of that hub's outbox reads for 5 minutes. A server two hubs
-  list is thus drained by the hub that paired the item, which reads it at
+  the item out of that hub's outbox reads for 5 minutes. A server listed by
+  two hubs is thus drained by the hub that paired the item, which reads it at
   once; the item fails after 24 hours. The server keeps these skips in memory,
   so after a restart each hub skips such an item once more. When the hub
   without the pair or the server predates `hub`, the item is rescheduled for

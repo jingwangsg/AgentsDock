@@ -134,7 +134,7 @@ describe('ServerManagement', () => {
     })
     useAppStore.setState({
       profiles: [alpha],
-      hubUrl: 'http://127.0.0.1:7850',
+      mirrorHubUrl: null,
       activeProfileId: alpha.id,
       profileGeneration: 1,
       switchingProfileId: null,
@@ -461,8 +461,8 @@ describe('ServerManagement', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent("That address is this Mac's own server.")
     expect(startMirror).toHaveBeenLastCalledWith({ hubUrl: 'http://mac-a.tailnet.ts.net:7850', accessToken: 'mac-a-token' })
     await user.click(screen.getByRole('button', { name: 'Mirror and restart' }))
-    // AgentsDock restarts once the main process answers; the form waits for it.
-    expect(await screen.findByRole('button', { name: 'Restarting AgentsDock…' })).toBeDisabled()
+    // AgentsDock quits before the call returns; the form waits for it.
+    expect(await screen.findByRole('button', { name: "Switching to that Mac's hub…" })).toBeDisabled()
     expect(startMirror).toHaveBeenCalledTimes(2)
   })
 
@@ -470,7 +470,7 @@ describe('ServerManagement', () => {
     const mirrored = 'http://mac-a.tailnet.ts.net:7850'
     const macA = { ...hub, name: 'local', serverUrl: mirrored, connectionState: 'offline' as const, lastConnectionError: 'fetch failed' }
     const macARemote = { ...osmo, serverUrl: `${mirrored}/api/remote/abc123def456` }
-    useAppStore.setState({ profiles: [macARemote, macA], hubUrl: mirrored, activeProfileId: macA.id })
+    useAppStore.setState({ profiles: [macARemote, macA], mirrorHubUrl: mirrored, activeProfileId: macA.id })
     const user = userEvent.setup()
     render(<ServerManagement />)
 

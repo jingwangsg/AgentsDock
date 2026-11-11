@@ -331,7 +331,8 @@ def load_registry(path: Path) -> list[RemoteServer]:
     servers = []
     for item in raw.get("servers", []):
         # load-bearing: the removed attach registered another hub's or Mac's install. Loaded as this hub's
-        # own, Redeploy and Update all would overwrite it, so such an entry is left out (2026-11-11).
+        # own, Redeploy and Update all would overwrite it, so it is not loaded, and the next save removes it from
+        # the file (2026-11-11).
         if item.get("attached"):
             logger.warning("dropping remote %s (%s): it was attached from another hub's install", item.get("name"), item.get("ssh_host"))
             continue
@@ -1881,7 +1882,7 @@ class RemoteServerManager:
     # -- deploy ---------------------------------------------------------------
 
     def start_deploy(self, request: RemoteDeployRequest | None, *, redeploy_id: str | None = None) -> DeployJob:
-        if any(job.task is not None and not job.task.done() for job in self.jobs.values()):
+        if self.job_running():
             raise HTTPException(status_code=409, detail="Another remote deployment is already running.")
         if redeploy_id is not None and redeploy_id not in self.servers:
             raise HTTPException(status_code=404, detail="Unknown remote server.")
@@ -1907,6 +1908,9 @@ class RemoteServerManager:
     def job(self, job_id: str) -> DeployJob | None:
         return self.jobs.get(job_id)
 
+    def job_running(self) -> bool:
+        return any(job.task is not None and not job.task.done() for job in self.jobs.values())
+
     # -- update all -----------------------------------------------------------
 
     async def servers_with_running_chats(self, hub_running_count: int) -> list[dict[str, Any]]:
@@ -1915,8 +1919,8 @@ class RemoteServerManager:
         The remotes are probed at once: a frozen remote holds its probe for HEALTH_REQUEST_TIMEOUT, and
         the client's request has its own 30 s limit."""
         running: list[dict[str, Any]] = [{"id": None, "running": hub_running_count}] if hub_running_count else []
-        remotes = list(self.servers.values())
-        for server, health in zip(remotes, await asyncio.gather(*(self.probe_health(server) for server in remotes))):
+        redeployed = list(self.servers.values())
+        for server, health in zip(redeployed, await asyncio.gather(*(self.probe_health(server) for server in redeployed))):
             count = len(health.get("active") or []) if health is not None else None
             if count != 0:
                 running.append({"id": server.id, "name": server.name, "running": count})
@@ -2413,6 +2417,9 @@ def register_remote_server_routes(
     async def remote_servers_restart_hub(request: Request) -> dict[str, Any]:
         """Restart this hub through launchd: a desktop mirroring it from another Mac cannot run launchctl here."""
         authorize_admin(request)
+        # Two Macs can manage this hub: a restart would end a deploy the other one started.
+        if manager.job_running():
+            raise HTTPException(status_code=409, detail="A remote deployment is running; restart the hub after it finishes.")
         error = await hub_restart()
         if error:
             raise HTTPException(status_code=409, detail=error)

@@ -102111,8 +102111,8 @@ remote_servers.register_remote_server_routes(
 CROSS_SERVER_ROUTES: dict[str, dict[str, Any]] = {}
 CROSS_SERVER_OUTBOX_CHANGED = asyncio.Event()
 # (hub identity, outbox item id) -> time.monotonic() until which that hub's outbox reads skip the item. A hub
-# that attached this server but has no pair for an item says so; another hub that attached it and created the
-# pair must still read the item at once. Kept in memory: after a restart a hub only skips an item once more.
+# that lists this server but has no pair for an item says so; another hub that lists it and created the pair
+# must still read the item at once. Kept in memory: after a restart a hub only skips an item once more.
 CROSS_SERVER_OUTBOX_SKIPPED: dict[tuple[str, str], float] = {}
 CROSS_SERVER_PAIR_LOCK = asyncio.Lock()
 

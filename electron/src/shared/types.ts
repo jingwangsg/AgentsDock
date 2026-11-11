@@ -2191,7 +2191,7 @@ export interface PublicServerSettings {
 }
 
 /** Settings → Server "Mirror another Mac": that Mac's hub address (as it pairs a phone) and its access token. */
-export interface HubMirrorInput {
+export interface MirrorHubInput {
   hubUrl: string
   accessToken: string
 }

@@ -74,7 +74,7 @@ if tail is not None and len(tail) <= 2:  # probe: bash -s -- <install_dir> [<fal
     install_dir = tail[-1] if installs is not None and tail[0] not in installs and tail[-1] in installs else tail[0]
     port = host["existing_port"] if installs is None else installs.get(install_dir)
     print("AGENTSDOCK_TUNNEL_PROBE=" + json.dumps(dict(os="Linux", arch="x86_64", uid=1000, home="/h", tmux=True, free_port=7850, existing_port=port,
-                                                      existing_token=host["token"] if port else None, install_dir=install_dir)))
+                                                      install_dir=install_dir)))
 elif tail is not None:  # bootstrap: bash -s -- <install_dir> <port> <home> [restart]
     if host.get("bootstrap_failure"):  # the host's script prints these lines and fails
         print("\n".join(host["bootstrap_failure"]))
@@ -985,13 +985,15 @@ time.sleep(30)
         # install.sh writes plain NAME=value lines.
         (config / "env").write_text(f"AGENTSDOCK_AGENT_PORT=7999\nAGENTSDOCK_AGENT_TOKEN={REMOTE_TOKEN}\n")
         found = probe(deployed, config)
-        assert (found["install_dir"], found["existing_port"], found["existing_token"]) == (str(config), 7999, REMOTE_TOKEN)
+        assert (found["install_dir"], found["existing_port"]) == (str(config), 7999)
         # A hub-deployed env (export, possibly quoted) wins over the fallback.
         (deployed / "env").write_text(f'export AGENTSDOCK_AGENT_PORT="7998"\nexport AGENTSDOCK_AGENT_TOKEN={HUB_TOKEN}\n')
         found = probe(deployed, config)
-        assert (found["install_dir"], found["existing_port"], found["existing_token"]) == (str(deployed), 7998, HUB_TOKEN)
+        assert (found["install_dir"], found["existing_port"]) == (str(deployed), 7998)
+        # The bootstrap reports the token the hub keeps; the probe has no use for it.
+        assert "existing_token" not in found
         missing = probe(self.tmp_path / "missing")
-        assert (missing["existing_port"], missing["existing_token"]) == (None, None)
+        assert missing["existing_port"] is None
 
     def test_a_deploy_naming_a_registered_install_updates_that_entry_and_keeps_its_id(self) -> None:
         self.fake_host(existing_port=7860)
@@ -2041,7 +2043,7 @@ time.sleep(30)
         hooks = hub_hooks()
 
         async def main() -> None:
-            _, _, _, hub_port, close = await hub_with_fake(self.tmp_path, hooks=hooks)
+            manager, _, _, hub_port, close = await hub_with_fake(self.tmp_path, hooks=hooks)
             try:
                 async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{hub_port}") as client:
                     started = await client.post("/api/admin/remote-servers/hub/restart")
@@ -2050,6 +2052,16 @@ time.sleep(30)
                     hooks.hub_restart.return_value = "This server is not run by launchd, so it cannot restart itself; restart it by hand."
                     refused = await client.post("/api/admin/remote-servers/hub/restart")
                     assert refused.status_code == 409 and refused.json()["detail"] == hooks.hub_restart.return_value
+                    # A deploy another client started is not cut off.
+                    finish = asyncio.Event()
+                    deploying = rs.DeployJob(job_id="deploying")
+                    deploying.task = asyncio.create_task(finish.wait())
+                    manager.jobs[deploying.job_id] = deploying
+                    blocked = await client.post("/api/admin/remote-servers/hub/restart")
+                    assert blocked.status_code == 409 and "deployment is running" in blocked.json()["detail"]
+                    assert hooks.hub_restart.await_count == 2
+                    finish.set()
+                    await deploying.task
             finally:
                 await close()
 

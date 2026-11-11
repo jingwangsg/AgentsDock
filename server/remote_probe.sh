@@ -55,7 +55,6 @@ print("AGENTSDOCK_TUNNEL_PROBE=" + json.dumps({
     "os": platform.system(), "arch": platform.machine(), "uid": os.getuid(), "home": home,
     "tmux": shutil.which("tmux") is not None, "uv": shutil.which("uv") is not None,
     "node": shutil.which("node") is not None,
-    "free_port": port, "existing_port": int(existing) if existing.isdigit() else None,
-    "existing_token": values.get("AGENTSDOCK_AGENT_TOKEN") or None, "install_dir": install_dir,
+    "free_port": port, "existing_port": int(existing) if existing.isdigit() else None, "install_dir": install_dir,
 }))
 PY

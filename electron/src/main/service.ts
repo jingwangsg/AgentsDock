@@ -86,7 +86,7 @@ import type {
   FilesPage,
   ForwardedPort,
   Health,
-  HubMirrorInput,
+  MirrorHubInput,
   TeamHubHostControlCapability,
   Job,
   JobRunNowResult,
@@ -182,7 +182,7 @@ import { PinSyncCoordinator, type PinSyncContext } from './pin-sync'
 import { PORT_TUNNEL_MAX_BRIDGES_PER_TUNNEL, PORT_TUNNEL_SSH_PORT, PortTunnelManager } from './port-tunnel-manager'
 import { BrowserProxy } from './browser-proxy'
 import { FileUploadGrantRegistry } from './file-upload-grants'
-import { SettingsStore, type MirrorHub, type ServerProfileRuntimeState } from './settings'
+import { SettingsStore, type CheckedMirrorHub, type ServerProfileRuntimeState } from './settings'
 import { appLog } from './logger'
 import { readFileWithRetry } from './file-read-retry'
 import { hubRemoteId, hubRemoteProfileOrder, hubRemotesKey, isHubRemoteUrl, localHubConfigDirs, localHubPairingUrl, planHubRemoteProfiles, readLocalHubToken, startLocalServerAgent } from './local-hub'
@@ -1600,7 +1600,9 @@ export class AppService {
   async retryLocalHubToken(pastedToken?: string): Promise<boolean> {
     const hub = this.hubProfile()
     if (!hub) return false
-    const token = await this.acceptedHubToken(hub.serverUrl, pastedToken ? [pastedToken] : localHubConfigDirs().map(readLocalHubToken))
+    // load-bearing: this Mac's token files are for this Mac's server; a mirrored hub on another Mac never sees them.
+    const localTokens = this.settings.mirrorHubUrl() ? [] : localHubConfigDirs().map(readLocalHubToken)
+    const token = await this.acceptedHubToken(hub.serverUrl, pastedToken ? [pastedToken] : localTokens)
     if (!token) return hub.hasAccessToken
     const current = hub.hasAccessToken ? await this.settings.accessTokenForConnectionAsync(hub.id).catch(() => '') : ''
     if (token !== current) {
@@ -1639,7 +1641,7 @@ export class AppService {
    * Mac's hub, with its chats, terminals and remotes. Nothing changes yet: the caller applies it with startMirror
    * once the windows have closed, and AgentsDock starts again on that Mac's profiles.
    */
-  async checkMirrorHub(input: HubMirrorInput): Promise<MirrorHub> {
+  async checkMirrorHub(input: MirrorHubInput): Promise<CheckedMirrorHub> {
     const hubUrl = normalizeServerURL(input.hubUrl)
     const { host, hostname } = new URL(hubUrl)
     if (isLoopbackHostname(hostname)) throw new Error(t('mirror.thisMac'))
@@ -1649,7 +1651,7 @@ export class AppService {
     let identity: string | null
     try {
       const health = await client.health()
-      if (health.ok !== true) throw new Error(t('mirror.unreachable', { host }))
+      if (health.ok !== true) throw new Error(t('mirror.notAgentsServer', { host }))
       identity = health.server_identity?.trim() || null
     } catch (error) {
       if (error instanceof ServerError && error.status === 401) throw new Error(t('mirror.tokenRejected', { host }))
@@ -1663,14 +1665,18 @@ export class AppService {
     return { hubUrl, serverIdentity: identity, accessToken: token, sshHost: hostname }
   }
 
-  startMirror(hub: MirrorHub): void {
+  startMirror(hub: CheckedMirrorHub): void {
     this.settings.startMirror(hub)
     appLog('hub', 'mirroring another Mac', { host: new URL(hub.hubUrl).host })
   }
 
   /** Back to this Mac's own server and chats, applied like startMirror. */
   stopMirror(): void {
+    const mirrored = this.settings.listProfiles()
     this.settings.stopMirror()
+    // As removing a server does: a mirrored profile's Forward SSH alias goes, unless one of this Mac's profiles has it.
+    const kept = new Set(this.settings.listProfiles().map(sshHostAlias))
+    for (const alias of mirrored.map(sshHostAlias)) if (alias && !kept.has(alias)) removeSshHost(alias)
     appLog('hub', 'stopped mirroring')
   }
 
@@ -1743,20 +1749,13 @@ export class AppService {
     input: RemoteServerDeployInput,
     onProgress: (value: ServerSetupProgress) => void
   ): Promise<PublicServerProfile> {
-    return this.runRemoteServerJobViaHub(client => client.startRemoteDeploy(input), onProgress)
-  }
-
-  private async runRemoteServerJobViaHub(
-    start: (client: AgentServerClient) => Promise<{ job_id: string }>,
-    onProgress: (value: ServerSetupProgress) => void
-  ): Promise<PublicServerProfile> {
     const hub = this.hubProfile()
     if (!hub) throw new Error('Remote servers are added through the local server; add it first.')
     if (this.remoteDeploy) throw new Error('A remote server deployment is already running.')
     // The hub profile's own token: a rotated hub token is not copied into existing remote profiles.
     const client = this.clientFactory(hub.serverUrl, await this.settings.accessTokenForConnectionAsync(hub.id))
     try {
-      const state = { client, jobId: (await start(client)).job_id, cancelled: false }
+      const state = { client, jobId: (await client.startRemoteDeploy(input)).job_id, cancelled: false }
       this.remoteDeploy = state
       const job = await this.followHubJob(client, state.jobId, onProgress)
       if (state.cancelled) throw new Error('The deployment was cancelled.')
@@ -1961,7 +1960,7 @@ export class AppService {
       for (;;) {
         const current = await instanceId()
         if (current !== null && current !== previous) break
-        if (Date.now() > deadline) throw new Error('The local server did not come back within 2 minutes of its restart.')
+        if (Date.now() > deadline) throw new Error('The hub did not come back within 2 minutes of its restart.')
         await new Promise(resolve => setTimeout(resolve, 1_000))
       }
     } finally {
@@ -2018,7 +2017,7 @@ export class AppService {
         onProgress({ profileId: profile.id, step: 'done', failed, message: results.join(' · ') })
       }
       // The hub deploys one remote at a time. A remote's CLIs update right after its redeploy, even a failed one:
-      // the hub never redeploys an attached remote, and every server's CLIs were asked for.
+      // every server's CLIs were asked for.
       const updates = [updateClis(hub)]
       for (const remote of remotes) {
         const redeployError = await this.redeployHubRemote(remote.id, true, value => onProgress({ profileId: remote.id, step: 'redeploy', message: value.message }))

@@ -9,11 +9,12 @@ const harness = vi.hoisted(() => ({
 }))
 
 vi.mock('electron', () => ({
-  app: { isPackaged: false, relaunch: vi.fn(), quit: vi.fn(), once: vi.fn() },
+  app: { isPackaged: false, relaunch: vi.fn(), quit: vi.fn(), on: vi.fn() },
   BrowserWindow: class BrowserWindow {
     static fromWebContents() { return { isDestroyed: () => false } }
   },
   clipboard: { readText: vi.fn(), writeText: vi.fn() },
+  dialog: { showErrorBox: vi.fn() },
   ipcMain: {
     removeHandler: vi.fn((channel: string) => harness.handlers.delete(channel)),
     handle: vi.fn((channel: string, handler: (event: unknown, ...args: unknown[]) => unknown) => harness.handlers.set(channel, handler)),
@@ -31,7 +32,7 @@ vi.mock('./server-setup', () => ({
   }
 }))
 
-import { app } from 'electron'
+import { app, dialog } from 'electron'
 import { registerIpc } from './ipc'
 
 const trustedEvent = {
@@ -114,49 +115,44 @@ describe('Team Hub IPC registration', () => {
       senderFrame: { url: 'https://shared.example.test/chat', parent: null } }, scope, 'chat-a', input)).toThrow('untrusted renderer')
   })
 
-  it('changes mirror mode only after the windows have closed, then restarts AgentsDock; a refused hub changes nothing', async () => {
-    vi.useFakeTimers()
-    try {
-      vi.mocked(app.relaunch).mockClear()
-      vi.mocked(app.quit).mockClear()
-      const willQuit: Array<() => void> = []
-      vi.mocked(app.once).mockReset().mockImplementation(((event: string, listener: () => void) => {
-        if (event === 'will-quit') willQuit.push(listener)
-        return app
-      }) as typeof app.once)
-      const hub = { hubUrl: 'http://mac-a.tailnet.ts.net:7850', serverIdentity: 'server-mac-a', accessToken: 'mac-a-token', sshHost: 'mac-a.tailnet.ts.net' }
-      const checkMirrorHub = vi.fn().mockRejectedValueOnce(new Error("That address is this Mac's own server.")).mockResolvedValue(hub)
-      const startMirror = vi.fn()
-      const stopMirror = vi.fn()
-      registerIpc({ checkMirrorHub, startMirror, stopMirror } as unknown as AppService, {} as AppUpdateManager)
-      const input = { hubUrl: 'http://mac-a.tailnet.ts.net:7850', accessToken: 'mac-a-token' }
+  it('changes mirror mode only after the windows have closed, then restarts AgentsDock; a refused hub or a cancelled quit changes nothing', async () => {
+    vi.mocked(app.relaunch).mockClear()
+    vi.mocked(app.quit).mockClear()
+    vi.mocked(app.on).mockClear()
+    vi.mocked(dialog.showErrorBox).mockClear()
+    const hub = { hubUrl: 'http://mac-a.tailnet.ts.net:7850', serverIdentity: 'server-mac-a', accessToken: 'mac-a-token', sshHost: 'mac-a.tailnet.ts.net' }
+    const checkMirrorHub = vi.fn().mockRejectedValueOnce(new Error("That address is this Mac's own server.")).mockResolvedValue(hub)
+    const startMirror = vi.fn()
+    const stopMirror = vi.fn(() => { throw new Error('disk full') })
+    registerIpc({ checkMirrorHub, startMirror, stopMirror } as unknown as AppService, {} as AppUpdateManager)
+    const willQuit = vi.mocked(app.on).mock.calls.find(([event]) => (event as string) === 'will-quit')![1] as () => void
+    const input = { hubUrl: 'http://mac-a.tailnet.ts.net:7850', accessToken: 'mac-a-token' }
 
-      await expect(harness.handlers.get('hub:start-mirror')?.(trustedEvent, input)).rejects.toThrow("this Mac's own server")
-      await vi.runAllTimersAsync()
-      expect(app.quit).not.toHaveBeenCalled()
+    await expect(harness.handlers.get('hub:start-mirror')?.(trustedEvent, input)).rejects.toThrow("this Mac's own server")
+    expect(app.quit).not.toHaveBeenCalled()
 
-      await expect(harness.handlers.get('hub:start-mirror')?.(trustedEvent, input)).resolves.toBeUndefined()
-      expect(checkMirrorHub).toHaveBeenLastCalledWith(input)
-      // The reply reaches the renderer before the quit starts.
-      expect(app.quit).not.toHaveBeenCalled()
-      await vi.runAllTimersAsync()
-      expect(app.quit).toHaveBeenCalledOnce()
-      // The windows still save to this Mac's profiles while they close.
-      expect(startMirror).not.toHaveBeenCalled()
-      expect(app.relaunch).not.toHaveBeenCalled()
-      willQuit.shift()?.()
-      expect(startMirror).toHaveBeenCalledExactlyOnceWith(hub)
-      expect(app.relaunch).toHaveBeenCalledOnce()
+    // A window that cannot save its drafts cancels the quit: the request fails, and a later quit changes nothing.
+    const cancelled = harness.handlers.get('hub:start-mirror')?.(trustedEvent, input) as Promise<never>
+    await vi.waitFor(() => expect(app.quit).toHaveBeenCalledOnce())
+    harness.handlers.get('native:close-flush-complete')?.(trustedEvent, 'close-1', false)
+    await expect(cancelled).rejects.toThrow('a window could not save its drafts')
+    willQuit()
+    expect(startMirror).not.toHaveBeenCalled()
+    expect(app.relaunch).not.toHaveBeenCalled()
 
-      expect(harness.handlers.get('hub:stop-mirror')?.(trustedEvent)).toBeUndefined()
-      await vi.runAllTimersAsync()
-      expect(stopMirror).not.toHaveBeenCalled()
-      willQuit.shift()?.()
-      expect(stopMirror).toHaveBeenCalledOnce()
-      expect(app.relaunch).toHaveBeenCalledTimes(2)
-    } finally {
-      vi.useRealTimers()
-    }
+    // The windows still save to this Mac's profiles while they close; the change is saved in will-quit.
+    void harness.handlers.get('hub:start-mirror')?.(trustedEvent, input)
+    await vi.waitFor(() => expect(app.quit).toHaveBeenCalledTimes(2))
+    expect(startMirror).not.toHaveBeenCalled()
+    willQuit()
+    expect(startMirror).toHaveBeenCalledExactlyOnceWith(hub)
+    expect(app.relaunch).toHaveBeenCalledOnce()
+
+    // A change that cannot be saved is reported before AgentsDock starts again in the mode it had.
+    void harness.handlers.get('hub:stop-mirror')?.(trustedEvent)
+    willQuit()
+    expect(dialog.showErrorBox).toHaveBeenCalledExactlyOnceWith('Could not change mirror mode', 'disk full')
+    expect(app.relaunch).toHaveBeenCalledTimes(2)
   })
 
   it('routes member rename through exact scoped IPC and blocks untrusted frames', async () => {

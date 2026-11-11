@@ -13,6 +13,7 @@ import { useTransientClose } from '../lib/transient-close'
 import { requestOpenAgentFile } from '../lib/workspace-file-links'
 import { liveChatTitle } from '../lib/live-chat-title'
 import { useAppStore } from '../store/app-store'
+import { DEFAULT_SERVER_URL } from '@shared/server-url'
 
 const COLLAPSED_SOURCE_ROWS = 6
 const REFRESH_DEBOUNCE_MS = 1_000
@@ -101,7 +102,14 @@ export function ChatOutputsPanel({ sessionId, onClose }: { sessionId: string; on
             }
             case 'local_preview':
               return <Row key={`preview:${item.host}`} icon={Globe} label={t('chatOutputs.localPreview')} secondary={item.host}
-                onClick={() => void window.agentsDock.native.openExternal(item.url)} />
+                onClick={() => {
+                  // The preview listens on the chat's server: only this Mac's own server shares this Mac's localhost.
+                  // The in-app browser reaches another server's localhost through it (mirror mode included).
+                  const state = useAppStore.getState()
+                  if (state.profiles.find(profile => profile.id === state.activeProfileId)?.serverUrl === DEFAULT_SERVER_URL) {
+                    void window.agentsDock.native.openExternal(item.url)
+                  } else void state.openLinkInBrowser(item.url, sessionId)
+                }} />
             case 'code_changes':
               return <Row key="code-changes" icon={FileDiff} label={timelineCount('editedFiles', item.filesChanged)} secondary={`+${item.additions} −${item.deletions}`}
                 onClick={() => {

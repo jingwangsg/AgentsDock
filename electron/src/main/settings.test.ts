@@ -575,10 +575,9 @@ describe('SettingsStore profile operations', () => {
     store.addProfile({ name: 'oci', serverUrl: 'http://127.0.0.1:7850/api/remote/abc', serverIdentity: 'server-oci', accessToken: 'mac-b-token' })
     const before = stored(path)
 
-    const hub = store.startMirror({ hubUrl: 'mac-a.tailnet.ts.net:7850', serverIdentity: 'server-mac-a', accessToken: 'mac-a-token', sshHost: 'mac-a.tailnet.ts.net' })
-    expect(hub).toMatchObject({ id: 'profile-mac-a', name: 'local', serverUrl: 'http://mac-a.tailnet.ts.net:7850', sshHost: 'mac-a.tailnet.ts.net', hasAccessToken: true })
+    store.startMirror({ hubUrl: 'mac-a.tailnet.ts.net:7850', serverIdentity: 'server-mac-a', accessToken: 'mac-a-token', sshHost: 'mac-a.tailnet.ts.net' })
     expect(store.publicSettings().mirrorHubUrl).toBe('http://mac-a.tailnet.ts.net:7850')
-    expect(store.listProfiles().map(profile => profile.id)).toEqual(['profile-mac-a'])
+    expect(store.listProfiles()).toMatchObject([{ id: 'profile-mac-a', name: 'local', serverUrl: 'http://mac-a.tailnet.ts.net:7850', sshHost: 'mac-a.tailnet.ts.net', hasAccessToken: true }])
     expect(store.accessToken()).toBe('mac-a-token')
     // The same server reached through the other Mac's hub: identities are unique within a set.
     store.addProfile({ name: 'oci', serverUrl: 'http://mac-a.tailnet.ts.net:7850/api/remote/abc', serverIdentity: 'server-oci', accessToken: 'mac-a-token' })

@@ -63,7 +63,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
   const activeProfileId = useAppStore(state => state.activeProfileId)
   const switchingProfileId = useAppStore(state => state.switchingProfileId)
   const switchServer = useAppStore(state => state.switchServer)
-  const hubUrl = useAppStore(state => state.hubUrl)
+  const mirrorHubUrl = useAppStore(state => state.mirrorHubUrl)
   const [draft, setDraft] = useState<ServerDraft | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [editorError, setEditorError] = useState<string | null>(null)
@@ -76,11 +76,11 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
   const nameInputRef = useRef<HTMLInputElement | null>(null)
   const revealEditor = useRef(false)
 
+  // Mirror mode: another Mac's hub stands in for this Mac's server, which is neither shown nor started.
+  const hubUrl = mirrorHubUrl ?? DEFAULT_SERVER_URL
   const hub = profiles.find(profile => profile.serverUrl === hubUrl) ?? null
   /** Remote profiles are proxied through the hub as `${hubUrl}/api/remote/<id>`; that path on another host is a plain saved server. */
   const isHubRemote = (url: string) => url.startsWith(`${hubUrl}/api/remote/`)
-  // Mirror mode: another Mac's hub stands in for this Mac's server, which is neither shown nor started.
-  const mirroring = hubUrl !== DEFAULT_SERVER_URL
   const ordered = hub ? [hub, ...profiles.filter(profile => profile.id !== hub.id)] : profiles
 
   const openEditor = (next: ServerDraft) => {
@@ -139,7 +139,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
   }), [])
 
   // One-field add: the hub deploys the server on the SSH host, keeps the tunnel and
-  // registers the remote; the main process mirrors the registry into profiles.
+  // registers the remote; the main process copies the registry into profiles.
   const deploy = async () => {
     const host = draft?.sshHost.trim()
     if (!draft || !host || busy) return
@@ -403,11 +403,11 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
 
   const [mirrorDraft, setMirrorDraft] = useState<{ hubUrl: string; accessToken: string } | null>(null)
   const [mirrorError, setMirrorError] = useState<string | null>(null)
-  // Both resolve just before AgentsDock restarts, so `busy` stays set on success.
+  // On success AgentsDock quits before either call returns, so `busy` stays set; they settle only when they fail.
   const startMirror = async () => {
     if (!mirrorDraft || busy) return
     setMirrorError(null)
-    setBusy('mirror')
+    setBusy('mirror-start')
     try {
       await window.agentsDock.hub.startMirror({ hubUrl: mirrorDraft.hubUrl.trim(), accessToken: mirrorDraft.accessToken })
     } catch (error) {
@@ -416,7 +416,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
     }
   }
   const stopMirror = async () => {
-    setBusy('mirror')
+    setBusy('mirror-stop')
     try {
       await window.agentsDock.hub.stopMirror()
     } catch (error) {
@@ -478,7 +478,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
             </div>}
           </div>
           <div className="server-management-actions">
-            {!mirroring && (hubDown || starting) && !restarting && <button type="button" className="quiet-button" aria-label={t('hub.startLabel', { server: profile.name })} disabled={Boolean(busy)} onClick={() => void startHub(profile.id)}>{starting && <LoaderCircle className="spin" size={12} />} {starting ? t('hub.starting') : t('hub.start')}</button>}
+            {!mirrorHubUrl && (hubDown || starting) && !restarting && <button type="button" className="quiet-button" aria-label={t('hub.startLabel', { server: profile.name })} disabled={Boolean(busy)} onClick={() => void startHub(profile.id)}>{starting && <LoaderCircle className="spin" size={12} />} {starting ? t('hub.starting') : t('hub.start')}</button>}
             {!current && <button type="button" className="quiet-button" aria-label={working ? t("ui.ServerManagement.switching_to_e7437c0", { "server": String(profile.name) }) : t("ui.ServerManagement.use_367b9be", { "server": String(profile.name) })} disabled={Boolean(busy) || Boolean(switchingProfileId)} onClick={() => void activate(profile.id)}>{working && <LoaderCircle className="spin" size={12} />} {working ? t("ui.ServerManagement.switching_b7b9fbf") : t("ui.ServerManagement.use_c36d819")}</button>}
             <button type="button" className="icon-button" aria-label={t("ui.ServerManagement.edit_966e044", { "server": String(profile.name) })} disabled={Boolean(busy)} onClick={() => beginEdit(profile)}><Pencil size={13} /></button>
             <DropdownMenu.Root>
@@ -544,23 +544,23 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
       <code>{pairingUrl ?? t('hub.pairing.unavailable')}</code>
       <button type="button" className="quiet-button" onClick={() => void copyToken()}>{tokenCopied ? t('hub.pairing.copied') : t('hub.pairing.copyToken')}</button>
     </div>}
-    {mirroring
+    {mirrorHubUrl
       ? <div className="server-management-mirror">
-        <small>{t('mirror.active', { host: new URL(hubUrl).host })}</small>
-        <button type="button" className="quiet-button" disabled={Boolean(busy)} onClick={() => void stopMirror()}>{busy === 'mirror' ? t('mirror.restarting') : t('mirror.stop')}</button>
+        <small>{t('mirror.active', { host: new URL(mirrorHubUrl).host })}</small>
+        <button type="button" className="quiet-button" disabled={Boolean(busy)} onClick={() => void stopMirror()}>{busy === 'mirror-stop' ? t('mirror.restarting') : t('mirror.stop')}</button>
       </div>
       : mirrorDraft
         ? <div className="server-management-editor">
           <div className="server-management-editor-heading"><div><strong>{t('mirror.title')}</strong><small>{t('mirror.hint')}</small></div></div>
-          <label><span>{t('mirror.address')}</span><input value={mirrorDraft.hubUrl} disabled={busy === 'mirror'} onChange={event => setMirrorDraft({ ...mirrorDraft, hubUrl: event.target.value })} placeholder="http://mac-name.tailnet.ts.net:7850" autoCapitalize="none" autoCorrect="off" autoComplete="off" spellCheck={false} /></label>
+          <label><span>{t('mirror.address')}</span><input value={mirrorDraft.hubUrl} disabled={busy === 'mirror-start'} onChange={event => setMirrorDraft({ ...mirrorDraft, hubUrl: event.target.value })} placeholder="http://mac-name.tailnet.ts.net:7850" autoCapitalize="none" autoCorrect="off" autoComplete="off" spellCheck={false} /></label>
           <p className="field-hint">{t('mirror.addressHint')}</p>
-          <label><span>{t('mirror.token')}</span><input type="password" value={mirrorDraft.accessToken} disabled={busy === 'mirror'} onChange={event => setMirrorDraft({ ...mirrorDraft, accessToken: event.target.value })} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); void startMirror() } }} autoComplete="off" /></label>
+          <label><span>{t('mirror.token')}</span><input type="password" value={mirrorDraft.accessToken} disabled={busy === 'mirror-start'} onChange={event => setMirrorDraft({ ...mirrorDraft, accessToken: event.target.value })} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); void startMirror() } }} autoComplete="off" /></label>
           <p className="field-hint">{t('mirror.tokenHint')}</p>
           {mirrorError && <div className="server-management-test error" role="alert"><Wifi size={14} /><span>{mirrorError}</span></div>}
           <footer>
             <span className="dialog-spacer" />
-            <button type="button" className="quiet-button" disabled={busy === 'mirror'} onClick={() => { setMirrorDraft(null); setMirrorError(null) }}>{t('ui.ServerManagement.ServerManagement.cancel_19766ed')}</button>
-            <button type="button" className="primary-button" disabled={Boolean(busy) || !mirrorDraft.hubUrl.trim() || !mirrorDraft.accessToken.trim()} onClick={() => void startMirror()}>{busy === 'mirror' && <LoaderCircle className="spin" size={13} />} {t(busy === 'mirror' ? 'mirror.restarting' : 'mirror.start')}</button>
+            <button type="button" className="quiet-button" disabled={busy === 'mirror-start'} onClick={() => { setMirrorDraft(null); setMirrorError(null) }}>{t('ui.ServerManagement.ServerManagement.cancel_19766ed')}</button>
+            <button type="button" className="primary-button" disabled={Boolean(busy) || !mirrorDraft.hubUrl.trim() || !mirrorDraft.accessToken.trim()} onClick={() => void startMirror()}>{busy === 'mirror-start' && <LoaderCircle className="spin" size={13} />} {t(busy === 'mirror-start' ? 'mirror.switching' : 'mirror.start')}</button>
           </footer>
         </div>
         : <div className="server-management-mirror">

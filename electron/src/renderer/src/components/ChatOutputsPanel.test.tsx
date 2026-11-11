@@ -54,7 +54,7 @@ beforeEach(() => {
     configurable: true,
     value: { chat: { outputs }, native: { openExternal, writeClipboard }, files: { save, reveal } } as unknown as AgentsDockAPI
   })
-  useAppStore.setState({ snapshots: { chat: snapshot([]) } })
+  useAppStore.setState({ snapshots: { chat: snapshot([]) }, profiles: [{ id: 'local', name: 'local', serverUrl: 'http://127.0.0.1:7850', hasAccessToken: true, serverSetupComplete: true, connectionState: 'online', cachedUnreadCount: 0 }], activeProfileId: 'local' })
 })
 
 afterEach(() => {
@@ -106,6 +106,24 @@ describe('ChatOutputsPanel', () => {
     ])
     expect(openExternal).toHaveBeenCalledExactlyOnceWith('http://localhost:5173/app')
     for (const name of ['agentsdock:open-canvas', 'agentsdock:open-agent-file', 'agentsdock:find-event', 'agentsdock:review-diff']) window.removeEventListener(name, record)
+  })
+
+  it('opens a local preview of another server\'s chat in the in-app browser, which reaches that server\'s localhost', async () => {
+    const original = useAppStore.getState().openLinkInBrowser
+    const openLinkInBrowser = vi.fn().mockResolvedValue(undefined)
+    useAppStore.setState({
+      profiles: [{ id: 'mac-a', name: 'local', serverUrl: 'http://mac-a.tailnet.ts.net:7850', hasAccessToken: true, serverSetupComplete: true, connectionState: 'online', cachedUnreadCount: 0 }],
+      activeProfileId: 'mac-a',
+      openLinkInBrowser
+    })
+    try {
+      await renderPanel()
+      await userEvent.setup().click(screen.getByRole('button', { name: /^Local preview/ }))
+      expect(openLinkInBrowser).toHaveBeenCalledExactlyOnceWith('http://localhost:5173/app', 'chat')
+      expect(openExternal).not.toHaveBeenCalled()
+    } finally {
+      useAppStore.setState({ openLinkInBrowser: original })
+    }
   })
 
   it('right-clicking an output offers copy path, download and show in folder without closing the card', async () => {

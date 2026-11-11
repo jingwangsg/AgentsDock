@@ -61,7 +61,7 @@ import type {
   FilesPage,
   ForwardedPort,
   Health,
-  HubMirrorInput,
+  MirrorHubInput,
   JsonValue,
   LanguageSettingsSnapshot,
   Job,
@@ -410,13 +410,16 @@ export interface AgentsDockAPI {
     pairingUrl(): Promise<string | null>
     /** Starts the local server's LaunchAgent and resolves once 127.0.0.1:7850 accepts connections. */
     startLocalServer(): Promise<void>
-    /** Restarts the local server's LaunchAgent; without `force`, a server with running chats is left alone and their count returned (null when they could not be counted). */
+    /** Restarts the hub: this Mac's LaunchAgent, or in mirror mode the other Mac's hub through its API; without `force`, a hub with running chats is left alone and their count returned (null when they could not be counted). */
     restartLocalServer(force: boolean): Promise<{ restarted: boolean; running: number | null }>
     /** Copies the hub token to the clipboard inside the main process. */
     copyToken(): Promise<boolean>
-    /** Another Mac's hub becomes this Mac's hub with all its chats and servers; then AgentsDock restarts. */
-    startMirror(input: HubMirrorInput): Promise<void>
-    /** Back to this Mac's own server and chats; then AgentsDock restarts. */
+    /**
+     * Checks another Mac's hub, then AgentsDock quits and starts again with that hub as this Mac's, with all its chats
+     * and servers. Settles only when it fails: the check is refused, or a window cancels the quit.
+     */
+    startMirror(input: MirrorHubInput): Promise<void>
+    /** Back to this Mac's own server and chats, the same way. */
     stopMirror(): Promise<void>
   }
   sessions: {
