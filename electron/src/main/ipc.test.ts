@@ -9,7 +9,7 @@ const harness = vi.hoisted(() => ({
 }))
 
 vi.mock('electron', () => ({
-  app: { isPackaged: false },
+  app: { isPackaged: false, relaunch: vi.fn(), quit: vi.fn(), once: vi.fn() },
   BrowserWindow: class BrowserWindow {
     static fromWebContents() { return { isDestroyed: () => false } }
   },
@@ -31,6 +31,7 @@ vi.mock('./server-setup', () => ({
   }
 }))
 
+import { app } from 'electron'
 import { registerIpc } from './ipc'
 
 const trustedEvent = {
@@ -113,21 +114,49 @@ describe('Team Hub IPC registration', () => {
       senderFrame: { url: 'https://shared.example.test/chat', parent: null } }, scope, 'chat-a', input)).toThrow('untrusted renderer')
   })
 
-  it('routes remote server attach through the hub and forwards its progress to the sender', async () => {
-    const progress = { phase: 'connect', message: 'Probing nv_gb300…' }
-    const attachRemoteServerViaHub = vi.fn(async (_input: unknown, onProgress: (value: unknown) => void) => {
-      onProgress(progress)
-      return { id: 'gb300' }
-    })
-    registerIpc({ attachRemoteServerViaHub } as unknown as AppService, {} as AppUpdateManager)
-    const send = vi.fn()
-    const event = { ...trustedEvent, sender: { ...trustedEvent.sender, isDestroyed: () => false, send } }
-    const input = { sshHost: 'nv_gb300', installDir: '/mnt/lustre/.agentsdock-server' }
+  it('changes mirror mode only after the windows have closed, then restarts AgentsDock; a refused hub changes nothing', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(app.relaunch).mockClear()
+      vi.mocked(app.quit).mockClear()
+      const willQuit: Array<() => void> = []
+      vi.mocked(app.once).mockReset().mockImplementation(((event: string, listener: () => void) => {
+        if (event === 'will-quit') willQuit.push(listener)
+        return app
+      }) as typeof app.once)
+      const hub = { hubUrl: 'http://mac-a.tailnet.ts.net:7850', serverIdentity: 'server-mac-a', accessToken: 'mac-a-token', sshHost: 'mac-a.tailnet.ts.net' }
+      const checkMirrorHub = vi.fn().mockRejectedValueOnce(new Error("That address is this Mac's own server.")).mockResolvedValue(hub)
+      const startMirror = vi.fn()
+      const stopMirror = vi.fn()
+      registerIpc({ checkMirrorHub, startMirror, stopMirror } as unknown as AppService, {} as AppUpdateManager)
+      const input = { hubUrl: 'http://mac-a.tailnet.ts.net:7850', accessToken: 'mac-a-token' }
 
-    await expect(harness.handlers.get('remote-servers:attach')?.(event, input)).resolves.toEqual({ id: 'gb300' })
+      await expect(harness.handlers.get('hub:start-mirror')?.(trustedEvent, input)).rejects.toThrow("this Mac's own server")
+      await vi.runAllTimersAsync()
+      expect(app.quit).not.toHaveBeenCalled()
 
-    expect(attachRemoteServerViaHub).toHaveBeenCalledExactlyOnceWith(input, expect.any(Function))
-    expect(send).toHaveBeenCalledExactlyOnceWith('server:setup-progress', progress)
+      await expect(harness.handlers.get('hub:start-mirror')?.(trustedEvent, input)).resolves.toBeUndefined()
+      expect(checkMirrorHub).toHaveBeenLastCalledWith(input)
+      // The reply reaches the renderer before the quit starts.
+      expect(app.quit).not.toHaveBeenCalled()
+      await vi.runAllTimersAsync()
+      expect(app.quit).toHaveBeenCalledOnce()
+      // The windows still save to this Mac's profiles while they close.
+      expect(startMirror).not.toHaveBeenCalled()
+      expect(app.relaunch).not.toHaveBeenCalled()
+      willQuit.shift()?.()
+      expect(startMirror).toHaveBeenCalledExactlyOnceWith(hub)
+      expect(app.relaunch).toHaveBeenCalledOnce()
+
+      expect(harness.handlers.get('hub:stop-mirror')?.(trustedEvent)).toBeUndefined()
+      await vi.runAllTimersAsync()
+      expect(stopMirror).not.toHaveBeenCalled()
+      willQuit.shift()?.()
+      expect(stopMirror).toHaveBeenCalledOnce()
+      expect(app.relaunch).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('routes member rename through exact scoped IPC and blocks untrusted frames', async () => {

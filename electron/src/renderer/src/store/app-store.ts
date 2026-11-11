@@ -14,6 +14,7 @@ import { t } from '@shared/i18n'
 import { runtimeSelectionError, selectableChatBackends } from '@shared/runtime-catalog'
 import { isAsyncCrossChatMessage, isNativeSteerEvent, isNativeSteerTransitionStop, timelineSemanticUnits } from '@shared/semantic-timeline'
 import { turnSendErrorMessage } from '@shared/server-errors'
+import { DEFAULT_SERVER_URL } from '@shared/server-url'
 import { completedPrefixForkAvailable, RUNNING_FORK_UNAVAILABLE } from '@shared/session-fork'
 import { sessionRewindAvailable } from '@shared/session-rewind'
 import { agentFileBelongsToSession, isolateSessionEvent, isolateSessionSnapshot } from '@shared/session-files'
@@ -188,6 +189,8 @@ interface PendingLiveEventBatch extends LiveEventBatch {
 interface AppState {
   initialized: boolean
   profiles: PublicServerProfile[]
+  /** The hub's profile URL: this Mac's server, or another Mac's in mirror mode. Fixed until the app restarts. */
+  hubUrl: string
   activeProfileId: string | null
   profileGeneration: number
   switchingProfileId: string | null
@@ -538,6 +541,7 @@ function sameWebAddress(stored: string | null, link: string): boolean {
 export const useAppStore = create<AppState>((set, get) => ({
   initialized: false,
   profiles: [],
+  hubUrl: DEFAULT_SERVER_URL,
   activeProfileId: null,
   profileGeneration: 0,
   switchingProfileId: null,
@@ -3296,6 +3300,7 @@ function workspaceStateFromBootstrap(
     initialized,
     storageFull: Boolean(payload.storageFull || useAppStore.getState().storageFull),
     profiles: payload.profiles ?? [],
+    hubUrl: payload.settings.mirrorHubUrl ?? DEFAULT_SERVER_URL,
     activeProfileId: payload.activeProfileId ?? null,
     profileGeneration: payload.profileGeneration ?? 0,
     switchingProfileId: null,

@@ -4220,6 +4220,44 @@ function profileSettings(activeServerUrl = 'http://a.test:7850'): { settings: Se
   return { settings, directory }
 }
 
+/** Like profileSettings, with a secure store that can keep tokens (mirror mode saves the other Mac's). */
+function tokenSettings(): SettingsStore {
+  const directory = mkdtempSync(join(tmpdir(), 'agentsdock-service-'))
+  const ids = ['a', 'b']
+  const settings = new SettingsStore({
+    path: join(directory, 'settings.json'),
+    createProfileId: () => ids.shift() ?? `extra-${Date.now()}`,
+    now: () => '2026-11-11T12:00:00Z',
+    isMacAppStoreBuild: () => true,
+    keychain: { read: () => '', write: () => false, delete: () => undefined },
+    safeStorage: {
+      isEncryptionAvailable: () => true,
+      encryptString: value => Buffer.from(value),
+      decryptString: value => value.toString('utf8')
+    }
+  })
+  cleanup.push(() => rmSync(directory, { recursive: true, force: true }))
+  return settings
+}
+
+function profileServiceWith(settings: SettingsStore, clients: Record<string, Array<ReturnType<typeof fakeClient>>>): AppService {
+  const cache = new LocalCache(':memory:')
+  const service = new AppService({
+    settings,
+    cache,
+    clientFactory: serverUrl => {
+      const client = clients[serverUrl]?.shift()
+      if (!client) throw new Error(`Missing fake client for ${serverUrl}`)
+      return client as unknown as AgentServerClient
+    }
+  })
+  cleanup.push(() => {
+    service.stop()
+    cache.close()
+  })
+  return service
+}
+
 function createProfileService(
   clients: Record<string, Array<ReturnType<typeof fakeClient>>>,
   prepareCache?: (cache: LocalCache) => void,
@@ -10280,6 +10318,55 @@ describe('server profile lifecycle', () => {
     finishRestart()
     await expect(restart).resolves.toEqual({ restarted: true, running: 0 })
     expect(startLocalServerAgent).toHaveBeenCalledOnce()
+  })
+
+  it('checks the other Mac before mirroring it, and refuses this Mac\'s own server', async () => {
+    const settings = tokenSettings()
+    settings.updateProfile('a', { name: 'local', serverUrl: DEFAULT_SERVER_URL, serverIdentity: 'server-mac-b' })
+    const macA = 'http://mac-a.tailnet.ts.net:7850'
+    const macBByName = 'http://mac-b.tailnet.ts.net:7850'
+    const clients: Record<string, Array<ReturnType<typeof fakeClient>>> = {
+      [DEFAULT_SERVER_URL]: [fakeClient()],
+      [macA]: [
+        fakeClient({ health: async () => { throw new ServerError(401, 'unauthorized') } }),
+        fakeClient({ health: async () => ({ ok: true, server_identity: 'server-mac-a' }) })
+      ],
+      [macBByName]: [fakeClient({ health: async () => ({ ok: true, server_identity: 'server-mac-b' }) })]
+    }
+    const service = profileServiceWith(settings, clients)
+
+    await expect(service.checkMirrorHub({ hubUrl: 'http://127.0.0.1:7850', accessToken: 'token' })).rejects.toThrow("That address is this Mac's own server.")
+    await expect(service.checkMirrorHub({ hubUrl: macBByName, accessToken: 'token' })).rejects.toThrow("That address is this Mac's own server.")
+    await expect(service.checkMirrorHub({ hubUrl: macA, accessToken: '  ' })).rejects.toThrow("Enter that Mac's access token.")
+    await expect(service.checkMirrorHub({ hubUrl: macA, accessToken: 'wrong' })).rejects.toThrow('mac-a.tailnet.ts.net:7850 did not accept that access token.')
+
+    const hub = await service.checkMirrorHub({ hubUrl: 'mac-a.tailnet.ts.net:7850', accessToken: ' mac-a-token ' })
+    // Checking changes nothing: the switch is saved once the windows have closed.
+    expect(settings.mirrorHubUrl()).toBeNull()
+    service.startMirror(hub)
+    expect(settings.mirrorHubUrl()).toBe(macA)
+    expect(settings.listProfiles()).toMatchObject([{ name: 'local', serverUrl: macA, serverIdentity: 'server-mac-a', sshHost: 'mac-a.tailnet.ts.net' }])
+    expect(settings.accessToken()).toBe('mac-a-token')
+  })
+
+  it('in mirror mode restarts the other Mac\'s hub through its API, never this Mac\'s launchctl', async () => {
+    const macA = 'http://mac-a.tailnet.ts.net:7850'
+    const settings = tokenSettings()
+    settings.startMirror({ hubUrl: macA, serverIdentity: 'server-mac-a', accessToken: 'mac-a-token', sshHost: 'mac-a.tailnet.ts.net' })
+    let instance = 'boot-1'
+    const hub = Object.assign(fakeClient({ health: async () => ({ ok: true, active: [], server_instance_id: instance }) }), {
+      restartHub: vi.fn(async () => {
+        instance = 'boot-2'
+        return { restarting: true }
+      })
+    })
+    // Upper bound: the restart also starts background health probes.
+    const service = profileServiceWith(settings, { [macA]: Array(8).fill(hub) })
+    vi.mocked(startLocalServerAgent).mockReset()
+
+    await expect(service.restartLocalHub(false)).resolves.toEqual({ restarted: true, running: 0 })
+    expect(hub.restartHub).toHaveBeenCalledOnce()
+    expect(startLocalServerAgent).not.toHaveBeenCalled()
   })
 
   it('moves a hub remote through the hub, and its profile follows the new host even when the deploy fails', async () => {

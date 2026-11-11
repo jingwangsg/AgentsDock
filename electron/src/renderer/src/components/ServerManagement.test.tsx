@@ -78,7 +78,6 @@ describe('ServerManagement', () => {
   const remove = vi.fn()
   const reorder = vi.fn()
   const remoteDeploy = vi.fn()
-  const remoteAttach = vi.fn()
   const remoteCancel = vi.fn()
   const remoteRemove = vi.fn()
   const remoteMove = vi.fn()
@@ -91,6 +90,8 @@ describe('ServerManagement', () => {
   const copyToken = vi.fn()
   const startLocalServer = vi.fn()
   const restartLocalServer = vi.fn()
+  const startMirror = vi.fn()
+  const stopMirror = vi.fn()
   const switchServer = vi.fn()
 
   beforeEach(() => {
@@ -100,7 +101,6 @@ describe('ServerManagement', () => {
     remove.mockReset().mockResolvedValue(true)
     reorder.mockReset().mockResolvedValue([beta, alpha])
     remoteDeploy.mockReset().mockResolvedValue(gb300)
-    remoteAttach.mockReset().mockResolvedValue(gb300)
     remoteCancel.mockReset().mockResolvedValue(undefined)
     remoteRemove.mockReset().mockResolvedValue(undefined)
     remoteMove.mockReset().mockResolvedValue(undefined)
@@ -113,6 +113,8 @@ describe('ServerManagement', () => {
     copyToken.mockReset().mockResolvedValue(true)
     startLocalServer.mockReset().mockResolvedValue(undefined)
     restartLocalServer.mockReset()
+    startMirror.mockReset().mockResolvedValue(undefined)
+    stopMirror.mockReset().mockResolvedValue(undefined)
     switchServer.mockReset().mockImplementation(async (profileId: string) => {
       useAppStore.setState(state => ({ activeProfileId: profileId, profileGeneration: state.profileGeneration + 1 }))
       return true
@@ -121,8 +123,8 @@ describe('ServerManagement', () => {
       configurable: true,
       value: {
         servers: { list, update, remove, reorder },
-        remoteServers: { deploy: remoteDeploy, attach: remoteAttach, cancel: remoteCancel, remove: remoteRemove, move: remoteMove, redeploy: remoteRedeploy, updateAll: remoteUpdateAll, setHidden: remoteSetHidden, rename: remoteRename },
-        hub: { pairingUrl, copyToken, startLocalServer, restartLocalServer },
+        remoteServers: { deploy: remoteDeploy, cancel: remoteCancel, remove: remoteRemove, move: remoteMove, redeploy: remoteRedeploy, updateAll: remoteUpdateAll, setHidden: remoteSetHidden, rename: remoteRename },
+        hub: { pairingUrl, copyToken, startLocalServer, restartLocalServer, startMirror, stopMirror },
         events: { on: (name: string, listener: (value: ServerUpdateAllProgress) => void) => {
           if (name !== 'remote-servers:update-all-progress') return () => undefined
           progressListeners.add(listener)
@@ -132,6 +134,7 @@ describe('ServerManagement', () => {
     })
     useAppStore.setState({
       profiles: [alpha],
+      hubUrl: 'http://127.0.0.1:7850',
       activeProfileId: alpha.id,
       profileGeneration: 1,
       switchingProfileId: null,
@@ -171,28 +174,6 @@ describe('ServerManagement', () => {
     await user.click(screen.getByRole('button', { name: 'Add & switch' }))
 
     await waitFor(() => expect(remoteDeploy).toHaveBeenCalledWith({ sshHost: 'dev@build-host', installDir: '~/.agentsdock-server', name: undefined, password: 'hunter2' }))
-  })
-
-  it('attaches an existing remote through the hub instead of deploying, then switches to it', async () => {
-    list.mockResolvedValue([hub, osmo, gb300])
-    useAppStore.setState({ profiles: [hub, osmo], activeProfileId: hub.id })
-    const user = userEvent.setup()
-    render(<ServerManagement addRequest={1} />)
-
-    expect(screen.getByRole('button', { name: 'Deploy a new server' })).toHaveAttribute('aria-pressed', 'true')
-    await user.click(screen.getByRole('button', { name: 'Attach an existing server' }))
-    expect(screen.getByRole('button', { name: 'Attach an existing server' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByText(/Nothing on the host is changed/)).toBeInTheDocument()
-    await user.type(screen.getByLabelText('SSH host'), 'nv_gb300')
-    await user.clear(screen.getByLabelText('Install directory on the host'))
-    await user.type(screen.getByLabelText('Install directory on the host'), '/mnt/lustre/.agentsdock-server')
-    await user.click(screen.getByRole('button', { name: 'Add & switch' }))
-
-    await waitFor(() => expect(switchServer).toHaveBeenCalledWith('gb300'))
-    expect(remoteAttach).toHaveBeenCalledWith({ sshHost: 'nv_gb300', installDir: '/mnt/lustre/.agentsdock-server', name: undefined })
-    expect(remoteDeploy).not.toHaveBeenCalled()
-    expect(useAppStore.getState().activeProfileId).toBe('gb300')
-    expect(screen.queryByRole('button', { name: 'Add & switch' })).not.toBeInTheDocument()
   })
 
   it('does not move a just-added remote when Save follows a failed switch', async () => {
@@ -463,6 +444,48 @@ describe('ServerManagement', () => {
     rerender(<ServerManagement />)
     expect(screen.queryByRole('button', { name: 'Start This Mac' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Restart This Mac' })).toBeInTheDocument()
+  })
+
+  it('mirrors another Mac with its address and token, keeping the form after a refusal', async () => {
+    useAppStore.setState({ profiles: [hub, osmo], activeProfileId: hub.id })
+    startMirror.mockRejectedValueOnce(new Error("Error invoking remote method 'hub:start-mirror': Error: That address is this Mac's own server."))
+    const user = userEvent.setup()
+    render(<ServerManagement />)
+
+    await user.click(screen.getByRole('button', { name: 'Mirror another Mac…' }))
+    expect(screen.getByRole('button', { name: 'Mirror and restart' })).toBeDisabled()
+    await user.type(screen.getByLabelText('Hub address'), ' http://mac-a.tailnet.ts.net:7850 ')
+    await user.type(screen.getByLabelText('Access token'), 'mac-a-token')
+    await user.click(screen.getByRole('button', { name: 'Mirror and restart' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent("That address is this Mac's own server.")
+    expect(startMirror).toHaveBeenLastCalledWith({ hubUrl: 'http://mac-a.tailnet.ts.net:7850', accessToken: 'mac-a-token' })
+    await user.click(screen.getByRole('button', { name: 'Mirror and restart' }))
+    // AgentsDock restarts once the main process answers; the form waits for it.
+    expect(await screen.findByRole('button', { name: 'Restarting AgentsDock…' })).toBeDisabled()
+    expect(startMirror).toHaveBeenCalledTimes(2)
+  })
+
+  it('in mirror mode treats the other Mac\'s hub as the local server, never starts it, and stops mirroring', async () => {
+    const mirrored = 'http://mac-a.tailnet.ts.net:7850'
+    const macA = { ...hub, name: 'local', serverUrl: mirrored, connectionState: 'offline' as const, lastConnectionError: 'fetch failed' }
+    const macARemote = { ...osmo, serverUrl: `${mirrored}/api/remote/abc123def456` }
+    useAppStore.setState({ profiles: [macARemote, macA], hubUrl: mirrored, activeProfileId: macA.id })
+    const user = userEvent.setup()
+    render(<ServerManagement />)
+
+    // The hub row comes first and cannot be removed; the remote is the hub's, so it can be redeployed.
+    expect(screen.getAllByRole('button', { name: /^Use / }).map(button => button.getAttribute('aria-label'))).toEqual(['Use OSMO'])
+    expect(screen.queryByRole('button', { name: /Remove local/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Redeploy OSMO' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add server' })).toBeEnabled()
+    // This Mac cannot start the other Mac's server.
+    expect(screen.queryByRole('button', { name: 'Start local' })).not.toBeInTheDocument()
+    expect(screen.getByText("Mirroring mac-a.tailnet.ts.net:7850: chats, terminals and paths here are that Mac's.")).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Stop mirroring and restart' }))
+
+    await waitFor(() => expect(stopMirror).toHaveBeenCalledOnce())
+    expect(screen.getByRole('button', { name: 'Restarting AgentsDock…' })).toBeDisabled()
   })
 
   it('reveals and focuses the editor when Add server is clicked directly', async () => {

@@ -2186,6 +2186,14 @@ export interface PublicServerSettings {
   hasAccessToken: boolean
   serverIdentity?: string | null
   serverSetupComplete: boolean
+  /** Set in mirror mode: the other Mac's hub, which stands in for this Mac's server on 127.0.0.1:7850. */
+  mirrorHubUrl?: string
+}
+
+/** Settings → Server "Mirror another Mac": that Mac's hub address (as it pairs a phone) and its access token. */
+export interface HubMirrorInput {
+  hubUrl: string
+  accessToken: string
 }
 
 export interface ServerSetupInput {
@@ -2258,15 +2266,6 @@ export interface RemoteServerDeployInput {
 export interface RemoteServerMoveInput {
   sshHost: string
   installDir?: string
-}
-
-/** Registers an install another hub deployed; the hub uploads nothing and never restarts it. */
-export interface RemoteServerAttachInput {
-  sshHost: string
-  installDir?: string
-  name?: string
-  /** Same one-time use as RemoteServerDeployInput.password. */
-  password?: string
 }
 
 export interface RemoteServerDeployLogEntry {

@@ -4,7 +4,7 @@ import { appLog } from './logger'
 import type { AppUpdateManager } from './updater'
 import { ServerSetupManager } from './server-setup'
 import { join } from 'node:path'
-import { localHubConfigDirs, localHubPairingUrl } from './local-hub'
+import { localHubConfigDirs } from './local-hub'
 import { acknowledgeWindowCloseFlush, closeWindowAfterRendererFlush } from './window-close'
 import type { LazyTeamHubService } from './team-hub-lazy-service'
 import { LOCAL_SESSION_IMPORT_HARD_LIST_LIMIT, parseBulkImportSessionItems } from '../shared/local-session-import'
@@ -249,9 +249,6 @@ export function registerIpc(
   handleWithEvent('remote-servers:deploy', (event, input) => service.deployRemoteServerViaHub(input, progress => {
     if (!event.sender.isDestroyed()) event.sender.send('server:setup-progress', progress)
   }))
-  handleWithEvent('remote-servers:attach', (event, input) => service.attachRemoteServerViaHub(input, progress => {
-    if (!event.sender.isDestroyed()) event.sender.send('server:setup-progress', progress)
-  }))
   // The add form's channel: the edit form shows a move's log the same way, and a move holds the hub's one
   // deploy slot, so no add runs beside it.
   handleWithEvent('remote-servers:move', (event, profileId, input) => service.moveHubRemote(profileId, input, progress => {
@@ -271,10 +268,27 @@ export function registerIpc(
   handle('servers:update-cli', (profileId, backend) => service.updateServerRuntimeCli(profileId, backend))
   handle('hub:adopt-local-token', token => service.retryLocalHubToken(typeof token === 'string' ? token : undefined))
   handle('hub:local-token-files', () => localHubConfigDirs().map(dir => join(dir, 'env')))
-  handle('hub:pairing-url', () => localHubPairingUrl())
+  handle('hub:pairing-url', () => service.hubPairingUrl())
   handle('hub:start-local-server', () => service.startLocalHub())
   handle('hub:restart-local-server', force => service.restartLocalHub(force === true))
   handle('hub:copy-token', () => service.copyHubToken())
+  // Mirror mode replaces every profile at once. The windows close first, saving their drafts to the profiles they
+  // have; then the change is saved and AgentsDock starts again on it. A quit a window cancels (its drafts could not
+  // be saved) keeps the change for the next quit. The reply reaches the renderer before the quit starts.
+  const applyAfterQuit = (apply: () => void) => setTimeout(() => {
+    app.once('will-quit', () => {
+      try { apply() } catch (error) { appLog('hub', 'could not change mirror mode', { message: error instanceof Error ? error.message : String(error) }) }
+      app.relaunch()
+    })
+    app.quit()
+  }, 100)
+  handle('hub:start-mirror', async input => {
+    const hub = await service.checkMirrorHub(input)
+    applyAfterQuit(() => service.startMirror(hub))
+  })
+  handle('hub:stop-mirror', () => {
+    applyAfterQuit(() => service.stopMirror())
+  })
 
   handle('sessions:list', () => service.listSessions())
   handle('sessions:create', input => service.createSession(input))

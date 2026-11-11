@@ -564,6 +564,43 @@ describe('SettingsStore profile operations', () => {
     store.removeProfile('profile-b', 'profile-a')
     expect(store.getActiveProfileId()).toBe('profile-a')
   })
+
+  it('mirrors another Mac\'s hub in a profile set of its own and restores this Mac\'s profiles untouched', () => {
+    const path = settingsPath()
+    const keychain = new MemoryKeychain()
+    const ids = ['profile-local', 'profile-remote', 'profile-mac-a', 'profile-mac-a-remote']
+    const options = { path, keychain, safeStorage: memorySafeStorage, now: () => '2026-11-11T12:00:00.000Z', isMacAppStoreBuild: () => false }
+    const store = new SettingsStore({ ...options, createProfileId: () => ids.shift()! })
+    store.update({ serverUrl: 'http://127.0.0.1:7850', accessToken: 'mac-b-token' })
+    store.addProfile({ name: 'oci', serverUrl: 'http://127.0.0.1:7850/api/remote/abc', serverIdentity: 'server-oci', accessToken: 'mac-b-token' })
+    const before = stored(path)
+
+    const hub = store.startMirror({ hubUrl: 'mac-a.tailnet.ts.net:7850', serverIdentity: 'server-mac-a', accessToken: 'mac-a-token', sshHost: 'mac-a.tailnet.ts.net' })
+    expect(hub).toMatchObject({ id: 'profile-mac-a', name: 'local', serverUrl: 'http://mac-a.tailnet.ts.net:7850', sshHost: 'mac-a.tailnet.ts.net', hasAccessToken: true })
+    expect(store.publicSettings().mirrorHubUrl).toBe('http://mac-a.tailnet.ts.net:7850')
+    expect(store.listProfiles().map(profile => profile.id)).toEqual(['profile-mac-a'])
+    expect(store.accessToken()).toBe('mac-a-token')
+    // The same server reached through the other Mac's hub: identities are unique within a set.
+    store.addProfile({ name: 'oci', serverUrl: 'http://mac-a.tailnet.ts.net:7850/api/remote/abc', serverIdentity: 'server-oci', accessToken: 'mac-a-token' })
+    expect(stored(path).profiles).toEqual(before.profiles)
+
+    const reopened = new SettingsStore(options)
+    expect(reopened.listProfiles().map(profile => profile.id)).toEqual(['profile-mac-a', 'profile-mac-a-remote'])
+    expect(reopened.mirrorHubUrl()).toBe('http://mac-a.tailnet.ts.net:7850')
+    expect(() => reopened.startMirror({ hubUrl: 'mac-c:7850', serverIdentity: null, accessToken: 'c', sshHost: null })).toThrow(/Stop mirroring first/)
+
+    reopened.stopMirror()
+    const after = stored(path)
+    expect(after.mirror).toBeUndefined()
+    expect(after.activeProfileId).toBe(before.activeProfileId)
+    // Reading normalizes each profile (retiredServerNamespaces); nothing else of this Mac's changes.
+    expect(after.profiles).toEqual(before.profiles.map(profile => ({ ...profile, retiredServerNamespaces: [] })))
+    expect(reopened.listProfiles().map(profile => profile.id)).toEqual(['profile-local', 'profile-remote'])
+    expect(reopened.publicSettings().mirrorHubUrl).toBeUndefined()
+    expect(reopened.accessToken()).toBe('mac-b-token')
+    expect(keychain.values.has('agent-access-token:profile-mac-a')).toBe(false)
+    expect(keychain.values.has('agent-access-token:profile-mac-a-remote')).toBe(false)
+  })
 })
 
 describe('SettingsStore atomic persistence', () => {

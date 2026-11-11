@@ -21,7 +21,6 @@ interface ServerDraft {
   openedName: string
   sshHost: string
   installDir: string
-  mode: 'deploy' | 'attach'
   /** Only for adding: the hub installs its SSH key with it once and keeps nothing. */
   password: string
   resetServerIdentity: boolean
@@ -33,15 +32,11 @@ const emptyDraft = (): ServerDraft => ({
   openedName: '',
   sshHost: '',
   installDir: '~/.agentsdock-server',
-  mode: 'deploy',
   password: '',
   resetServerIdentity: false
 })
 
 interface RowWork { kind: 'redeploy' | 'cli' | 'ssh' | 'visibility'; text: string; working?: boolean; failed?: boolean; confirm?: boolean }
-
-/** Remote profiles are proxied through the local hub as `${DEFAULT_SERVER_URL}/api/remote/<id>`; that path on another host is a plain saved server. */
-const isHubRemote = (url: string) => url.startsWith(`${DEFAULT_SERVER_URL}/api/remote/`)
 
 /** The saved order after dragging one server onto another's place; the local server stays first. */
 export function serverOrderAfterDrag(profiles: PublicServerProfile[], hubId: string | null, activeId: string, overId: string): string[] | null {
@@ -68,6 +63,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
   const activeProfileId = useAppStore(state => state.activeProfileId)
   const switchingProfileId = useAppStore(state => state.switchingProfileId)
   const switchServer = useAppStore(state => state.switchServer)
+  const hubUrl = useAppStore(state => state.hubUrl)
   const [draft, setDraft] = useState<ServerDraft | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [editorError, setEditorError] = useState<string | null>(null)
@@ -80,7 +76,11 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
   const nameInputRef = useRef<HTMLInputElement | null>(null)
   const revealEditor = useRef(false)
 
-  const hub = profiles.find(profile => profile.serverUrl === DEFAULT_SERVER_URL) ?? null
+  const hub = profiles.find(profile => profile.serverUrl === hubUrl) ?? null
+  /** Remote profiles are proxied through the hub as `${hubUrl}/api/remote/<id>`; that path on another host is a plain saved server. */
+  const isHubRemote = (url: string) => url.startsWith(`${hubUrl}/api/remote/`)
+  // Mirror mode: another Mac's hub stands in for this Mac's server, which is neither shown nor started.
+  const mirroring = hubUrl !== DEFAULT_SERVER_URL
   const ordered = hub ? [hub, ...profiles.filter(profile => profile.id !== hub.id)] : profiles
 
   const openEditor = (next: ServerDraft) => {
@@ -119,7 +119,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
   }, [draft])
 
   const beginEdit = (profile: PublicServerProfile) => {
-    openEditor({ profileId: profile.id, name: profile.name, openedName: profile.name, sshHost: profile.sshHost ?? '', installDir: '', mode: 'deploy', password: '', resetServerIdentity: false })
+    openEditor({ profileId: profile.id, name: profile.name, openedName: profile.name, sshHost: profile.sshHost ?? '', installDir: '', password: '', resetServerIdentity: false })
     setConfirmRemoveId(null)
   }
 
@@ -138,9 +138,8 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
     setDeployProgress(current => [...current.slice(-49), value])
   }), [])
 
-  // One-field add: the hub deploys the server on the SSH host (or, in attach mode,
-  // registers an install another hub deployed), keeps the tunnel and registers the
-  // remote; the main process mirrors the registry into profiles.
+  // One-field add: the hub deploys the server on the SSH host, keeps the tunnel and
+  // registers the remote; the main process mirrors the registry into profiles.
   const deploy = async () => {
     const host = draft?.sshHost.trim()
     if (!draft || !host || busy) return
@@ -151,9 +150,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
     try {
       // The password goes untrimmed: spaces can be part of it.
       const input = { sshHost: host, installDir: draft.installDir.trim() || undefined, name: draft.name.trim() || undefined, password: draft.password || undefined }
-      const profile = draft.mode === 'attach'
-        ? await window.agentsDock.remoteServers.attach(input)
-        : await window.agentsDock.remoteServers.deploy(input)
+      const profile = await window.agentsDock.remoteServers.deploy(input)
       added = true
       trackEvent('server_added', { success: true })
       await refreshProfiles()
@@ -404,6 +401,30 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
     window.setTimeout(() => setTokenCopied(false), 2_000)
   }
 
+  const [mirrorDraft, setMirrorDraft] = useState<{ hubUrl: string; accessToken: string } | null>(null)
+  const [mirrorError, setMirrorError] = useState<string | null>(null)
+  // Both resolve just before AgentsDock restarts, so `busy` stays set on success.
+  const startMirror = async () => {
+    if (!mirrorDraft || busy) return
+    setMirrorError(null)
+    setBusy('mirror')
+    try {
+      await window.agentsDock.hub.startMirror({ hubUrl: mirrorDraft.hubUrl.trim(), accessToken: mirrorDraft.accessToken })
+    } catch (error) {
+      setMirrorError(cleanIPCError(errorMessage(error)))
+      setBusy(null)
+    }
+  }
+  const stopMirror = async () => {
+    setBusy('mirror')
+    try {
+      await window.agentsDock.hub.stopMirror()
+    } catch (error) {
+      useAppStore.getState().setError(cleanIPCError(errorMessage(error)))
+      setBusy(null)
+    }
+  }
+
   return <section className="server-management" aria-label={t("ui.ServerManagement.ServerManagement.saved_servers_4bf0848")}>
     <div className="server-management-heading">
       <div>
@@ -457,7 +478,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
             </div>}
           </div>
           <div className="server-management-actions">
-            {(hubDown || starting) && !restarting && <button type="button" className="quiet-button" aria-label={t('hub.startLabel', { server: profile.name })} disabled={Boolean(busy)} onClick={() => void startHub(profile.id)}>{starting && <LoaderCircle className="spin" size={12} />} {starting ? t('hub.starting') : t('hub.start')}</button>}
+            {!mirroring && (hubDown || starting) && !restarting && <button type="button" className="quiet-button" aria-label={t('hub.startLabel', { server: profile.name })} disabled={Boolean(busy)} onClick={() => void startHub(profile.id)}>{starting && <LoaderCircle className="spin" size={12} />} {starting ? t('hub.starting') : t('hub.start')}</button>}
             {!current && <button type="button" className="quiet-button" aria-label={working ? t("ui.ServerManagement.switching_to_e7437c0", { "server": String(profile.name) }) : t("ui.ServerManagement.use_367b9be", { "server": String(profile.name) })} disabled={Boolean(busy) || Boolean(switchingProfileId)} onClick={() => void activate(profile.id)}>{working && <LoaderCircle className="spin" size={12} />} {working ? t("ui.ServerManagement.switching_b7b9fbf") : t("ui.ServerManagement.use_c36d819")}</button>}
             <button type="button" className="icon-button" aria-label={t("ui.ServerManagement.edit_966e044", { "server": String(profile.name) })} disabled={Boolean(busy)} onClick={() => beginEdit(profile)}><Pencil size={13} /></button>
             <DropdownMenu.Root>
@@ -523,6 +544,29 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
       <code>{pairingUrl ?? t('hub.pairing.unavailable')}</code>
       <button type="button" className="quiet-button" onClick={() => void copyToken()}>{tokenCopied ? t('hub.pairing.copied') : t('hub.pairing.copyToken')}</button>
     </div>}
+    {mirroring
+      ? <div className="server-management-mirror">
+        <small>{t('mirror.active', { host: new URL(hubUrl).host })}</small>
+        <button type="button" className="quiet-button" disabled={Boolean(busy)} onClick={() => void stopMirror()}>{busy === 'mirror' ? t('mirror.restarting') : t('mirror.stop')}</button>
+      </div>
+      : mirrorDraft
+        ? <div className="server-management-editor">
+          <div className="server-management-editor-heading"><div><strong>{t('mirror.title')}</strong><small>{t('mirror.hint')}</small></div></div>
+          <label><span>{t('mirror.address')}</span><input value={mirrorDraft.hubUrl} disabled={busy === 'mirror'} onChange={event => setMirrorDraft({ ...mirrorDraft, hubUrl: event.target.value })} placeholder="http://mac-name.tailnet.ts.net:7850" autoCapitalize="none" autoCorrect="off" autoComplete="off" spellCheck={false} /></label>
+          <p className="field-hint">{t('mirror.addressHint')}</p>
+          <label><span>{t('mirror.token')}</span><input type="password" value={mirrorDraft.accessToken} disabled={busy === 'mirror'} onChange={event => setMirrorDraft({ ...mirrorDraft, accessToken: event.target.value })} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); void startMirror() } }} autoComplete="off" /></label>
+          <p className="field-hint">{t('mirror.tokenHint')}</p>
+          {mirrorError && <div className="server-management-test error" role="alert"><Wifi size={14} /><span>{mirrorError}</span></div>}
+          <footer>
+            <span className="dialog-spacer" />
+            <button type="button" className="quiet-button" disabled={busy === 'mirror'} onClick={() => { setMirrorDraft(null); setMirrorError(null) }}>{t('ui.ServerManagement.ServerManagement.cancel_19766ed')}</button>
+            <button type="button" className="primary-button" disabled={Boolean(busy) || !mirrorDraft.hubUrl.trim() || !mirrorDraft.accessToken.trim()} onClick={() => void startMirror()}>{busy === 'mirror' && <LoaderCircle className="spin" size={13} />} {t(busy === 'mirror' ? 'mirror.restarting' : 'mirror.start')}</button>
+          </footer>
+        </div>
+        : <div className="server-management-mirror">
+          <small>{t('mirror.title')}</small>
+          <button type="button" className="quiet-button" disabled={Boolean(busy)} onClick={() => setMirrorDraft({ hubUrl: '', accessToken: '' })}>{t('mirror.open')}</button>
+        </div>}
     {draft && <div ref={editorRef} className="server-management-editor">
       <div className="server-management-editor-heading">
         <div><strong>{draft.profileId ? t("ui.ServerManagement.ServerManagement.edit_966e044", { "server": String(editedProfile?.name || 'server') }) : t("ui.ServerManagement.ServerManagement.add_server_1099b2a")}</strong><small>{t("ui.ServerManagement.ServerManagement.connection_credentials_stay_in_this_mac_s__d4f7858")}</small></div>
@@ -537,12 +581,8 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
         </>}
         {editedProfile?.serverIdentity && editedProfile.lastConnectionError?.includes('Server identity changed') && <label className="checkbox-row server-identity-confirm"><input type="checkbox" checked={draft.resetServerIdentity} onChange={event => updateDraft({ resetServerIdentity: event.target.checked })} />{t("ui.ServerManagement.ServerManagement.i_confirm_this_url_may_establish_a_new_ser_9c3f4d1")}</label>}
       </> : <>
-        <div className="segmented server-add-mode" role="group" aria-label={t('sshTunnel.mode')}>
-          <button type="button" className={draft.mode === 'deploy' ? 'active' : ''} aria-pressed={draft.mode === 'deploy'} disabled={busy === 'deploy'} onClick={() => updateDraft({ mode: 'deploy' })}>{t('sshTunnel.modeDeploy')}</button>
-          <button type="button" className={draft.mode === 'attach' ? 'active' : ''} aria-pressed={draft.mode === 'attach'} disabled={busy === 'deploy'} onClick={() => updateDraft({ mode: 'attach' })}>{t('sshTunnel.modeAttach')}</button>
-        </div>
         <label><span>{t('sshTunnel.host')}</span><div className="input-with-icon"><Server size={14} /><input ref={nameInputRef} value={draft.sshHost} disabled={busy === 'deploy'} onChange={event => updateDraft({ sshHost: event.target.value })} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); void deploy() } }} placeholder="osmo_9000 or user@host" autoCapitalize="none" autoCorrect="off" autoComplete="off" spellCheck={false} /></div></label>
-        <p className="field-hint">{t(draft.mode === 'attach' ? 'sshTunnel.attachHint' : 'sshTunnel.hostHint')}</p>
+        <p className="field-hint">{t('sshTunnel.hostHint')}</p>
         <label><span>{t('sshTunnel.password')}</span><input type="password" value={draft.password} disabled={busy === 'deploy'} onChange={event => updateDraft({ password: event.target.value })} autoComplete="off" /></label>
         <p className="field-hint">{t('sshTunnel.passwordHint')}</p>
         <label><span>{t('sshTunnel.installDir')}</span><input value={draft.installDir} disabled={busy === 'deploy'} onChange={event => updateDraft({ installDir: event.target.value })} title={t('sshTunnel.installDirHint')} autoCapitalize="none" autoCorrect="off" autoComplete="off" spellCheck={false} /></label>
@@ -557,7 +597,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
         <button type="button" className="quiet-button" disabled={Boolean(busy) && busy !== 'deploy'} onClick={() => { if (busy === 'deploy') void window.agentsDock.remoteServers.cancel(); else setDraft(null) }}>{t("ui.ServerManagement.ServerManagement.cancel_19766ed")}</button>
         {draft.profileId
           ? <button type="button" className="primary-button" disabled={Boolean(busy) || (hubRemote && !draft.sshHost.trim())} onClick={() => void save()}>{(busy === 'save' || busy === 'deploy') && <LoaderCircle className="spin" size={13} />} {t(busy === 'deploy' ? 'sshTunnel.deploying' : "ui.ServerManagement.ServerManagement.save_1509f56")}</button>
-          : <button type="button" className="primary-button" disabled={Boolean(busy) || !draft.sshHost.trim()} onClick={() => void deploy()}>{busy === 'deploy' ? <><LoaderCircle className="spin" size={13} />{' '}{t(draft.mode === 'attach' ? 'sshTunnel.attaching' : 'sshTunnel.deploying')}</> : t("ui.ServerManagement.ServerManagement.add_switch_90143f7")}</button>}
+          : <button type="button" className="primary-button" disabled={Boolean(busy) || !draft.sshHost.trim()} onClick={() => void deploy()}>{busy === 'deploy' ? <><LoaderCircle className="spin" size={13} />{' '}{t('sshTunnel.deploying')}</> : t("ui.ServerManagement.ServerManagement.add_switch_90143f7")}</button>}
       </footer>
     </div>}
   </section>

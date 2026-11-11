@@ -86,6 +86,7 @@ import type {
   FilesPage,
   ForwardedPort,
   Health,
+  HubMirrorInput,
   TeamHubHostControlCapability,
   Job,
   JobRunNowResult,
@@ -106,7 +107,6 @@ import type {
   QueuedCrossChatDeliveryIdentity,
   QueuedRunNowResponse,
   ClaudeSendNowResponse,
-  RemoteServerAttachInput,
   RemoteServerDeployInput,
   RemoteServerDeployJob,
   RemoteServerMoveInput,
@@ -182,10 +182,10 @@ import { PinSyncCoordinator, type PinSyncContext } from './pin-sync'
 import { PORT_TUNNEL_MAX_BRIDGES_PER_TUNNEL, PORT_TUNNEL_SSH_PORT, PortTunnelManager } from './port-tunnel-manager'
 import { BrowserProxy } from './browser-proxy'
 import { FileUploadGrantRegistry } from './file-upload-grants'
-import { SettingsStore, type ServerProfileRuntimeState } from './settings'
+import { SettingsStore, type MirrorHub, type ServerProfileRuntimeState } from './settings'
 import { appLog } from './logger'
 import { readFileWithRetry } from './file-read-retry'
-import { hubRemoteId, hubRemoteProfileOrder, hubRemotesKey, isHubRemoteUrl, localHubConfigDirs, planHubRemoteProfiles, readLocalHubToken, startLocalServerAgent } from './local-hub'
+import { hubRemoteId, hubRemoteProfileOrder, hubRemotesKey, isHubRemoteUrl, localHubConfigDirs, localHubPairingUrl, planHubRemoteProfiles, readLocalHubToken, startLocalServerAgent } from './local-hub'
 import { hubSshAliasHost, removeSshHost, writeSshHost } from './ssh-hosts'
 import { openInZed as launchZed, readZedWorkspaceFolders } from './open-in-zed'
 import { sshHostAlias, type OpenInZedRequest } from '../shared/ssh-host-alias'
@@ -1565,8 +1565,12 @@ export class AppService {
     return this.settings.getProfile(profile.id, this.runtimeForProfile(profile.id)) ?? profile
   }
 
+  /** This Mac's server, or in mirror mode the other Mac's hub whose profiles are in use (settings.startMirror). */
+  private hubUrl(): string { return this.settings.mirrorHubUrl() ?? DEFAULT_SERVER_URL }
+
   private hubProfile(): PublicServerProfile | undefined {
-    return this.settings.listProfiles().find(profile => profile.serverUrl === DEFAULT_SERVER_URL)
+    const hubUrl = this.hubUrl()
+    return this.settings.listProfiles().find(profile => profile.serverUrl === hubUrl)
   }
 
   /**
@@ -1628,6 +1632,51 @@ export class AppService {
     appLog('hub', 'started the local server LaunchAgent')
     if (this.hubProfile()?.id === this.activeProfileId) await this.runBackgroundRefresh(this.captureScope())
     this.requestInactiveProfileHealthSweep()
+  }
+
+  /**
+   * Settings → Server "Mirror another Mac": checks the hub at `input.hubUrl` (another Mac's) before it becomes this
+   * Mac's hub, with its chats, terminals and remotes. Nothing changes yet: the caller applies it with startMirror
+   * once the windows have closed, and AgentsDock starts again on that Mac's profiles.
+   */
+  async checkMirrorHub(input: HubMirrorInput): Promise<MirrorHub> {
+    const hubUrl = normalizeServerURL(input.hubUrl)
+    const { host, hostname } = new URL(hubUrl)
+    if (isLoopbackHostname(hostname)) throw new Error(t('mirror.thisMac'))
+    const token = typeof input.accessToken === 'string' ? input.accessToken.trim() : ''
+    if (!token) throw new Error(t('mirror.tokenRequired'))
+    const client = this.clientFactory(hubUrl, token)
+    let identity: string | null
+    try {
+      const health = await client.health()
+      if (health.ok !== true) throw new Error(t('mirror.unreachable', { host }))
+      identity = health.server_identity?.trim() || null
+    } catch (error) {
+      if (error instanceof ServerError && error.status === 401) throw new Error(t('mirror.tokenRejected', { host }))
+      throw error
+    } finally {
+      client.dispose()
+    }
+    // A tailnet name can also lead back to this Mac.
+    if (identity && identity === this.hubProfile()?.serverIdentity) throw new Error(t('mirror.thisMac'))
+    // Zed opens that Mac's paths over ssh to the same host (zedTarget).
+    return { hubUrl, serverIdentity: identity, accessToken: token, sshHost: hostname }
+  }
+
+  startMirror(hub: MirrorHub): void {
+    this.settings.startMirror(hub)
+    appLog('hub', 'mirroring another Mac', { host: new URL(hub.hubUrl).host })
+  }
+
+  /** Back to this Mac's own server and chats, applied like startMirror. */
+  stopMirror(): void {
+    this.settings.stopMirror()
+    appLog('hub', 'stopped mirroring')
+  }
+
+  /** The address a phone pairs with: the hub's, which in mirror mode is the other Mac's. */
+  async hubPairingUrl(): Promise<string | null> {
+    return this.settings.mirrorHubUrl() ?? await localHubPairingUrl()
   }
 
   /** Copies the hub token for pairing a phone; the token never crosses into the renderer. */
@@ -1695,14 +1744,6 @@ export class AppService {
     onProgress: (value: ServerSetupProgress) => void
   ): Promise<PublicServerProfile> {
     return this.runRemoteServerJobViaHub(client => client.startRemoteDeploy(input), onProgress)
-  }
-
-  /** Same job flow as deploy for an install another hub set up: the hub uploads nothing and never restarts it. */
-  async attachRemoteServerViaHub(
-    input: RemoteServerAttachInput,
-    onProgress: (value: ServerSetupProgress) => void
-  ): Promise<PublicServerProfile> {
-    return this.runRemoteServerJobViaHub(client => client.startRemoteAttach(input), onProgress)
   }
 
   private async runRemoteServerJobViaHub(
@@ -1899,7 +1940,7 @@ export class AppService {
     } finally {
       this.restartingHub = false
     }
-    appLog('hub', 'restarted the local server LaunchAgent')
+    appLog('hub', 'restarted the hub')
     // As after Start: every profile re-checks now instead of on the next poll.
     if (this.hubProfile()?.id === this.activeProfileId) await this.runBackgroundRefresh(this.captureScope())
     this.requestInactiveProfileHealthSweep()
@@ -1911,7 +1952,9 @@ export class AppService {
     try {
       const instanceId = () => client.health().then(health => health.server_instance_id ?? null, () => null)
       const previous = await instanceId()
-      await startLocalServerAgent(true)
+      // load-bearing: a mirrored hub runs on the other Mac, out of reach of this Mac's launchctl.
+      if (this.settings.mirrorHubUrl()) await client.restartHub()
+      else await startLocalServerAgent(true)
       // Only a new instance id proves the restart: the stopping process may still answer. Two minutes, as the hub
       // gives a redeployed remote.
       const deadline = Date.now() + 120_000
@@ -1958,7 +2001,7 @@ export class AppService {
 
       onProgress({ profileId: hub.id, step: 'restart' })
       await this.restartHubAndAwaitNewInstance(hub)
-      appLog('hub', 'restarted the local server LaunchAgent for update & redeploy all')
+      appLog('hub', 'restarted the hub for update & redeploy all')
 
       const updateClis = async (profile: PublicServerProfile, redeployError?: string) => {
         const results = redeployError ? [`redeploy: ${redeployError}`] : []
@@ -2043,7 +2086,7 @@ export class AppService {
     // Once this succeeds, cleanup is deliberately irreversible: restoring the
     // old identity after a partial purge would recreate trust with missing data.
     const profile = this.persistServerUpdate(profileId, patch)
-    if (patch.accessToken && patch.accessToken !== '__KEEP__' && profile.serverUrl === DEFAULT_SERVER_URL) this.copyHubTokenToRemotes(patch.accessToken)
+    if (patch.accessToken && patch.accessToken !== '__KEEP__' && profile.serverUrl === this.hubUrl()) this.copyHubTokenToRemotes(patch.accessToken)
     try {
       await this.syncSshHostAlias(before, this.settings.getProfile(profileId))
     } catch (error) {
@@ -2151,7 +2194,7 @@ export class AppService {
       resettingActiveProfile || preActivationCleanupError ? retiredNamespaces : undefined
     )
     // After the hub is active: copying earlier would reactivate an active remote and supersede this switch.
-    if (patch.accessToken && patch.accessToken !== '__KEEP__' && this.settings.serverUrl(profileId) === DEFAULT_SERVER_URL) this.copyHubTokenToRemotes(patch.accessToken)
+    if (patch.accessToken && patch.accessToken !== '__KEEP__' && this.settings.serverUrl(profileId) === this.hubUrl()) this.copyHubTokenToRemotes(patch.accessToken)
     if (resettingIdentity) {
       let authorityReset = !resettingActiveProfile
       try {
@@ -6415,7 +6458,7 @@ export class AppService {
     if (!portForwardingCapabilityAvailable(health)) this.portTunnels.disposeAll()
     const remotes = health.capabilities?.remote_servers_v1
     const remotesKey = remotes && hubRemotesKey(remotes.ids, remotes.hidden, remotes.names)
-    if (scope.serverUrl === DEFAULT_SERVER_URL && remotes?.available && remotesKey !== this.lastHubRemotesKey) {
+    if (scope.serverUrl === this.hubUrl() && remotes?.available && remotesKey !== this.lastHubRemotesKey) {
       void this.reconcileHubRemotes(scope, () => this.isCurrentScope(scope), remotesKey).catch(error => appLog('hub', 'remote reconcile failed', { message: errorText(error) }))
     }
     return scope
@@ -7811,7 +7854,7 @@ export class AppService {
         // A remote deleted, reordered or renamed on the hub while another profile is active must show in the switcher.
         const remotes = health.capabilities?.remote_servers_v1
         const remotesKey = remotes && hubRemotesKey(remotes.ids, remotes.hidden, remotes.names)
-        if (profile.serverUrl === DEFAULT_SERVER_URL && remotes?.available && remotesKey !== this.lastHubRemotesKey) {
+        if (profile.serverUrl === this.hubUrl() && remotes?.available && remotesKey !== this.lastHubRemotesKey) {
           await this.reconcileHubRemotes({ profileId, serverUrl: profile.serverUrl, client }, () => this.profileHealthProbeIsCurrent(profileId, revision, epoch), remotesKey)
             .catch(error => appLog('hub', 'remote reconcile failed', { message: errorText(error) }))
         }
@@ -7949,7 +7992,7 @@ export class AppService {
    */
   private copyHubTokenToRemotes(token: string): void {
     for (const remote of this.settings.listProfiles()) {
-      if (!isHubRemoteUrl(DEFAULT_SERVER_URL, remote.serverUrl)) continue
+      if (!isHubRemoteUrl(this.hubUrl(), remote.serverUrl)) continue
       this.persistServerUpdate(remote.id, { accessToken: token })
       if (remote.id === this.activeProfileId) void this.runBackgroundRefresh(this.activateProfile(remote.id, false, true))
       else {
