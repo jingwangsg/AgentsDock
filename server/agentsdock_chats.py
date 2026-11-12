@@ -42,8 +42,8 @@ LIVE_RESPONSE_SOCKET_GRACE_SECONDS = 10
 LIVE_RESPONSE_POST_SOCKET_SECONDS = 10
 # The server copies attachments into the receiving chat before it answers.
 ATTACHMENT_POST_SOCKET_SECONDS = 600
-# Delete stops the chat's run, fork copies a provider thread and export reads the whole history;
-# below the provider tool's 90 s cap on a helper call.
+# Delete stops the chat's run, fork copies a provider thread, export reads the whole history and new
+# saves a chat and its pair durably; below the provider tool's 90 s cap on a helper call.
 CHAT_ACTION_POST_SOCKET_SECONDS = 60
 IDEMPOTENT_POST_RETRY_DELAYS_SECONDS = (0.1, 0.5)
 IDEMPOTENT_GET_RETRY_DELAYS_SECONDS = (0.1, 0.5)
@@ -991,14 +991,16 @@ def parser() -> argparse.ArgumentParser:
     new_command = commands.add_parser(
         "new",
         help=("create a new agent chat paired with this one and return its route; only when the user's own "
-              "message asks for new agents"),
+              "message asks for new agent chats"),
         allow_abbrev=False,
     )
-    new_command.add_argument("title", help=f"the new chat's title, at most {TITLE_MAX_CHARS} characters")
+    new_command.add_argument("title", help=(f"the new chat's title, at most {TITLE_MAX_CHARS} characters; one per chat: "
+                                            "a title repeated in the same turn returns the chat already made"))
     new_command.add_argument("--backend", help="the agent, such as claude or codex; defaults to this chat's")
     new_command.add_argument("--model", help="defaults to this chat's when the agent is the same")
-    new_command.add_argument("--effort", help="reasoning effort; defaults to this chat's when the agent is the same")
-    new_command.add_argument("--cwd", help="an existing working directory; defaults to this chat's")
+    new_command.add_argument("--effort", help=("reasoning effort; defaults to this chat's when the agent is the same "
+                                               "and --model is not given"))
+    new_command.add_argument("--cwd", help="an existing working directory, relative to this chat's; defaults to this chat's")
     new_command.add_argument("--folder", help="the chat list folder; defaults to this chat's")
     new_command.set_defaults(handler=new_chat)
     command = commands.add_parser(

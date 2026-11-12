@@ -2453,16 +2453,16 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
             update.assert_awaited_once()
 
     async def test_chats_new_creates_a_paired_chat_on_a_users_turn_only(self) -> None:
-        # 2026-11-12: Jing had to @ "Create new agent" for every new agent; asked in words, the agent now
-        # creates them itself, as many as the message asks for, each paired with this chat like the chip's.
+        # 2026-11-12: the user had to pick "Create new agent" once per agent; asked in words, the agent now
+        # creates them itself, up to AGENT_NEW_CHATS_PER_RUN a turn, each paired like the chip's chat.
         workdir = self.root / "repo"
-        workdir.mkdir()
+        (workdir / "sub").mkdir(parents=True)
         agent_server.STORE.sessions["source"].update(cwd=str(workdir), model="gpt-5.5", effort="high", folder="Lab")
 
         async def issue(run_id: str, *, user_turn: bool) -> str:
             agent_server.CURRENT_TURNS["source"] = {"run_id": run_id}
             authority = await agent_server.issue_cross_chat_capability(
-                "source", run_id, [], source_user_instruction="Start two agents for the flaky tests.",
+                "source", run_id, [], source_user_instruction="Start agents for the flaky tests.",
                 source_is_user_turn=user_turn, actions={"agent_cross_chat_routes"},
                 provider_route_snapshot=[], async_route_v1=True, chat_routes_live=True,
             )
@@ -2477,52 +2477,69 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
                 await new(token, **fields)
             self.assertEqual(caught.exception.status_code, status, fields)
 
-        # The prompt states the bound as plain text: isolated tests evaluate it without the server's names.
-        self.assertIn(f"at most {agent_server.AGENT_NEW_CHATS_PER_RUN} per message",
+        # The prompt writes the bound as a literal (the *_isolated tests evaluate it with only
+        # CLAUDE_PROVIDER_MCP_TOOL_NAME defined); this keeps the two equal.
+        self.assertIn(f"at most {agent_server.AGENT_NEW_CHATS_PER_RUN} per turn",
                       agent_server.PROVIDER_AUTHORITY_USAGE_INSTRUCTIONS)
         audit = AsyncMock()
         with (self.native_transports(), patch.object(agent_server.STORE, "save", AsyncMock()),
               patch.object(agent_server, "append_agent_handoff_route_audit", audit),
-              patch.object(agent_server, "AGENT_NEW_CHATS_PER_RUN", 2)):
+              patch.object(agent_server, "AGENT_NEW_CHATS_PER_RUN", 3)):
             user = await issue("run_new", user_turn=True)
             created = await new(user, title="  @Triage\u0000 flaky   tests ")
             chat_id = created["chat"]["chat_id"]
-            # This chat's agent, model, effort, directory and folder, under the given title.
+            # This chat's agent, model, effort, directory and folder, under the cleaned title.
             self.assertEqual(created["chat"], {"chat_id": chat_id, "title": "Triage flaky tests", "backend": "codex",
                                                "model": "gpt-5.5", "effort": "high", "cwd": str(workdir), "folder": "Lab"})
-            # A pair, committed at once: the route this call returned is the one chats list shows, and it carries mail.
+            # Committed at once: both directions of one pair, nothing left pending.
             forward = next(route for route in agent_server.STORE.sessions["source"]["provider_cross_chat_routes"]
                            if route["target_session_id"] == chat_id)
             reverse = agent_server.STORE.sessions[chat_id]["provider_cross_chat_routes"][0]
             self.assertEqual((reverse["target_session_id"], reverse["pair_id"]), ("source", forward["pair_id"]))
             for session_id in ("source", chat_id):
                 self.assertNotIn(agent_server.PENDING_PROVIDER_CROSS_CHAT_GRANT_KEY, agent_server.STORE.sessions[session_id])
-            self.assertEqual((created["route"]["route_id"], created["route"]["mode"], created["route"]["title"]),
-                             (forward["route_id"], "async_route_v1", "Triage flaky tests"))
+            self.assertEqual(sorted(call.args[0] for call in audit.await_args_list), sorted(["source", chat_id]))
+            # The returned route is the one this run's `chats list` shows, and it takes the task.
+            self.assertEqual((created["route"]["route_id"], created["route"]["mode"]), (forward["route_id"], "async_route_v1"))
             listed = (await agent_server.list_provider_cross_chat_routes(self.provider_request(user)))["routes"]
             self.assertEqual([row["route_id"] for row in listed], [forward["route_id"]])
             reservation = await agent_server.reserve_async_provider_route_message(
                 self.provider_request(user, method="POST"), source_session_id="source",
                 route_id=forward["route_id"], body="Find why the login test is flaky.", idempotency_key="new-agent-task")
             self.assertEqual(reservation["target_session_id"], chat_id)
-            self.assertEqual(sorted(call.args[0] for call in audit.await_args_list), sorted(["source", chat_id]))
 
-            # Another agent: model and effort follow it, not this chat; a directory and folder can be named.
-            other = (await new(user, title="Review", backend="claude", cwd=str(self.root), folder="Review"))["chat"]
-            self.assertEqual((other["backend"], other["model"], other["effort"], other["cwd"], other["folder"]),
-                             ("claude", None, None, str(self.root), "Review"))
-            # The message's two chats are made; the next call is refused until the user's next message.
-            await refused(user, 403, title="Third")
-            self.assertTrue((await new(await issue("run_next_message", user_turn=True), title="Third"))["ok"])
+            # A title names one chat per turn: Claude's tool replays an identical call, and a retry after a lost
+            # reply must not make a second chat. The same title with other settings is a mistake.
+            chats = set(agent_server.STORE.sessions)
+            self.assertEqual(await new(user, title="Triage flaky tests"), created)
+            self.assertEqual(set(agent_server.STORE.sessions), chats)
+            await refused(user, 409, title="Triage flaky tests", backend="claude")
 
-            # Refused before any chat exists: an empty title, an unknown agent, one that takes no mail, a missing
-            # directory, and any run the user did not start (a mail wake, a job, a delivery, a guest's message).
+            # A new model starts at its own default effort; an effort alone keeps this chat's model. A relative
+            # directory is under this chat's.
+            model_only = (await new(user, title="Review", model="gpt-5.4", cwd="sub", folder="Review"))["chat"]
+            self.assertEqual((model_only["model"], model_only["effort"], model_only["cwd"], model_only["folder"]),
+                             ("gpt-5.4", None, str(workdir / "sub"), "Review"))
+            effort_only = (await new(user, title="Docs", effort="low"))["chat"]
+            self.assertEqual((effort_only["model"], effort_only["effort"]), ("gpt-5.5", "low"))
+            # The patched bound of 3 is reached; a repeat still answers, and the user's next turn creates again.
+            await refused(user, 403, title="Fourth")
+            self.assertEqual((await new(user, title="Docs", effort="low"))["chat"], effort_only)
+            other = (await new(await issue("run_next_turn", user_turn=True), title="Other agent", backend="claude"))["chat"]
+            self.assertEqual((other["backend"], other["model"], other["effort"]), ("claude", None, None))
+
+            # Refused before any chat exists: an empty title, an agent that takes no chat mail, a missing
+            # directory, a run the user did not start (one capability stands for a job, a delivery, a mail wake
+            # and a guest's message), and a chat the pair cannot use as its other end.
             before = set(agent_server.STORE.sessions)
             user = await issue("run_refusals", user_turn=True)
             await refused(user, 400, title="@ \u200e")
-            await refused(user, 400, title="Bad", backend="gemini")
+            await refused(user, 409, title="Bad", backend="gemini")
             await refused(user, 409, title="Bad", backend="opencode")
             await refused(user, 400, title="Bad", cwd=str(self.root / "missing"))
+            agent_server.STORE.sessions["source"]["backend"] = "opencode"
+            await refused(user, 409, title="From OpenCode")
+            agent_server.STORE.sessions["source"]["backend"] = "codex"
             await refused(await issue("run_wake", user_turn=False), 403, title="Wake")
             self.assertEqual(set(agent_server.STORE.sessions), before)
 
