@@ -505,6 +505,19 @@ def chat_action(args: argparse.Namespace) -> dict[str, Any]:
                      socket_timeout=CHAT_ACTION_POST_SOCKET_SECONDS)
 
 
+def new_chat(args: argparse.Namespace) -> dict[str, Any]:
+    """Create a chat paired with this one, as the composer's Create new agent does; the reply carries its route."""
+    title = " ".join(str(args.title or "").split())
+    if not 1 <= len(title) <= TITLE_MAX_CHARS:
+        raise CLIError(f"the title must contain 1 to {TITLE_MAX_CHARS} characters")
+    payload: dict[str, Any] = {"title": title}
+    for name in ("backend", "model", "effort", "cwd", "folder"):
+        if getattr(args, name):
+            payload[name] = getattr(args, name)
+    return post_json("/api/agent/cross-chat/new-chat", payload, authority(args.authority_file),
+                     socket_timeout=CHAT_ACTION_POST_SOCKET_SECONDS)
+
+
 def inbox_sequence(value: str) -> int:
     if len(value) > 19 or re.fullmatch(r"0|[1-9][0-9]*", value) is None or int(value) > 2**63 - 1:
         raise argparse.ArgumentTypeError("--cursor must be a nonnegative sequence from the previous response")
@@ -975,6 +988,19 @@ def parser() -> argparse.ArgumentParser:
         if name == "export":
             menu_command.add_argument("--format", choices=["markdown", "html", "jsonl"], default="markdown")
         menu_command.set_defaults(handler=chat_action)
+    new_command = commands.add_parser(
+        "new",
+        help=("create a new agent chat paired with this one and return its route; only when the user's own "
+              "message asks for new agents"),
+        allow_abbrev=False,
+    )
+    new_command.add_argument("title", help=f"the new chat's title, at most {TITLE_MAX_CHARS} characters")
+    new_command.add_argument("--backend", help="the agent, such as claude or codex; defaults to this chat's")
+    new_command.add_argument("--model", help="defaults to this chat's when the agent is the same")
+    new_command.add_argument("--effort", help="reasoning effort; defaults to this chat's when the agent is the same")
+    new_command.add_argument("--cwd", help="an existing working directory; defaults to this chat's")
+    new_command.add_argument("--folder", help="the chat list folder; defaults to this chat's")
+    new_command.set_defaults(handler=new_chat)
     command = commands.add_parser(
         "send",
         help="send one authorized instruction",

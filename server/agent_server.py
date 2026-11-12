@@ -868,6 +868,9 @@ PROVIDER_TEAM_MAIL_ROUTE_LIMIT = 512
 PROVIDER_TEAM_MAIL_ROUTE_ID_RE = re.compile(r"^mail_[0-9a-f]{32}$")
 PROVIDER_TEAM_MAIL_SERVER_NAME_MAX_CHARS = 160
 AGENT_CHAT_TITLE_MAX_CHARS = 120
+# Chats one user message lets its agent create with `chats new`: room for a real request,
+# a bound on an agent that keeps calling it. PROVIDER_AUTHORITY_USAGE_INSTRUCTIONS states it.
+AGENT_NEW_CHATS_PER_RUN = 10
 PROVIDER_TEAM_MAIL_STRICT_COMMAND_SYNTAX = "/mail server <name> <message>"
 # Team Messages V2 agent helper limits (docs/TEAM_MESSAGES_V2.md).
 PROVIDER_TEAM_SEND_LIMIT = 4
@@ -1721,6 +1724,9 @@ PROVIDER_TOOL_DESCRIPTION = (
     "run chats list, which includes chats paired after this turn started. For the current inbound reply use chats "
     "respond-current. Name this chat, or the chat behind one of your instruction routes, with chats title "
     "[--route ROUTE_ID] TITLE; set it once the task is clear and update it when the focus changes. "
+    "When the user's own message asks for new agents, chats new TITLE [--backend B] [--model M] [--effort E] "
+    "[--cwd DIR] [--folder F] creates one chat paired with this one (this chat's settings by default) and returns "
+    "its route; send it its task. "
     "The chat list's menu commands take the same optional --route: mark-read, mark-unread, pin, unpin, "
     "move FOLDER, unarchive, fork, export [--format markdown|html|jsonl] (attaches the file to this chat); "
     "reload-history, archive and delete need --route. Archive, delete and export need the user's request in "
@@ -1899,6 +1905,10 @@ PROVIDER_AUTHORITY_USAGE_INSTRUCTIONS = (
     "it when the focus changes. A scheduled job's run chat keeps the job's title. The chat list's other menu "
     "commands (in the tool description) take the same `--route`; `archive`, `delete` and `export` need the user's "
     "request in their own turn.\n"
+    "- `chats new \"<title>\"` creates a new agent chat on this server, paired with this one, and returns its route; "
+    "give it its task with `send --route`. Create agents only when the user's own message in this chat asks for them, "
+    "one call per agent, at most 10 per message; `--backend`, `--model`, `--effort`, `--cwd` "
+    "and `--folder` default to this chat's.\n"
     "- Jobs are allowed only when the live grant and durable chat policy allow them. Never attempt run-now. Future-job "
     "chat routes use the exact route returned by Chats and the user's single-@ job prompt.\n"
     "- Publish only user-requested files and say attached only after a successful JSON receipt. Give each a title or "
@@ -7381,6 +7391,16 @@ class ProviderChatActionRequest(BaseModel):
     # The label sanitizer's default bound, so a folder name is never cut.
     folder: str | None = Field(default=None, max_length=160)
     format: Literal["markdown", "html", "jsonl"] = "markdown"
+
+
+class ProviderNewChatRequest(BaseModel):
+    # The bounds of ProviderChatTitleRequest's title and ProviderChatActionRequest's folder.
+    title: str = Field(min_length=1, max_length=640)
+    folder: str | None = Field(default=None, max_length=160)
+    backend: str | None = None
+    model: str | None = None
+    effort: str | None = None
+    cwd: str | None = None
 
 
 class AgentTeamMailRequest(BaseModel):
@@ -81809,6 +81829,7 @@ AGENT_HELPER_ROUTE_RULES: tuple[tuple[str, re.Pattern[str], int], ...] = (
     ("POST", re.compile(r"^/api/agent/cross-chat/inbox/read$"), 16 * 1024),
     ("POST", re.compile(r"^/api/agent/cross-chat/title$"), 16 * 1024),
     ("POST", re.compile(r"^/api/agent/cross-chat/chat-action$"), 16 * 1024),
+    ("POST", re.compile(r"^/api/agent/cross-chat/new-chat$"), 16 * 1024),
     (
         "POST",
         re.compile(r"^/api/agent/cross-chat/routes/route_[0-9a-f]{32}/handoffs$"),
@@ -97082,6 +97103,70 @@ async def apply_provider_chat_action(req: ProviderChatActionRequest, request: Re
         session = (await update_session(target_session_id, UpdateSessionRequest(**patch)))["session"]
     return {"ok": True, "action": req.action, "route_id": req.route_id,
             "chat": {key: session.get(key) for key in ("title", "folder", "pinned", "archived")}}
+
+
+@app.post("/api/agent/cross-chat/new-chat")
+async def create_provider_chat(req: ProviderNewChatRequest, request: Request) -> dict[str, Any]:
+    """The agent creates a chat paired with its own, as the composer's "Create new agent" does on send.
+
+    The user asks for new agents in their own words, so only a turn the user started may: a job, a
+    delivery, a mail wake or a guest's message is not the user asking, and a created agent's first
+    turn is a mail wake.
+    """
+    title = re.sub(r"^[@\s]+", "", sanitized_provider_route_label(req.title, fallback="", max_chars=AGENT_CHAT_TITLE_MAX_CHARS))
+    if not title:
+        raise HTTPException(status_code=400, detail="the title is empty")
+    source_session_id = await provider_route_capability_source(request)
+    async with session_lifecycle_lock(source_session_id):
+        capability = await authorize_provider_action(request, action="agent_cross_chat_routes", session_id=source_session_id)
+        if capability.get("source_is_user_turn") is not True:
+            raise HTTPException(status_code=403, detail="only a turn the user started can create chats")
+        # One chat's calls queue on its lifecycle lock, so this count is current until the increment below.
+        if int(capability.get("provider_new_chat_count") or 0) >= AGENT_NEW_CHATS_PER_RUN:
+            raise HTTPException(status_code=403, detail=(
+                f"this message already created {AGENT_NEW_CHATS_PER_RUN} chats; ask the user before creating more"))
+        source = STORE.sessions.get(source_session_id) or {}
+        source_backend = str(source.get("backend") or DEFAULT_BACKEND)
+        backend = (req.backend or source_backend).strip().lower()
+        if backend not in VALID_BACKENDS:
+            raise HTTPException(status_code=400, detail=f"backend must be one of {sorted(VALID_BACKENDS)}")
+        # The pair below needs a chat that takes mail; refuse before one exists.
+        cross_chat_delivery_client_capabilities({"backend": backend})
+        # The agent learns of a mistyped directory here, not after its task fails in the other chat.
+        cwd = req.cwd or str(source.get("cwd") or "")
+        if cwd and not await asyncio.to_thread(Path(cwd).expanduser().is_dir):
+            raise HTTPException(status_code=400, detail=f"the working directory does not exist: {cwd}")
+        inherit_runtime = backend == source_backend and req.model is None and req.effort is None
+        created = (await create_session(CreateSessionRequest(
+            title=title,
+            folder=sanitized_provider_route_label(req.folder or "", fallback="") or source.get("folder"),
+            cwd=cwd or None,
+            backend=backend,
+            model=source.get("model") if inherit_runtime else req.model,
+            effort=source.get("effort") if inherit_runtime else req.effort,
+            # The custom Codex endpoint is this chat's own; it carries over to a Codex chat only.
+            codex_provider=("custom" if backend == source_backend == BACKEND_CODEX
+                            and source.get("codex_provider") == "custom" else None),
+        )))["session"]
+        # load-bearing: the pair journal waits for a turn's admission event, which an agent's new chat never
+        # gets, so the commit follows at once; a crash between the two saves rolls the pair back on restart.
+        mutation = await persist_provider_cross_chat_pair_grants(
+            source_session_id, [created["id"]],
+            admission_id="grant_admission_" + uuid.uuid4().hex, event_type="turn_started",
+        )
+        await commit_durable_provider_cross_chat_reference_grants(source_session_id, mutation)
+        token_hash = hashlib.sha256(provider_capability_header(request).encode("utf-8")).hexdigest()
+        async with CROSS_CHAT_CAPABILITY_LOCK:
+            record = CROSS_CHAT_CAPABILITIES.get(token_hash)
+            if record is not None:
+                record["provider_new_chat_count"] = int(record.get("provider_new_chat_count") or 0) + 1
+        route = next(route for route in mutation["routes"] if route["target_session_id"] == created["id"])
+        projection = provider_cross_chat_route_projection(source_session_id, route)
+        if capability.get("async_route_v1") is True:
+            projection["mode"] = "async_route_v1"
+    await append_durable_provider_cross_chat_grant_audits(source_session_id, mutation)
+    return {"ok": True, "route": projection, "chat": {
+        "chat_id": created["id"], **{key: created.get(key) for key in ("title", "backend", "model", "effort", "cwd", "folder")}}}
 
 
 @app.delete("/api/sessions/{session_id}/inbox/{message_id}")
