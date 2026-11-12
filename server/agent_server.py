@@ -1907,8 +1907,8 @@ PROVIDER_AUTHORITY_USAGE_INSTRUCTIONS = (
     "request in their own turn.\n"
     "- `chats new \"<title>\"` creates new agent chats (in the user's chat list, not your subagents) only when the "
     "user's own message in this chat asks for them: one call and a distinct title per chat (a repeated title returns "
-    "that chat), at most 10 per turn; then send each its task. Unset options take this chat's settings; a new "
-    "`--model` starts at its default effort.\n"
+    "that chat), at most 10 per turn; then send each its task. Unset options take this chat's settings (for "
+    "another `--backend`, its default model and effort).\n"
     "- Jobs are allowed only when the live grant and durable chat policy allow them. Never attempt run-now. Future-job "
     "chat routes use the exact route returned by Chats and the user's single-@ job prompt.\n"
     "- Publish only user-requested files and say attached only after a successful JSON receipt. Give each a title or "
@@ -97147,14 +97147,17 @@ async def create_provider_chat(req: ProviderNewChatRequest, request: Request) ->
         if not await asyncio.to_thread(os.path.isdir, cwd):
             raise HTTPException(status_code=400, detail=f"the working directory does not exist: {cwd}")
         same_backend = backend == source_backend
+        model = req.model or (source.get("model") if same_backend else None)
         chat = (await create_session(CreateSessionRequest(
             title=title,
             folder=sanitized_provider_route_label(req.folder or "", fallback="") or source.get("folder"),
             cwd=cwd,
             backend=backend,
-            model=req.model or (source.get("model") if same_backend else None),
-            # An effort belongs to its model: a new model starts at its own default unless one is given.
-            effort=req.effort or (source.get("effort") if same_backend and not req.model else None),
+            model=model,
+            # Unset, the effort is this chat's too. Not strict: a Codex model that does not take it starts at its
+            # own default, rather than the chat being refused for an effort the agent did not choose.
+            effort=req.effort or (normalize_runtime_effort_for_model(backend, model, source.get("effort"))
+                                  if same_backend else None),
             # The custom Codex endpoint is this chat's own; it carries over to a Codex chat only.
             codex_provider=("custom" if backend == source_backend == BACKEND_CODEX
                             and source.get("codex_provider") == "custom" else None),

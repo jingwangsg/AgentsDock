@@ -2515,18 +2515,25 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(set(agent_server.STORE.sessions), chats)
             await refused(user, 409, title="Triage flaky tests", backend="claude")
 
-            # A new model starts at its own default effort; an effort alone keeps this chat's model. A relative
-            # directory is under this chat's.
+            # Model and effort each default to this chat's, also beside a given model. A relative directory is
+            # under this chat's.
             model_only = (await new(user, title="Review", model="gpt-5.4", cwd="sub", folder="Review"))["chat"]
             self.assertEqual((model_only["model"], model_only["effort"], model_only["cwd"], model_only["folder"]),
-                             ("gpt-5.4", None, str(workdir / "sub"), "Review"))
+                             ("gpt-5.4", "high", str(workdir / "sub"), "Review"))
             effort_only = (await new(user, title="Docs", effort="low"))["chat"]
             self.assertEqual((effort_only["model"], effort_only["effort"]), ("gpt-5.5", "low"))
             # The patched bound of 3 is reached; a repeat still answers, and the user's next turn creates again.
             await refused(user, 403, title="Fourth")
             self.assertEqual((await new(user, title="Docs", effort="low"))["chat"], effort_only)
-            other = (await new(await issue("run_next_turn", user_turn=True), title="Other agent", backend="claude"))["chat"]
+            next_turn = await issue("run_next_turn", user_turn=True)
+            # Another agent starts at its own defaults: this chat's model and effort are Codex values.
+            other = (await new(next_turn, title="Other agent", backend="claude"))["chat"]
             self.assertEqual((other["backend"], other["model"], other["effort"]), ("claude", None, None))
+            # A Codex model that does not take this chat's effort starts at its own default; the chat is still made.
+            with patch.object(agent_server, "codex_model_supported_efforts",
+                              side_effect=lambda model: ("low", "medium") if model == "gpt-mini" else None):
+                mini = (await new(next_turn, title="Mini", model="gpt-mini"))["chat"]
+            self.assertEqual((mini["model"], mini["effort"]), ("gpt-mini", None))
 
             # Refused before any chat exists: an empty title, an agent that takes no chat mail, a missing
             # directory, a run the user did not start (one capability stands for a job, a delivery, a mail wake

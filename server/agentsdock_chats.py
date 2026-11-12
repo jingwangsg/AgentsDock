@@ -999,7 +999,7 @@ def parser() -> argparse.ArgumentParser:
     new_command.add_argument("--backend", help="the agent, such as claude or codex; defaults to this chat's")
     new_command.add_argument("--model", help="defaults to this chat's when the agent is the same")
     new_command.add_argument("--effort", help=("reasoning effort; defaults to this chat's when the agent is the same "
-                                               "and --model is not given"))
+                                               "and the model takes it"))
     new_command.add_argument("--cwd", help="an existing working directory, relative to this chat's; defaults to this chat's")
     new_command.add_argument("--folder", help="the chat list folder; defaults to this chat's")
     new_command.set_defaults(handler=new_chat)
