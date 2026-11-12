@@ -105,6 +105,26 @@ class AgentsDockChatsCLITests(unittest.TestCase):
             auth.assert_not_called()
             post.assert_not_called()
 
+    def test_new_posts_the_title_and_only_the_settings_given(self) -> None:
+        for arguments, payload in (
+            (["new", "  Triage   flaky tests "], {"title": "Triage flaky tests"}),
+            (["new", "Review", "--backend", "claude", "--model", "opus", "--effort", "high", "--cwd", "/repo",
+              "--folder", "Lab"],
+             {"title": "Review", "backend": "claude", "model": "opus", "effort": "high", "cwd": "/repo", "folder": "Lab"}),
+        ):
+            args = agentsdock_chats.parser().parse_args(arguments)
+            with self.subTest(arguments=arguments), patch.object(agentsdock_chats, "authority", return_value="capability"), \
+                    patch.object(agentsdock_chats, "post_json", return_value={"ok": True}) as post:
+                self.assertEqual(args.handler(args), {"ok": True})
+                self.assertEqual(post.call_args.args, ("/api/agent/cross-chat/new-chat", payload, "capability"))
+        # An empty title is refused before any request.
+        args = agentsdock_chats.parser().parse_args(["new", "   "])
+        with patch.object(agentsdock_chats, "authority") as auth, patch.object(agentsdock_chats, "post_json") as post, \
+                self.assertRaises(agentsdock_chats.CLIError):
+            args.handler(args)
+        auth.assert_not_called()
+        post.assert_not_called()
+
     def test_async_reply_parent_is_explicit_and_part_of_default_idempotency(self) -> None:
         route = "route_" + "a" * 32
         parents = ["handoff_" + "b" * 32, "handoff_" + "c" * 32]

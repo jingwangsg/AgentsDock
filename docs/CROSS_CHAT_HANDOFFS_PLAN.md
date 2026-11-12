@@ -284,6 +284,7 @@ GET  /api/agent/cross-chat/routes
 POST /api/agent/cross-chat/routes/{route_id}/handoffs
 POST /api/agent/cross-chat/title
 POST /api/agent/cross-chat/chat-action
+POST /api/agent/cross-chat/new-chat
 ```
 
 Action-specific compatibility and exchange-response endpoints:
@@ -324,6 +325,7 @@ agentsdock-chats mark-read|mark-unread|pin|unpin|unarchive|fork [--route ROUTE_I
 agentsdock-chats move [--route ROUTE_ID] FOLDER
 agentsdock-chats export [--route ROUTE_ID] [--format markdown|html|jsonl]
 agentsdock-chats archive|reload-history|delete --route ROUTE_ID
+agentsdock-chats new TITLE [--backend B] [--model M] [--effort E] [--cwd DIR] [--folder F]
 ```
 
 `title` names the run's own chat or, with `--route`, the chat behind an
@@ -348,6 +350,17 @@ and the other commands still reach it. Rename is `title`; Share and Open in
 split view are not agent commands: a share link exposes the chat outside
 AgentsDock, and split view is a client layout. A route to a chat on another
 server is refused (409), as for `title`.
+
+`new` creates a chat on this server, pairs it with the calling chat as the
+composer's "Create new agent" does on send, and returns the pair's route, so
+the agent sends the task with `send --route`. Only a turn the user started may
+call it (403 otherwise), at most 10 times a turn; a title repeated in the same
+turn returns the chat already made (409 if its options differ). Unset options
+take the calling chat's agent, working directory (a relative `--cwd` is under
+it) and folder and, for the same agent, its model and effort; a new `--model`
+starts at its default effort. An agent that takes no chat mail, a missing
+directory, or a calling chat that cannot be paired is refused before a chat
+exists.
 
 `--target OPAQUE_HANDLE` remains only for secure-peer handles, which the
 disabled secure-peer relay would print; it is not a chat ID and reaches no
