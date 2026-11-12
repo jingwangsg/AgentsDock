@@ -1,5 +1,36 @@
 # Public development log
 
+## 2026-11-12 — Agents create new agent chats when the user asks (server)
+
+- A chat's agent can now create new agent chats itself. When the user's own
+  message asks for new agents, the agent runs `chats new TITLE` once per chat:
+  the server creates the chat on the same server, pairs it with the calling
+  chat the way the composer's "Create new agent" chip does, and returns its
+  route; the agent then sends each new chat its task. One turn may create up
+  to 10.
+- Unset options take the calling chat's agent, working directory and folder
+  and, for the same agent, its model and reasoning effort; `--backend`,
+  `--model`, `--effort`, `--cwd` (relative to the calling chat's directory)
+  and `--folder` change them. A title repeated in the same turn returns the
+  chat already made, so a retried call does not make a second chat.
+- Only a turn the user started may create chats: a scheduled job, a message
+  from another chat or a shared chat's guest may not. A chat made this way
+  starts from a message, so it does not create further chats unless the user
+  asks in that chat. An agent kind that cannot take chat messages, a missing
+  directory, or a calling chat that cannot be paired is refused before any
+  chat is made.
+
+```text
+Change and expected user behavior: asking a chat in words for new agents creates them, paired with it, and each receives its task; no @ chip is needed.
+Source commit / app build / server version: branch feat/agent-creates-chats; desktop 143 (unchanged); server from this tree.
+Test surface: an isolated server from this tree with an access token on loopback, and desktop 143 (a copy with its default server address rewritten to that server) with its own user data, driven over CDP; real Claude.
+Actions exercised and observed outcomes: (1) In a Claude chat: "请创建两个新的 agent：第一个标题叫 E2E alpha，让它只回复 alpha-ok；第二个标题叫 E2E beta，让它只回复 beta-ok……". Two `chats new` calls and two task messages within 3 s; the sidebar listed both chats in the calling chat's folder and directory; each woke on its message and answered alpha-ok / beta-ok; the calling chat's answer listed both routes, and each chat showed "Chat route created". (2) The calling chat was asked to have E2E alpha create a third agent: E2E alpha declined, because the request came as a message from another chat, and said so in its reply; no chat was made. (3) After the review changes: "开三个新 agent 并行做……工作目录用当前目录下的 sub": three chats in that subdirectory, each answered its own code word.
+Real boundaries exercised; any mocked/stubbed boundaries: desktop ↔ server over HTTP and WebSocket, the provider tool → chats helper → server, chat messages between the chats, Claude. The server's own refusal of a turn the user did not start, the 10-per-turn bound, repeated titles and relative directories were exercised by unit tests only: in the app the agents passed absolute directories, and the woken agent declined before calling.
+Focused regression / typecheck / production build: endpoint test (defaults, overrides, the pair usable in the same run, repeated titles, refusals before a chat exists, the bound), helper CLI test, prompt-size budget; all 8 server shards.
+Remaining limitations or blocked acceptance: creating a chat on another server is not supported (the composer's chip still does it). A chat created by an agent cannot create more on its own.
+Availability: source only until the hub is restarted, and remotes are redeployed, on this server version.
+```
+
 ## 2026-11-11 — Desktop: mirror another Mac's hub; attaching a server is removed (desktop and server)
 
 - Settings → Server has "Mirror another Mac". With that Mac's hub address and
