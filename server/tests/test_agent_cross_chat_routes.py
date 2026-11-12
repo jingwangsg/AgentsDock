@@ -2515,18 +2515,24 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(set(agent_server.STORE.sessions), chats)
             await refused(user, 409, title="Triage flaky tests", backend="claude")
 
-            # A new model starts at its own default effort; an effort alone keeps this chat's model. A relative
+            # A given model keeps this chat's effort, and a given effort keeps this chat's model. A relative
             # directory is under this chat's.
             model_only = (await new(user, title="Review", model="gpt-5.4", cwd="sub", folder="Review"))["chat"]
             self.assertEqual((model_only["model"], model_only["effort"], model_only["cwd"], model_only["folder"]),
-                             ("gpt-5.4", None, str(workdir / "sub"), "Review"))
+                             ("gpt-5.4", "high", str(workdir / "sub"), "Review"))
             effort_only = (await new(user, title="Docs", effort="low"))["chat"]
             self.assertEqual((effort_only["model"], effort_only["effort"]), ("gpt-5.5", "low"))
             # The patched bound of 3 is reached; a repeat still answers, and the user's next turn creates again.
             await refused(user, 403, title="Fourth")
             self.assertEqual((await new(user, title="Docs", effort="low"))["chat"], effort_only)
-            other = (await new(await issue("run_next_turn", user_turn=True), title="Other agent", backend="claude"))["chat"]
+            next_turn = await issue("run_next_turn", user_turn=True)
+            other = (await new(next_turn, title="Other agent", backend="claude"))["chat"]
             self.assertEqual((other["backend"], other["model"], other["effort"]), ("claude", None, None))
+            # A Codex model that does not support this chat's effort starts at the default; the chat is not refused.
+            with patch.object(agent_server, "codex_model_supported_efforts",
+                              side_effect=lambda model: ("low", "medium") if model == "gpt-mini" else None):
+                mini = (await new(next_turn, title="Mini", model="gpt-mini"))["chat"]
+            self.assertEqual((mini["model"], mini["effort"]), ("gpt-mini", None))
 
             # Refused before any chat exists: an empty title, an agent that takes no chat mail, a missing
             # directory, a run the user did not start (one capability stands for a job, a delivery, a mail wake
@@ -2542,6 +2548,42 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
             agent_server.STORE.sessions["source"]["backend"] = "codex"
             await refused(await issue("run_wake", user_turn=False), 403, title="Wake")
             self.assertEqual(set(agent_server.STORE.sessions), before)
+
+    async def test_chats_new_keeps_a_custom_endpoints_model_and_effort(self) -> None:
+        # The endpoint's own catalog settles its models' efforts: "none" is in it although the built-in table
+        # does not list it for gpt-5.4-mini.
+        class CustomEndpoint:
+            def for_session(self, session, *, include_key=False):
+                if session.get("codex_provider") != "custom":
+                    return None
+                return {"base_url": "https://gateway.example", "credential_id": "cred",
+                        "model": session.get("model") or "gpt-5.4-mini"}
+
+            def cached_catalog(self, selected=None):
+                return {"model_capabilities": {"gpt-5.4-mini": {"reasoning_efforts": ["none", "low"]}}}
+
+            def require_thread(self, thread_id, selected):
+                return None
+
+            def catalog(self, *, available, session=None, summary=False):
+                return {"configured": True, "available": available, "model": "gpt-5.4-mini"}
+
+        agent_server.STORE.sessions["source"].update(
+            model="gpt-5.4-mini", effort="none", codex_provider="custom", cwd=str(self.root))
+        agent_server.CURRENT_TURNS["source"] = {"run_id": "run_custom"}
+        authority = await agent_server.issue_cross_chat_capability(
+            "source", "run_custom", [], source_user_instruction="Start one agent.", source_is_user_turn=True,
+            actions={"agent_cross_chat_routes"}, provider_route_snapshot=[], async_route_v1=True, chat_routes_live=True,
+        )
+        token = json.loads(authority.read_text())["provider_capability"]
+        with (self.native_transports(), patch.object(agent_server.STORE, "save", AsyncMock()),
+              patch.object(agent_server, "append_agent_handoff_route_audit", AsyncMock()),
+              patch.object(agent_server, "CODEX_PROVIDER_STORE", CustomEndpoint())):
+            chat = (await agent_server.create_provider_chat(
+                agent_server.ProviderNewChatRequest(title="Custom child"), self.provider_request(token, method="POST"),
+            ))["chat"]
+        stored = agent_server.STORE.sessions[chat["chat_id"]]
+        self.assertEqual((stored["codex_provider"], stored["model"], stored["effort"]), ("custom", "gpt-5.4-mini", "none"))
 
     async def test_chat_export_attaches_the_menu_download_to_this_chat(self) -> None:
         instruction = self.route("a", actions=["instruction"])

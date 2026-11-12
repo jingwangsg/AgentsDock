@@ -357,8 +357,9 @@ the agent sends the task with `send --route`. Only a turn the user started may
 call it (403 otherwise), at most 10 times a turn; a title repeated in the same
 turn returns the chat already made (409 if its options differ). Unset options
 take the calling chat's agent, working directory (a relative `--cwd` is under
-it) and folder and, for the same agent, its model and effort; a new `--model`
-starts at its default effort. An agent that takes no chat mail, a missing
+it), folder and, with the same agent, model and effort. The effort is taken
+even when `--model` is given, except that a Codex model that does not support
+it starts at the default effort. An agent that takes no chat mail, a missing
 directory, or a calling chat that cannot be paired is refused before a chat
 exists.
 

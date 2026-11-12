@@ -11,8 +11,10 @@
 - Unset options take the calling chat's agent, working directory and folder
   and, for the same agent, its model and reasoning effort; `--backend`,
   `--model`, `--effort`, `--cwd` (relative to the calling chat's directory)
-  and `--folder` change them. A title repeated in the same turn returns the
-  chat already made, so a retried call does not make a second chat.
+  and `--folder` change them. With only `--model`, the effort is still the
+  calling chat's; a Codex model that does not support it starts at the
+  default effort. A title repeated in the same turn returns the chat already made,
+  so a retried call does not make a second chat.
 - Only a turn the user started may create chats: a scheduled job, a message
   from another chat or a shared chat's guest may not. A chat made this way
   starts from a message, so it does not create further chats unless the user
@@ -24,8 +26,8 @@
 Change and expected user behavior: asking a chat in words for new agents creates them, paired with it, and each receives its task; no @ chip is needed.
 Source commit / app build / server version: branch feat/agent-creates-chats; desktop 143 (unchanged); server from this tree.
 Test surface: an isolated server from this tree with an access token on loopback, and desktop 143 (a copy with its default server address rewritten to that server) with its own user data, driven over CDP; real Claude.
-Actions exercised and observed outcomes: (1) In a Claude chat: "请创建两个新的 agent：第一个标题叫 E2E alpha，让它只回复 alpha-ok；第二个标题叫 E2E beta，让它只回复 beta-ok……". Two `chats new` calls and two task messages within 3 s; the sidebar listed both chats in the calling chat's folder and directory; each woke on its message and answered alpha-ok / beta-ok; the calling chat's answer listed both routes, and each chat showed "Chat route created". (2) The calling chat was asked to have E2E alpha create a third agent: E2E alpha declined, because the request came as a message from another chat, and said so in its reply; no chat was made. (3) After the review changes: "开三个新 agent 并行做……工作目录用当前目录下的 sub": three chats in that subdirectory, each answered its own code word.
-Real boundaries exercised; any mocked/stubbed boundaries: desktop ↔ server over HTTP and WebSocket, the provider tool → chats helper → server, chat messages between the chats, Claude. The server's own refusal of a turn the user did not start, the 10-per-turn bound, repeated titles and relative directories were exercised by unit tests only: in the app the agents passed absolute directories, and the woken agent declined before calling.
+Actions exercised and observed outcomes: (1) In a Claude chat: "请创建两个新的 agent：第一个标题叫 E2E alpha，让它只回复 alpha-ok；第二个标题叫 E2E beta，让它只回复 beta-ok……". Two `chats new` calls and two task messages within 3 s; the sidebar listed both chats in the calling chat's folder and directory; each woke on its message and answered alpha-ok / beta-ok; the calling chat's answer listed both routes, and each chat showed "Chat route created". (2) The calling chat was asked to have E2E alpha create a third agent: E2E alpha declined, because the request came as a message from another chat, and said so in its reply; no chat was made. (3) After the review changes: "开三个新 agent 并行做……工作目录用当前目录下的 sub": three chats in that subdirectory, each answered its own code word. (4) After the effort default change, from a chat on Sonnet at high effort: "E2E same" (no options) and "E2E opus" (`--model opus`) ran with `--model sonnet --effort high` and `--model opus --effort high`, and both answered ok.
+Real boundaries exercised; any mocked/stubbed boundaries: desktop ↔ server over HTTP and WebSocket, the provider tool → chats helper → server, chat messages between the chats, Claude. The server's own refusal of a turn the user did not start, the 10-per-turn bound, repeated titles and relative directories were exercised by unit tests only: in the app the agents passed absolute directories, and the woken agent declined before calling. So were a Codex model that does not support the inherited effort and a custom Codex endpoint's effort (stubbed model lists).
 Focused regression / typecheck / production build: endpoint test (defaults, overrides, the pair usable in the same run, repeated titles, refusals before a chat exists, the bound), helper CLI test, prompt-size budget; all 8 server shards.
 Remaining limitations or blocked acceptance: creating a chat on another server is not supported (the composer's chip still does it). A chat created by an agent cannot create more on its own.
 Availability: source only until the hub is restarted, and remotes are redeployed, on this server version.
