@@ -6,13 +6,15 @@ HOME_DIR="$3"
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 log() { printf '[AgentsDock setup] %s\n' "$1"; }
 # The hub ends a deploy whose host prints nothing for 180 s, and the steps below print nothing while
-# they run. On shared storage that is slow at the time a step outlasts that: on 2026-11-13 an NFS home
-# took 0.3 s per file operation, and the Claude Code install 170 s. A line each minute, for an hour at
-# most, shows the host is still at work; a deploy that lost its host still gets none and ends.
-# sleep keeps no descriptor of the ssh session, so the one still running at the end does not hold it open.
+# they run. When shared storage is slow, a silent stretch exceeds that: on 2026-11-13 an NFS home took
+# 0.3 s per file operation, and a deploy ended during the Claude Code install. A line each minute shows
+# the host is still at work; a deploy that lost its host still gets none and ends. An hour at most: a
+# step that never returns would otherwise never end the deploy.
+# load-bearing: sleep's output goes to /dev/null. The trap ends only the subshell, and the sleep still
+# running would otherwise keep the ssh session's stdout open for up to a minute.
 ( for minute in $(seq 1 60); do sleep 60 >/dev/null 2>&1; log "Setup is still running ($minute min)"; done ) &
-REPORTER=$!
-trap 'kill "$REPORTER" 2>/dev/null' EXIT
+# || true: after the hour the subshell is gone, and a failed kill would become the script's exit status.
+trap "kill $! 2>/dev/null || true" EXIT
 mkdir -p "$INSTALL_DIR/logs" "$INSTALL_DIR/state"
 # The server refuses a state directory that group/others can write (a host umask
 # of 002 makes mkdir produce 775), so pin the two directories it checks. It also

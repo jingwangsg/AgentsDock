@@ -46,24 +46,26 @@ class RemoteBootstrapEnvTests(unittest.TestCase):
                        env={"HOME": str(self.home), "PATH": self.path})
         return (install / "env").read_text()
 
-    def test_a_step_that_prints_nothing_still_reports_each_minute(self) -> None:
-        # 2026-11-13: the Claude Code install into an NFS home printed nothing for 170 s, and the hub ends a
-        # deploy after 180 s without a line. Here a minute lasts 0.3 s and uv sync 1 s.
-        (self.home / ".local" / "bin" / "uv").write_text("#!/bin/sh\nsleep 1\n")
-        install = self.shared / ".agentsdock-server-test"
-        (install / "server" / ".venv" / "bin").mkdir(parents=True)
-        (install / "server" / "agent_server.py").touch()
-        (install / "server" / ".venv" / "bin" / "python").symlink_to(sys.executable)
-        script = SCRIPT.read_bytes().replace(b"sleep 60 ", b"sleep 0.3 ")
+    def test_the_setup_prints_a_line_each_minute_during_a_silent_step(self) -> None:
+        # 2026-11-13: a deploy into an NFS home ended at the hub's limit of 180 s without a line, during the
+        # Claude Code install, which prints nothing.
         started = time.monotonic()
-        lines = subprocess.run(["bash", "-s", "--", str(install), "59871", str(self.shared)], input=script, check=True, capture_output=True,
-                               env={"HOME": str(self.home), "PATH": self.path}).stdout.decode().splitlines()
-        sync, start = lines.index("[AgentsDock setup] Preparing the Python runtime (uv sync)"), lines.index("[AgentsDock setup] Starting AgentsServer on port 59871")
+        self.bootstrap(self.shared)
+        # load-bearing: as shipped, the sleep still running at the end must not keep the run's pipe open for its minute.
+        self.assertLess(time.monotonic() - started, 30)
+
+        # Here a minute lasts 0.3 s and uv sync 1 s.
+        (self.home / ".local" / "bin" / "uv").write_text("#!/bin/sh\nsleep 1\n")
+        args = ["bash", "-s", "--", str(self.shared / ".agentsdock-server-test"), "59871", str(self.shared)]
+        env = {"HOME": str(self.home), "PATH": self.path}
+        script = SCRIPT.read_bytes().replace(b"sleep 60 ", b"sleep 0.3 ")
+        lines = subprocess.run(args, input=script, check=True, capture_output=True, env=env).stdout.decode().splitlines()
+        sync = lines.index("[AgentsDock setup] Preparing the Python runtime (uv sync)")
         self.assertEqual(lines[sync + 1:sync + 3], ["[AgentsDock setup] Setup is still running (1 min)", "[AgentsDock setup] Setup is still running (2 min)"])
-        # The report ends with the setup: nothing after the result line, and the run does not wait for it.
+        # The lines end with the setup: nothing follows the result line.
         self.assertTrue(lines[-1].startswith("AGENTSDOCK_SETUP_RESULT="))
-        self.assertGreater(start, sync + 2)
-        self.assertLess(time.monotonic() - started, 10)
+        # A setup that outlasts the hour of lines (here two) still succeeds.
+        subprocess.run(args, input=script.replace(b"seq 1 60", b"seq 1 2"), check=True, capture_output=True, env=env)
 
     def test_a_shared_home_keeps_codex_sqlite_state_in_the_install(self) -> None:
         # Two machines mounting one home cannot both open Codex's WAL-mode SQLite state.

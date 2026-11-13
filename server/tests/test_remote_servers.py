@@ -70,20 +70,21 @@ host = json.load(open(os.path.join(state, "host.json")))
 if tail is not None and b"AGENTSDOCK_TUNNEL_PROBE" in stdin:  # probe: bash -s -- <candidate install dirs>
     # Optional "installs" (directory -> port): only these hold an install. As in remote_probe.sh the install is
     # the first candidate holding one, else the first whose home the host has ("unmounted" lists the homes it
-    # lacks). Without "installs" every directory has existing_port. When no candidate's home exists, a search
-    # candidate ("<name>/<install>") finds the install's place in "shared", the home the host's NFS holds.
+    # lacks). Without "installs" every directory has existing_port. When no candidate's home exists, the search
+    # (a last argument "<name>/<install directory name>") finds the install's place in "shared", the home the
+    # host's NFS holds.
     installs = host.get("installs")
-    dirs = [d for d in tail if d.startswith(("/", "~"))]
-    held = [d for d in dirs if installs is not None and d in installs]
-    mounted = [d for d in dirs if d.rpartition("/")[0] not in host.get("unmounted", [])]
-    choice = found = (held or mounted or dirs)[0]
-    if not held and not mounted and len(dirs) < len(tail) and host.get("shared"):
-        choice = tail[-1]
-        found = host["shared"] + "/" + choice.rpartition("/")[2]
-    port = host["existing_port"] if installs is None else installs.get(found)
+    search = tail.pop() if not tail[-1].startswith(("/", "~")) else None
+    held = [d for d in tail if installs is not None and d in installs]
+    mounted = [d for d in tail if d.rpartition("/")[0] not in host.get("unmounted", [])]
+    choice = (held or mounted or tail)[0]
+    candidate = tail.index(choice)
+    if search and not mounted and host.get("shared"):
+        candidate, choice = len(tail), host["shared"] + "/" + search.rpartition("/")[2]
+    port = host["existing_port"] if installs is None else installs.get(choice)
     print("AGENTSDOCK_TUNNEL_PROBE=" + json.dumps(dict(os="Linux", arch="x86_64", uid=1000, home="/h", tmux=True, free_port=7850, existing_port=port,
-                                                      install_dir="/h" + found[1:] if found.startswith("~") else found,
-                                                      candidate=tail.index(choice))))
+                                                      install_dir="/h" + choice[1:] if choice.startswith("~") else choice,
+                                                      candidate=candidate)))
 elif tail is not None:  # bootstrap: bash -s -- <install_dir> <port> <home> [restart]
     if host.get("bootstrap_failure"):  # the host's script prints these lines and fails
         print("\n".join(host["bootstrap_failure"]))
@@ -957,6 +958,11 @@ time.sleep(30)
             # The step heading (streamed by on_line), the step's non-blank output in order, then the error the deploy appends.
             messages = [entry["message"] for entry in job.log]
             assert messages[-6:] == ["Preparing the Python runtime (uv sync)", *[line for line in output[2:] if line], job.error]
+        # The setup's line each minute is no step: one printed after the error output hides neither the output nor the error.
+        self.fake_host(existing_port=None, bootstrap_failure=[*output, "[AgentsDock setup] Setup is still running (3 min)"])
+        _, job = self.run_job(rs.RemoteDeployRequest(ssh_host="dev@build-host"))
+        assert job.error == headline.strip(), job.log
+        assert [entry["message"] for entry in job.log][-5:-1] == [line for line in output[2:] if line]
 
     def test_a_cluster_target_rejects_a_password(self) -> None:
         self.fake_host(existing_port=None)
@@ -1048,7 +1054,7 @@ time.sleep(30)
         (nfs / "home" / "u").mkdir(parents=True)
         (lustre / "u").mkdir(parents=True)
         assert probe(configured, search) == (str(nfs / "home" / "u" / ".agentsdock-server-c"), 1)
-        # A directory this login cannot write is passed over.
+        # A directory the ssh user cannot write is passed over.
         (nfs / "home" / "u").chmod(0o500)
         assert probe(configured, search) == (str(lustre / "u" / ".agentsdock-server-c"), 1)
         (nfs / "home" / "u").chmod(0o700)
@@ -1065,6 +1071,8 @@ time.sleep(30)
         assert probe(configured, search) == (str(configured), 0)
 
     def test_a_cluster_without_any_configured_home_installs_in_the_directory_its_shared_storage_holds(self) -> None:
+        # 2026-11-13: the next cluster on that GCP site failed at the same mkdir, because its home was not yet
+        # in the hub's environment.
         self.enterContext(mock.patch.object(rs, "isolated_proxy_args", mock.AsyncMock(return_value=["-o", "ProxyCommand=x"])))
         self.enterContext(mock.patch.dict(os.environ, {"AGENTSDOCK_OCI_HOME": "/mnt/oci/u"}))
         configured, found = "/mnt/oci/u/.agentsdock-server-gcp", "/mnt/nfs/home/u/.agentsdock-server-gcp"
@@ -1097,7 +1105,19 @@ time.sleep(30)
         self.run_job(rs.RemoteDeployRequest(ssh_host="oci@gcp", install_dir="/data/x/.agentsdock-server"))
         assert last_deploy(calls)[0] == ["/data/x/.agentsdock-server"]
 
-        # The host spells a found directory; one the registry could not load again is refused.
+        # A found directory that is another entry's install is refused: a moved entry taking it would list one server twice.
+        manager.servers["bbbbbbbbbbbb"] = make_server(id="bbbbbbbbbbbb", name="other", ssh_host="oci@old", install_dir="/mnt/oci/u/.agentsdock-server-old")
+
+        async def move() -> rs.DeployJob:
+            _, job = manager.update("bbbbbbbbbbbb", rs.RemoteServerUpdate(ssh_host="oci@gcp"))
+            assert job is not None and job.task is not None
+            await job.task
+            await manager.stop()
+            return job
+
+        assert asyncio.run(move()).error == f"{found} on oci@gcp already belongs to the server {server.name}."
+
+        # A found directory's path comes from the host; one the registry could not load again is refused.
         self.fake_host(existing_port=None, installs={}, unmounted=["/mnt/oci/u"], shared="/mnt/my nfs/u")
         _, job = self.run_job(rs.RemoteDeployRequest(ssh_host="oci@gcp"))
         assert job.error == "Invalid remote install directory.", job.log
