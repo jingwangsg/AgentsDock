@@ -70,14 +70,19 @@ host = json.load(open(os.path.join(state, "host.json")))
 if tail is not None and b"AGENTSDOCK_TUNNEL_PROBE" in stdin:  # probe: bash -s -- <candidate install dirs>
     # Optional "installs" (directory -> port): only these hold an install. As in remote_probe.sh the install is
     # the first candidate holding one, else the first whose home the host has ("unmounted" lists the homes it
-    # lacks). Without "installs" every directory has existing_port.
+    # lacks). Without "installs" every directory has existing_port. When no candidate's home exists, a search
+    # candidate ("<name>/<install>") finds the install's place in "shared", the home the host's NFS holds.
     installs = host.get("installs")
-    held = [d for d in tail if installs is not None and d in installs]
-    mounted = [d for d in tail if d.rpartition("/")[0] not in host.get("unmounted", [])]
-    choice = (held or mounted or tail)[0]
-    port = host["existing_port"] if installs is None else installs.get(choice)
+    dirs = [d for d in tail if d.startswith(("/", "~"))]
+    held = [d for d in dirs if installs is not None and d in installs]
+    mounted = [d for d in dirs if d.rpartition("/")[0] not in host.get("unmounted", [])]
+    choice = found = (held or mounted or dirs)[0]
+    if not held and not mounted and len(dirs) < len(tail) and host.get("shared"):
+        choice = tail[-1]
+        found = host["shared"] + "/" + choice.rpartition("/")[2]
+    port = host["existing_port"] if installs is None else installs.get(found)
     print("AGENTSDOCK_TUNNEL_PROBE=" + json.dumps(dict(os="Linux", arch="x86_64", uid=1000, home="/h", tmux=True, free_port=7850, existing_port=port,
-                                                      install_dir="/h" + choice[1:] if choice.startswith("~") else choice,
+                                                      install_dir="/h" + found[1:] if found.startswith("~") else found,
                                                       candidate=tail.index(choice))))
 elif tail is not None:  # bootstrap: bash -s -- <install_dir> <port> <home> [restart]
     if host.get("bootstrap_failure"):  # the host's script prints these lines and fails
@@ -878,12 +883,12 @@ time.sleep(30)
     # --- deploy jobs against a scripted host ----------------------------------
 
     def fake_host(self, existing_port: int | None, bootstrap_failure: list[str] | None = None, installs: dict[str, int] | None = None,
-                  unmounted: list[str] | None = None) -> Path:
+                  unmounted: list[str] | None = None, shared: str | None = None) -> Path:
         """Point ssh at a script playing the host; returns the argv log it appends to."""
         state = self.tmp_path / "host"
         state.mkdir(exist_ok=True)  # a test may script the host again with another failure shape
         (state / "host.json").write_text(json.dumps({"token": REMOTE_TOKEN, "existing_port": existing_port, "bootstrap_failure": bootstrap_failure,
-                                                     "installs": installs, "unmounted": unmounted or []}))
+                                                     "installs": installs, "unmounted": unmounted or [], "shared": shared}))
         script = self.tmp_path / "ssh"
         script.write_text(FAKE_SSH.format(python=sys.executable, state=str(state)))
         script.chmod(0o700)
@@ -1023,6 +1028,80 @@ time.sleep(30)
         missing = self.tmp_path / "missing"
         assert probe(missing / "a" / "x", missing / "b" / "x")["install_dir"] == str(missing / "a" / "x")
 
+    def test_the_probe_searches_the_hosts_shared_storage_when_no_candidates_home_exists(self) -> None:
+        # 2026-11-13: a GCP cluster had no configured home, and its NFS held the user's directory as <mount>/home/<name>.
+        nfs, lustre, local = (self.tmp_path / name for name in ("nfs", "lustre", "local"))
+        mounts = self.tmp_path / "mounts"
+        mounts.write_text(f"overlay / overlay rw 0 0\n/dev/sda1 {local} ext4 rw 0 0\n10.0.0.1:/data {nfs} nfs rw 0 0\nmgs@tcp:/fs {lustre} lustre rw 0 0\n")
+        script = rs.PROBE_SCRIPT.read_bytes().replace(b"/proc/mounts", str(mounts).encode())
+
+        def probe(*dirs: Path | str) -> tuple[str, int]:
+            proc = subprocess.run(["bash", "-s", "--", *map(str, dirs)], input=script, capture_output=True, timeout=30)
+            assert proc.returncode == 0, proc.stderr.decode()
+            found = rs.parse_probe(proc.stdout.decode().splitlines())
+            return found["install_dir"], found["candidate"]
+
+        configured, search = self.tmp_path / "missing" / "u" / ".agentsdock-server-c", "u/.agentsdock-server-c"
+        # A local disk is not shared storage; with nothing found, the first candidate as without a search.
+        (local / "u").mkdir(parents=True)
+        assert probe(configured, search) == (str(configured), 0)
+        (nfs / "home" / "u").mkdir(parents=True)
+        (lustre / "u").mkdir(parents=True)
+        assert probe(configured, search) == (str(nfs / "home" / "u" / ".agentsdock-server-c"), 1)
+        # A directory this login cannot write is passed over.
+        (nfs / "home" / "u").chmod(0o500)
+        assert probe(configured, search) == (str(lustre / "u" / ".agentsdock-server-c"), 1)
+        (nfs / "home" / "u").chmod(0o700)
+        # The one holding a Claude or Codex login is the user's home there: that host had <mount>/home/<name>,
+        # empty, before <mount>/shared/<name>, which held the logins.
+        (lustre / "u" / ".codex").mkdir()
+        assert probe(configured, search) == (str(lustre / "u" / ".agentsdock-server-c"), 1)
+        # An install wins over both, so a deploy keeps its chats.
+        (nfs / "home" / "u" / ".agentsdock-server-c").mkdir()
+        (nfs / "home" / "u" / ".agentsdock-server-c" / "env").write_text("export AGENTSDOCK_AGENT_PORT=7999\n")
+        assert probe(configured, search) == (str(nfs / "home" / "u" / ".agentsdock-server-c"), 1)
+        # A candidate whose home exists is taken without a search.
+        configured.parent.mkdir(parents=True)
+        assert probe(configured, search) == (str(configured), 0)
+
+    def test_a_cluster_without_any_configured_home_installs_in_the_directory_its_shared_storage_holds(self) -> None:
+        self.enterContext(mock.patch.object(rs, "isolated_proxy_args", mock.AsyncMock(return_value=["-o", "ProxyCommand=x"])))
+        self.enterContext(mock.patch.dict(os.environ, {"AGENTSDOCK_OCI_HOME": "/mnt/oci/u"}))
+        configured, found = "/mnt/oci/u/.agentsdock-server-gcp", "/mnt/nfs/home/u/.agentsdock-server-gcp"
+
+        def last_deploy(calls: Path) -> tuple[list[str], list[str]]:
+            probe, _upload, bootstrap = [json.loads(line)["tail"] for line in calls.read_text().splitlines()[-3:]]
+            return probe, bootstrap
+
+        calls = self.fake_host(existing_port=None, installs={}, unmounted=["/mnt/oci/u"], shared="/mnt/nfs/home/u")
+        manager, job = self.run_job(rs.RemoteDeployRequest(ssh_host="oci@gcp"))
+        assert job.done and job.error is None, job.log
+        probe, bootstrap = last_deploy(calls)
+        # The search asks for the configured home's name.
+        assert probe == [configured, "u/.agentsdock-server-gcp"]
+        # The found home holds the install and is the server's HOME, as a configured one would have been.
+        assert bootstrap[:3] == [found, "7850", "/mnt/nfs/home/u"]
+        [server] = rs.load_registry(manager.path)
+        assert server.install_dir == found
+        assert f"/mnt/oci/u does not exist on oci@gcp; installing in {found}." in [entry["message"] for entry in job.log]
+
+        # A Redeploy keeps the directory the deploy recorded, and a directory the user names is the only one tried.
+        async def redeploy() -> rs.DeployJob:
+            job = manager.start_deploy(None, redeploy_id=server.id)
+            await job.task
+            await manager.stop()
+            return job
+
+        assert asyncio.run(redeploy()).error is None
+        assert last_deploy(calls)[0] == [found]
+        self.run_job(rs.RemoteDeployRequest(ssh_host="oci@gcp", install_dir="/data/x/.agentsdock-server"))
+        assert last_deploy(calls)[0] == ["/data/x/.agentsdock-server"]
+
+        # The host spells a found directory; one the registry could not load again is refused.
+        self.fake_host(existing_port=None, installs={}, unmounted=["/mnt/oci/u"], shared="/mnt/my nfs/u")
+        _, job = self.run_job(rs.RemoteDeployRequest(ssh_host="oci@gcp"))
+        assert job.error == "Invalid remote install directory.", job.log
+
     def test_a_cluster_without_the_first_configured_home_installs_in_the_next_one_it_has(self) -> None:
         # 2026-11-13: an oci@ target on GCP, which has no OCI Lustre, failed with "mkdir: cannot create directory
         # '/mnt/oci-lustre': Permission denied".
@@ -1038,7 +1117,7 @@ time.sleep(30)
         manager, job = self.run_job(rs.RemoteDeployRequest(ssh_host="oci@gcp"))
         assert job.done and job.error is None, job.log
         probe, bootstrap = last_deploy(calls)
-        assert probe == [lustre_dir, nfs_dir]
+        assert probe == [lustre_dir, nfs_dir, "u/.agentsdock-server-gcp"]  # the last is the search for the home's name
         # The second home holds the install and is the server's HOME, as the first would have been.
         assert bootstrap[:3] == [nfs_dir, "7850", "/mnt/nfs/u"]
         assert rs.load_registry(manager.path)[0].install_dir == nfs_dir
@@ -1848,7 +1927,7 @@ if sys.argv[-1] == "k8s-cluster":
         manager = rs.RemoteServerManager(self.tmp_path / "unset", source_dir=self.tmp_path, manage_tunnels=False)
         deploy(manager, lambda: manager.start_deploy(rs.RemoteDeployRequest(ssh_host="osmo@wf-running")))
         [probe, *_] = [json.loads(line)["tail"] for line in calls.read_text().splitlines()[-3:]]
-        assert probe == [pool_dir]
+        assert probe == [pool_dir, "u/.agentsdock-server-wf-running"]
         assert json.loads(calls.read_text().splitlines()[-1])["tail"][0] == pool_dir
 
     def test_a_redeploy_finishes_a_move_whose_deploy_failed(self) -> None:
@@ -1877,7 +1956,7 @@ if sys.argv[-1] == "k8s-cluster":
         # As the move would have: the pool home, the workflow's earlier install as the fallback, a port of
         # its own instead of the previous workflow's, and the pool home as HOME.
         probe, _upload, bootstrap = [json.loads(line)["tail"] for line in calls.read_text().splitlines()[-3:]]
-        assert probe == [pool_dir, earlier_dir], probe
+        assert probe == [pool_dir, earlier_dir, "u/.agentsdock-server-wf-running"], probe
         assert bootstrap == [pool_dir, "7850", "/mnt/a/u", "restart"], bootstrap
         assert rs.load_registry(manager.path)[0].install_dir == pool_dir
 

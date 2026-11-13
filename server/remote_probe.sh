@@ -14,19 +14,48 @@ fi
 # home, and the next homes: not every cluster mounts every configured home). The probe takes the first
 # that holds an install (an env file), so a deploy keeps its chats; else the first whose home exists;
 # else the first, whose mkdir then names the missing directory.
+# A candidate without a leading / or ~, "<name>/<install>", is a search instead, run only when no
+# candidate's home exists (a site whose home the hub's environment does not name yet): <name> on the
+# host's NFS and Lustre mounts, as <mount>/<name> or <mount>/<dir>/<name>, where this login can
+# write. Of those the first that holds the install, else the first that holds a Claude or Codex
+# login (the user's home on that storage), else the first.
 expand() { case "$1" in "~"*) printf '%s\n' "$HOME${1#\~}" ;; *) printf '%s\n' "$1" ;; esac; }
 HELD=""
 MOUNTED=""
+SEARCH=""
 index=0
 for dir in "$@"; do
-  dir="$(expand "$dir")"
-  if [ -z "$HELD" ] && [ -r "$dir/env" ]; then HELD=$index; fi
-  if [ -z "$MOUNTED" ] && [ -d "$(dirname "$dir")" ]; then MOUNTED=$index; fi
+  case "$dir" in
+    /*|"~"*)
+      dir="$(expand "$dir")"
+      if [ -z "$HELD" ] && [ -r "$dir/env" ]; then HELD=$index; fi
+      if [ -z "$MOUNTED" ] && [ -d "$(dirname "$dir")" ]; then MOUNTED=$index; fi
+      ;;
+    *) SEARCH="$dir"; SEARCH_INDEX=$index ;;
+  esac
   index=$((index + 1))
 done
+HOLDER=""
+LOGINS=""
+WRITABLE=""
+if [ -z "$HELD$MOUNTED" ] && [ -n "$SEARCH" ]; then
+  while read -r _ mount type _; do
+    case "$type" in nfs|nfs4|lustre) ;; *) continue ;; esac
+    for home in "$mount/${SEARCH%/*}" "$mount"/*/"${SEARCH%/*}"; do
+      if [ ! -d "$home" ] || [ ! -w "$home" ]; then continue; fi
+      if [ -z "$HOLDER" ] && [ -r "$home/${SEARCH##*/}/env" ]; then HOLDER="$home"; fi
+      if [ -z "$LOGINS" ] && { [ -d "$home/.claude" ] || [ -d "$home/.codex" ]; }; then LOGINS="$home"; fi
+      if [ -z "$WRITABLE" ]; then WRITABLE="$home"; fi
+    done
+  done < /proc/mounts
+fi
+FOUND="${HOLDER:-${LOGINS:-$WRITABLE}}"
 CANDIDATE="${HELD:-${MOUNTED:-0}}"
 INSTALL_DIR=""
-if [ "$#" -gt 0 ]; then shift "$CANDIDATE"; INSTALL_DIR="$(expand "$1")"; fi
+if [ -n "$FOUND" ]; then
+  CANDIDATE=$SEARCH_INDEX
+  INSTALL_DIR="$FOUND/${SEARCH##*/}"
+elif [ "$#" -gt 0 ]; then shift "$CANDIDATE"; INSTALL_DIR="$(expand "$1")"; fi
 # The server's HOME decides where claude/codex look for their logins. Prefer the
 # install directory's parent when it already holds those logins (a persistent
 # home on a network filesystem, chosen by the user), otherwise the shell HOME.

@@ -121,7 +121,8 @@ SKY_LOGIN_ERROR = ("SkyPilot on the hub's machine needs a new login. Click Autho
 # site-specific, so they stay out of the source. Sites mount different storage (an oci@ target can
 # be a SkyPilot cluster on GCP, without OCI's Lustre), so a variable may name several homes,
 # space-separated: a default deploy takes the first that holds the target's install, else the
-# first the host has (see remote_probe.sh).
+# first the host has, else the directory of the first home's name that the host's NFS or Lustre
+# mounts hold (see remote_probe.sh).
 CLUSTER_HOME_ENV = {"oci@": "AGENTSDOCK_OCI_HOME", "osmo@": "AGENTSDOCK_OSMO_HOME"}
 # workflow -> OSMO pool, recorded by osmo_lead_task on every tunnel and deploy query. Pools mount different
 # storage and a workflow's name need not name its pool, so cluster_homes matches AGENTSDOCK_OSMO_POOL_HOMES
@@ -2071,6 +2072,10 @@ class RemoteServerManager:
                                                          and other.install_dir == directory for other in self.servers.values())
                     if directory not in probe_dirs and not owned:
                         probe_dirs.append(directory)
+                if homes:
+                    # Last, a search for the first home's name on the host's own shared storage (see
+                    # remote_probe.sh): a site whose home the environment does not name yet.
+                    probe_dirs.append(home_install_dir(homes[0].rpartition("/")[2], ssh_host))
             if request is not None and request.password:
                 job.progress("connect", f"Installing this hub's SSH key on {ssh_host} with the password…")
                 await self._install_key(job, route, request.password)
@@ -2084,7 +2089,9 @@ class RemoteServerManager:
                     job.progress("connect", f"Found an existing install at {probe['install_dir']}; deploying there to keep its chats.")
                 else:
                     job.progress("connect", f"{install_dir.rpartition('/')[0]} does not exist on {ssh_host}; installing in {probe['install_dir']}.")
-                install_dir = probe["install_dir"]
+                # load-bearing: a searched directory is spelled by the host's mount table, and the registry
+                # refuses to load an entry whose directory it cannot validate.
+                install_dir = validate_remote_dir(probe["install_dir"])
             if from_default and existing is None:
                 # start_deploy looked for this install before the pool was known: a registered one is updated.
                 existing = next((server for server in self.servers.values()
@@ -2094,8 +2101,10 @@ class RemoteServerManager:
             # The probe takes the install's parent as HOME only once it holds a Claude or Codex
             # login. A fresh cluster home has none yet; the container's own ~ (often /root) would
             # then receive the CLIs and logins, and the next container drops them. An earlier install in a
-            # home named before its pool got one (by_pool=False) keeps that home.
-            if (parent := install_dir.rpartition("/")[0]) in {*homes, *cluster_homes(ssh_host, by_pool=False)}:
+            # home named before its pool got one (by_pool=False) keeps that home. Every other candidate than
+            # the first is such a home too, the searched one included.
+            parent = install_dir.rpartition("/")[0]
+            if probe["candidate"] > 0 or parent in {*homes, *cluster_homes(ssh_host, by_pool=False)}:
                 probe["home"] = parent
             remote_port = requested_port or probe.get("existing_port") or probe["free_port"]
             job.progress("connect", f"Host: {probe.get('os')} {probe.get('arch')}, uid {probe.get('uid')}, home {probe['home']}; remote port {remote_port}.")
