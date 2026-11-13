@@ -1,7 +1,7 @@
 import { fuzzyScore } from '@shared/fuzzy'
 import type { Session } from '@shared/types'
 
-// In shared/ because main sends this list to a server that has no folder order yet.
+// In shared/ because main sends this list to a server that has no shared folder order yet.
 export { sidebarFolders } from '@shared/folders'
 
 /**

@@ -227,7 +227,7 @@ interface AppState {
   agentRouteErrorsBySession: Record<string, string | null>
   revokingAgentRouteIds: Set<string>
   folderOrder: string[]
-  /** The server keeps folderOrder for every client (folder_order_v1): a change goes to it, not to this device's preferences. */
+  /** folderOrder is the shared folder order (folder_order_v1): a change goes to the server, not to this device's preferences. */
   sharedFolderOrder: boolean
   collapsedFolders: Set<string>
   archivedCollapsed: boolean
@@ -393,8 +393,8 @@ function sessionNewChatDefaults(session: Session, defaultCwd: string): NewChatDe
   })
 }
 
-/** Saves a folder change where the order lives: on a server that keeps it for every client (main sends it and
- *  pushes back the server's order), otherwise in this device's preferences. */
+/** Saves a folder change: the shared folder order goes to the server (main sends it and pushes back the server's
+ *  reply), this device's own order to its preferences. */
 function saveFolderOrder(scope: WorkspaceProfileScope | null, order: string[], shared: boolean): Promise<void> {
   return shared && scope ? window.agentsDock.folders.setOrder(scope, order) : setWorkspacePreference(scope, 'folderOrder', order)
 }
@@ -2312,7 +2312,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (!profileScopeMatches(scope, get())) return
       const movedById = new Map(movedSessions.map(session => [session.id, session]))
       const shared = get().sharedFolderOrder
-      // A server that keeps the order for every client gets every folder the sidebar now shows.
+      // The shared folder order gets the sidebar's folder list without tab-only folders it does not list.
       const folderOrder = (shared ? sidebarFolders(get().sessions.map(session => movedById.get(session.id) ?? session), get().folderOrder) : get().folderOrder)
         .filter(candidate => candidate !== source)
       const collapsedFolders = new Set([...get().collapsedFolders].filter(candidate => candidate !== source))
@@ -2357,8 +2357,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     const sessionsToMove = get().sessions.filter(session => (session.folder?.trim() || 'General') === from)
     const shared = get().sharedFolderOrder
     try {
-      // A server that keeps the order for every client takes the new name in the old one's place first: a chat
-      // filed under a name it does not know would add that name at the end, and other clients would see it jump.
+      // The shared folder order takes the new name in the old one's place first: a chat filed under a name it
+      // does not list would add that name at the end, and other clients would see the folder jump.
       if (shared) {
         await saveFolderOrder(preferenceScope, sidebarFolders(get().sessions, get().folderOrder).map(candidate => candidate === from ? to : candidate), shared)
         if (!profileScopeMatches(scope, get())) return false
@@ -2798,8 +2798,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     const shared = get().sharedFolderOrder
     set({ folderOrder: order })
     void saveFolderOrder(scope, order, shared).catch(error => {
-      // This device's own order fails quietly, as it always has; a refused shared order is reported, and main
-      // has already put the server's order back.
+      // A failed save of this device's own order stays quiet, as it always has; a refused shared folder order is
+      // reported, and main has already put the server's last one back.
       if (shared && scope && workspaceScopeMatches(scope, get())) set({ error: errorMessage(error) })
     })
   },

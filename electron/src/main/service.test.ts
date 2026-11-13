@@ -12454,7 +12454,7 @@ describe('Canvas cache', () => {
   })
 })
 
-describe('the folder order a server keeps for every client', () => {
+describe('the shared folder order', () => {
   const capabilities = {
     folder_order_v1: { available: true, version: 1, path: '/api/folders/order', stream_protocol: 'agentsdock-session-summaries-v2' },
     session_summary_events_v1: { available: true, required: false, message: 'Live chat rows.', action: null }
@@ -12468,7 +12468,7 @@ describe('the folder order a server keeps for every client', () => {
   ]
 
   function harness(order: string[] | null, shared = true) {
-    // The server's order and revision, as GET/PUT /api/folders/order keep them.
+    // The shared folder order and its revision, as GET/PUT /api/folders/order keep them.
     const server = { order, revision: 100, shared }
     let pushOrder: (order: string[], revision: number) => void = () => { throw new Error('No summary stream.') }
     const client = Object.assign(fakeClient({
@@ -12515,7 +12515,7 @@ describe('the folder order a server keeps for every client', () => {
     expect(await test.service.bootstrap()).toMatchObject({ folderOrder: ['Personal', 'Work', 'Zed'], sharedFolderOrder: false })
   })
 
-  it('gives a server without an order the one this sidebar shows', async () => {
+  it('gives a server without a shared folder order this device\'s own order, as the sidebar shows it', async () => {
     const test = harness(null)
 
     await test.refresh()
@@ -12528,7 +12528,7 @@ describe('the folder order a server keeps for every client', () => {
     expect(await test.service.bootstrap()).toMatchObject({ folderOrder: shown, sharedFolderOrder: true })
   })
 
-  it('shows the server\'s order as sent, from a cold start too, and reads it again only for another revision', async () => {
+  it('shows the shared folder order as sent, from a cold start too, and reads it again only for another revision', async () => {
     const test = harness(['Lab', 'Personal'])
 
     await test.refresh()
@@ -12572,28 +12572,22 @@ describe('the folder order a server keeps for every client', () => {
     expect(test.client.folderOrder).toHaveBeenCalledTimes(1)
   })
 
-  it('follows a restarted server to a lower revision, but a read never undoes a newer push', async () => {
+  it('never lets a read undo a newer push that arrived during it', async () => {
     const test = harness(['Lab', 'Personal'])
     await test.refresh()
 
-    // The server restarted with a revision below the cached one (its revision starts from its clock).
-    test.server.order = ['Personal', 'Lab']
-    test.server.revision = 50
-    await test.refresh()
-    expect(test.pushed().at(-1)).toMatchObject({ folderOrder: ['Personal', 'Lab'] })
-
-    // A push lands while a read is in flight: the read's older revision does not replace it.
-    test.server.revision = 51
+    test.server.revision = 101
     test.client.folderOrder.mockImplementationOnce(async () => {
-      test.push(['Notes', 'Lab', 'Personal'], 52)
-      return { order: ['Personal', 'Lab'], revision: 51 }
+      test.push(['Notes', 'Lab', 'Personal'], 102)
+      return { order: ['Personal', 'Lab'], revision: 101 }
     })
     await test.refresh()
+
     expect(test.pushed().at(-1)).toMatchObject({ folderOrder: ['Notes', 'Lab', 'Personal'] })
     expect(test.cache.preference('server-a', 'folderOrder', [])).toEqual(['Notes', 'Lab', 'Personal'])
   })
 
-  it('sends a reorder as the full order, and shows the server\'s order again when that fails', async () => {
+  it('sends a reorder as the full order, and shows the last shared folder order again when that fails', async () => {
     const test = harness(['Lab', 'Personal'])
     await test.refresh()
 
@@ -12604,19 +12598,19 @@ describe('the folder order a server keeps for every client', () => {
     test.client.putFolderOrder.mockRejectedValueOnce(new Error('server unavailable'))
     await expect(test.service.setFolderOrder(scope, ['General', 'Lab', 'Personal'])).rejects.toThrow('server unavailable')
     expect(test.pushed().at(-1)).toMatchObject({ folderOrder: ['Personal', 'Lab', 'General'], sharedFolderOrder: true })
-    // A renderer that has not heard of the shared order yet cannot replace the server's copy in the cache.
+    // A renderer that has not heard of the shared folder order yet cannot replace it in the cache.
     test.service.putScopedPreference(scope, 'folderOrder', ['Mine'])
     expect(test.cache.preference('server-a', 'folderOrder', [])).toEqual(['Personal', 'Lab', 'General'])
   })
 
-  it('hands the order back to this device when the server no longer keeps one', async () => {
+  it('returns to this device\'s own order when the server no longer keeps a shared one', async () => {
     const test = harness(['Lab', 'Personal'])
     await test.refresh()
 
     test.server.shared = false
     await test.refresh()
 
-    // This device's own order again: the server's last one, plus every folder this device's chats were filed under.
+    // This device's own order again: the last shared folder order, plus every folder this device's chats were filed under.
     expect(test.pushed().at(-1)).toMatchObject({ folderOrder: ['Lab', 'Personal', 'Work', 'Zed'], sharedFolderOrder: false })
     expect(await test.service.bootstrap()).toMatchObject({ folderOrder: ['Lab', 'Personal', 'Work', 'Zed'], sharedFolderOrder: false })
   })

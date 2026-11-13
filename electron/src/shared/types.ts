@@ -1459,7 +1459,7 @@ export interface CreateSurfaceInput {
 
 export type UpdateSurfaceInput = Partial<Pick<Surface, 'name' | 'folder' | 'url' | 'page_title'>>
 
-/** The chat list's folder order a server keeps for every client (folder_order_v1); `order` is null until a client sends one. */
+/** The shared folder order: the chat-list folder order a server keeps for every client (folder_order_v1); `order` is null until a client sends one. */
 export interface FolderOrder {
   order: string[] | null
   revision: number
@@ -1998,7 +1998,7 @@ export interface HealthCapabilities {
   cross_server_mail_v1?: ServerCapability
   /** GET /api/sessions/{id} takes prefetch=true: a background read that starts nothing an open would. */
   session_prefetch_v1?: { available: boolean; version: number }
-  /** One chat-list folder order for every client (GET/PUT `path`), pushed on the summary stream's `stream_protocol`. */
+  /** The shared folder order (GET/PUT `path`), pushed on the summary stream's `stream_protocol`. */
   folder_order_v1?: { available: boolean; version: number; path: string; stream_protocol: string }
   [key: string]: SideQuestionsCapability | ServerCapability | ServerRestartCapability | TeamHubV1Capability | TeamHubHostControlCapability | LocalSessionImportCapability | SessionForkCompletedPrefixCapability | SessionRewindCapability | AgentEmergencyAlertsCapability | TeamMailHintsCapability | TeamActivityHintsCapability | AgentTeamMailCapability | AgentTeamMessagesCapability | TeamBulletinAliasCapability | TeamAllServersAliasCapability | PinnedItemsCapability | RemoteServersCapability | JsonValue | undefined
 }
@@ -2030,7 +2030,7 @@ export interface Health {
   server_instance_id?: string
   /** Changes whenever a terminal or browser tab is created, renamed, or closed on this server. */
   surfaces_revision?: number
-  /** Changes whenever the chat-list folder order changes (folder_order_v1). */
+  /** Changes whenever the shared folder order changes (folder_order_v1). */
   folder_order_revision?: number
   server_version?: string
   /** Separate component versions; server_version still describes execution. */
@@ -2697,7 +2697,7 @@ export interface BootstrapPayload {
   runtimeCatalog?: RuntimeCatalog | null
   selectedSessionId?: string | null
   folderOrder: string[]
-  /** The server keeps `folderOrder` for every client (folder_order_v1); otherwise it is this device's own. */
+  /** `folderOrder` is the shared folder order (folder_order_v1); otherwise it is this device's own order. */
   sharedFolderOrder?: boolean
   collapsedFolders: string[]
   archivedCollapsed: boolean

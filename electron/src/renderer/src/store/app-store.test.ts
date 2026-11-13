@@ -1488,13 +1488,13 @@ describe('folder rename', () => {
   })
 })
 
-describe('folder order a server keeps for every client', () => {
+describe('shared folder order', () => {
   const profile: PublicServerProfile = {
     id: 'profile-a', name: 'Alpha', serverUrl: 'https://alpha.example:7850', serverIdentity: 'server-a',
     hasAccessToken: true, serverSetupComplete: true, connectionState: 'online', cachedUnreadCount: 0
   }
   const scope = { profileId: 'profile-a', profileGeneration: 2, serverIdentity: 'server-a' }
-  // Server writes in the order they were sent: `order:` the folder order, `chat:` a chat filed under a folder.
+  // Server writes in the order they were sent: `order:` the shared folder order, `chat:` a chat filed under a folder.
   let writes: string[]
   let api: { setOrder: ReturnType<typeof vi.fn>; setScoped: ReturnType<typeof vi.fn>; set: ReturnType<typeof vi.fn> }
 
@@ -1549,7 +1549,7 @@ describe('folder order a server keeps for every client', () => {
     expect(useAppStore.getState().sessions[0].folder).toBe('Papers')
   })
 
-  it('deletes by moving the chats out first, then sending every folder the sidebar still shows', async () => {
+  it('deletes by moving the chats out first, then sending the sidebar\'s remaining folder list', async () => {
     await useAppStore.getState().deleteFolder('Research')
 
     expect(writes).toEqual(['chat:research:General', 'order:Ideas,General'])
@@ -1558,7 +1558,7 @@ describe('folder order a server keeps for every client', () => {
     expect(useAppStore.getState().error).toBeNull()
   })
 
-  it('keeps saving this device\'s own order on a server that does not keep one', async () => {
+  it('keeps saving this device\'s own order on a server without a shared folder order', async () => {
     useAppStore.setState({ sharedFolderOrder: false })
 
     useAppStore.getState().setFolderOrder(['Ideas', 'Research'])
@@ -1595,7 +1595,7 @@ describe('folder order a server keeps for every client', () => {
     expect(useAppStore.getState().folderOrder).toEqual(['Lab'])
     handlers.get('server:folder-order')?.({ profileId: null, profileGeneration: 0, folderOrder: ['Notes', 'Lab'], sharedFolderOrder: true })
     expect(useAppStore.getState()).toMatchObject({ folderOrder: ['Notes', 'Lab'], sharedFolderOrder: true })
-    // The server no longer keeps one: this device's order again.
+    // The server no longer keeps a shared folder order: this device's own order again.
     handlers.get('server:folder-order')?.({ profileId: null, profileGeneration: 0, folderOrder: ['Lab', 'Notes'], sharedFolderOrder: false })
     expect(useAppStore.getState()).toMatchObject({ folderOrder: ['Lab', 'Notes'], sharedFolderOrder: false })
   })
