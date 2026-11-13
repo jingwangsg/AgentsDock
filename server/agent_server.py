@@ -23868,7 +23868,13 @@ def queued_claude_runtime_matches_active(
         # must never reuse the active SDK process merely because model/effort
         # happen to match.
         return False
-    return configuration_key == str(active.get("configuration_key") or "")
+    return (
+        configuration_key == str(active.get("configuration_key") or "")
+        # The running turn keeps its model and effort; a message that changes
+        # them starts the next turn, where the process switches.
+        and str(session.get("model") or "") == str(active.get("provider_model") or "")
+        and str(session.get("effort") or "") == str(active.get("provider_effort") or "")
+    )
 
 
 class NonNativeForceSendRequiresLifecycleLock(Exception):
@@ -63409,14 +63415,16 @@ def claude_sdk_configuration_key(
     cli_path: str,
     system_prompt: str,
 ) -> str:
-    """Hash only process configuration, not the evolving provider session ID."""
+    """Hash what only a new Claude process can change.
+
+    Not the evolving provider session ID, and not the model and effort: the
+    supervisor switches those on the running process.
+    """
 
     payload = {
         "version": CLAUDE_SDK_CONFIGURATION_VERSION,
         "cwd": cwd,
         "cli_path": cli_path,
-        "model": str(sess.get("model") or ""),
-        "effort": str(sess.get("effort") or ""),
         "system_prompt": system_prompt,
         "permission_mode": effective_claude_permission_mode(sess),
         "setting_sources": ["user", "project", "local"],

@@ -165,6 +165,10 @@ class ClaudeCommandHistoryNormalizer:
     item kind for command output and already omits every ``system`` row; it
     is omitted only behind a wrapper parent from the same session, so an
     output quotation with any other parent stays as submitted.
+
+    Claude Code also stores a model switch a client requested as a ``/model``
+    wrapper. AgentsDock requests one before a turn on another model; nobody
+    typed that command, so the wrapper an SDK process stored is omitted too.
     """
 
     def __init__(self) -> None:
@@ -202,6 +206,8 @@ class ClaudeCommandHistoryNormalizer:
                 self._wrappers[event["uuid"]] = event["sessionId"]
                 while len(self._wrappers) > _MAX_COMMAND_WRAPPERS:
                     self._wrappers.popitem(last=False)
+            if command[1] == "model" and str(event.get("entrypoint") or "").startswith("sdk"):
+                return None
             args = (command[2] or "").strip()
             return {**event, "message": {**message, "content": "/" + command[1] + (" " + args if args else "")}}
         parent = event.get("parentUuid")

@@ -190,6 +190,27 @@ class ClaudeHistoryMetadataTests(unittest.TestCase):
         ):
             self.assertEqual(self.projection["parse_claude_history_events"]([user_event(text)], None), [{"kind": "user", "text": command}])
 
+    def test_a_model_switch_the_server_requested_is_not_a_typed_command(self) -> None:
+        wrapper = "<command-name>/model</command-name>\n            <command-message>model</command-message>\n            <command-args>opus</command-args>"
+        output = "<local-command-stdout>Set model to `claude-opus-5-5`</local-command-stdout>"
+
+        def rows(entrypoint: str) -> list[dict]:
+            return [
+                user_event(wrapper, uuid="cmd-1", sessionId="s-1", entrypoint=entrypoint),
+                user_event(output, uuid="out-1", parentUuid="cmd-1", sessionId="s-1", entrypoint=entrypoint),
+                user_event("Next request", entrypoint=entrypoint),
+            ]
+
+        # Claude Code stores the switch AgentsDock requests before a turn on another model like a typed /model.
+        self.assertEqual(self.projection["parse_claude_history_events"](rows("sdk-py"), None), [{"kind": "user", "text": "Next request"}])
+        # One typed in a terminal stays, and so does any other command an SDK process stored.
+        self.assertEqual(self.projection["parse_claude_history_events"](rows("cli"), None), [
+            {"kind": "user", "text": "/model opus"},
+            {"kind": "user", "text": "Next request"},
+        ])
+        compact = user_event(wrapper.replace("model", "compact").replace("opus", ""), uuid="cmd-2", sessionId="s-1", entrypoint="sdk-py")
+        self.assertEqual(self.projection["parse_claude_history_events"]([compact], None), [{"kind": "user", "text": "/compact"}])
+
     def test_local_output_without_its_wrapper_parent_stays_as_submitted(self) -> None:
         wrapper = "<command-name>/compact</command-name>\n<command-message>compact</command-message>\n<command-args></command-args>"
         output = "<local-command-stdout>Compacted </local-command-stdout>"

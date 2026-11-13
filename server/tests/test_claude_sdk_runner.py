@@ -6939,29 +6939,58 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    def test_a_changed_model_or_effort_keeps_the_process_and_waits_for_the_next_turn(self) -> None:
+        def key(session: dict[str, object]) -> str:
+            return agent_server.claude_sdk_configuration_key(session, self.cwd, "/usr/bin/claude", "prompt")
+
+        # The process switches model and effort itself, so they are not what a new process is for.
+        self.assertEqual(key(self.session), key({**self.session, "model": "claude-fable", "effort": "xhigh"}))
+        self.assertNotEqual(key(self.session), key({**self.session, "claude_permission_mode": "plan"}))
+
+        # The running turn keeps its own: a queued message on another model or effort is not steered into it.
+        active = {"configuration_key": "key", "provider_model": "claude-opus", "provider_effort": "high"}
+        capability = [agent_server.CLAUDE_SDK_INTERACTIVE_CLIENT_CAPABILITY]
+        with patch.object(agent_server, "claude_sdk_configuration_key", return_value="key"), \
+                patch.object(agent_server, "claude_sdk_cli_path", return_value="/usr/bin/claude"), \
+                patch.object(agent_server, "session_system_prompt", return_value="prompt"):
+            for selected, steered in (
+                ({}, True),
+                ({"model": "claude-opus", "effort": "high"}, True),
+                ({"model": "claude-fable"}, False),
+                ({"effort": "xhigh"}, False),
+            ):
+                with self.subTest(selected=selected):
+                    self.assertEqual(
+                        agent_server.queued_claude_runtime_matches_active(
+                            "chat-claude", {**selected, "client_capabilities": capability}, active,
+                        ),
+                        steered,
+                    )
+
     def test_a_chat_whose_directory_is_gone_keeps_it_while_its_live_process_can_take_the_turn(self) -> None:
         gone = str(Path(self.cwd) / "moved-away")
         self.assertFalse(Path(gone).exists())
         self.session["cwd"] = gone
         manifest = Path(self.cwd) / ".manifest.json"
         fallback = agent_server.existing_cwd(gone)
-        live = types.SimpleNamespace(chat_id="chat-claude", configuration_key=f"claude-opus:{gone}", connected=True, closed=False)
+        live = types.SimpleNamespace(chat_id="chat-claude", configuration_key=f"default:{gone}", connected=True, closed=False)
         manager = FakeClaudeManager()
         manager.snapshots = Mock(return_value=[live])  # type: ignore[attr-defined]
         agent_server.CLAUDE_SDK_MANAGER = manager
-        # A key of model and directory: it matches the live process only with the model and directory it started with.
-        with patch.object(agent_server, "claude_sdk_configuration_key", side_effect=lambda session, cwd, *_: f"{session['model']}:{cwd}"), \
+        # A key of permission mode and directory: it matches the live process only with those it started with.
+        with patch.object(agent_server, "claude_sdk_configuration_key", side_effect=lambda session, cwd, *_: f"{session['claude_permission_mode']}:{cwd}"), \
                 patch.object(agent_server, "claude_sdk_cli_path", return_value="/usr/bin/claude"), \
                 patch.object(agent_server, "session_system_prompt", return_value="prompt"):
             self.assertEqual(agent_server.claude_sdk_turn_cwd("chat-claude", self.session, manifest), gone)
             # A queued message still steers into the turn that process runs.
             selected = {"client_capabilities": [agent_server.CLAUDE_SDK_INTERACTIVE_CLIENT_CAPABILITY]}
-            self.assertTrue(agent_server.queued_claude_runtime_matches_active("chat-claude", selected, {"configuration_key": live.configuration_key}))
+            active = {"configuration_key": live.configuration_key, "provider_model": "claude-opus", "provider_effort": "high"}
+            self.assertTrue(agent_server.queued_claude_runtime_matches_active("chat-claude", selected, active))
 
-            # A turn that replaces the process anyway (another model here), or a chat without a live process,
-            # gets a directory that exists: a new process cannot start in a missing one.
+            # A turn that replaces the process anyway (another permission mode here), or a chat without a live
+            # process, gets a directory that exists: a new process cannot start in a missing one.
             self.assertNotEqual(fallback, gone)
-            self.assertEqual(agent_server.claude_sdk_turn_cwd("chat-claude", {**self.session, "model": "claude-sonnet"}, manifest), fallback)
+            self.assertEqual(agent_server.claude_sdk_turn_cwd("chat-claude", {**self.session, "claude_permission_mode": "plan"}, manifest), fallback)
             manager.snapshots.return_value = []
             self.assertEqual(agent_server.claude_sdk_turn_cwd("chat-claude", self.session, manifest), fallback)
 

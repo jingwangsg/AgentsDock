@@ -51,6 +51,7 @@ class FakeClaudeClient:
         self.query_error = query_error
         self.auto_ack = auto_ack
         self.send_now_answer = "delivering"
+        self.switch_error: Exception | None = None
         self.query_prefix_messages = list(query_prefix_messages or [])
         self.messages: asyncio.Queue[Any] = asyncio.Queue()
         self.calls: list[tuple[Any, ...]] = []
@@ -136,6 +137,11 @@ class FakeClaudeClient:
     async def send_queued_now(self) -> dict[str, Any]:
         self._record("send_queued_now")
         return {"still_queued": [], "send_now": self.send_now_answer}
+
+    async def apply_model_and_effort(self, model: str | None, effort: str | None) -> None:
+        self._record("apply_model_and_effort", model, effort)
+        if self.switch_error is not None:
+            raise self.switch_error
 
     async def get_context_usage(self) -> dict[str, Any]:
         self._record("get_context_usage")
@@ -1913,7 +1919,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(self.manager.is_loaded("chat-1"))
 
-        handle = await supervisor.start_run("Prompt", run_id="run-1")
+        handle = await supervisor.start_run("Prompt", run_id="run-1", model_effort=(None, None))
         self.assertTrue(self.manager.is_loaded("chat-1"))
         await self.factory.clients[0].emit({"type": "result", "result": "done"})
         await handle.wait_result()
@@ -3961,8 +3967,10 @@ class LiveBackgroundTasksKeepTheProcessTests(unittest.IsolatedAsyncioTestCase):
     """A process that still tracks agents or shells is left alone by housekeeping.
 
     2026-10-08: disconnecting the chat's process kills them. Idle TTL, LRU
-    overflow and a changed configuration (model, effort, runtime) must not
-    replace such a process; only Stop, Delete or Rewind end them.
+    overflow and a changed configuration (directory, permission mode, runtime)
+    must not replace such a process; only Stop, Delete or Rewind end them.
+    2026-11-13: a changed model or effort is no such configuration; the process
+    switches to them, as Claude Code's /model and /effort do.
     """
 
     async def asyncSetUp(self) -> None:
@@ -3974,8 +3982,8 @@ class LiveBackgroundTasksKeepTheProcessTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         await self.manager.close_all()
 
-    async def released_run_with_live_agent(self, chat: str = "live") -> Any:
-        handle = await self.manager.start_run(chat, "Work", run_id="r1", options={}, configuration_key="same")
+    async def released_run_with_live_agent(self, chat: str = "live", options: Any = None) -> Any:
+        handle = await self.manager.start_run(chat, "Work", run_id="r1", options=options or {}, configuration_key="same")
         client = self.factory.clients[-1]
         await client.emit({"type": "system", "subtype": "task_started", "task_id": "agent-1", "task_type": "local_agent"})
         await client.emit({"type": "result", "result": "launched"})
@@ -4010,7 +4018,7 @@ class LiveBackgroundTasksKeepTheProcessTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_changed_configuration_reports_live_tasks_instead_of_replacing(self) -> None:
         client = await self.released_run_with_live_agent()
         with self.assertRaises(ClaudeSDKConfigurationConflict) as caught:
-            await self.manager.start_run("live", "Again", run_id="r2", options={}, configuration_key="other-model")
+            await self.manager.start_run("live", "Again", run_id="r2", options={}, configuration_key="other-directory")
         self.assertIn("1 background task(s) are still running", str(caught.exception))
         self.assertTrue(self.manager.is_loaded("live"))
         self.assertEqual(self.manager.inflight_task_count("live"), 1)
@@ -4020,8 +4028,48 @@ class LiveBackgroundTasksKeepTheProcessTests(unittest.IsolatedAsyncioTestCase):
         await client.emit({"type": "result", "result": "done"})
         await asyncio.wait_for(collect(handle), 5)
         self.assertEqual(self.manager.inflight_task_count("live"), 0)
-        await self.manager.start_run("live", "New model", run_id="r3", options={}, configuration_key="other-model")
+        await self.manager.start_run("live", "New directory", run_id="r3", options={}, configuration_key="other-directory")
         self.assertIsNot(self.factory.clients[-1], client)
+
+    async def test_a_changed_model_or_effort_switches_the_process_that_still_runs_tasks(self) -> None:
+        client = await self.released_run_with_live_agent(options={"model": "opus", "effort": "high"})
+        # A process runs on the model and effort it started with: nothing to switch.
+        self.assertNotIn("apply_model_and_effort", [call[0] for call in client.calls])
+
+        fable = {"model": "fable", "effort": "xhigh"}
+        handle = await self.manager.start_run("live", "Again", run_id="r2", options=fable, configuration_key="same")
+        self.assertIs(self.factory.clients[-1], client)
+        self.assertEqual(self.manager.inflight_task_count("live"), 1)
+        self.assertEqual(
+            [call for call in client.calls if call[0] in {"apply_model_and_effort", "query"}][-2:],
+            [("apply_model_and_effort", "fable", "xhigh"), ("query", "Again", {})],
+        )
+        await client.emit({"type": "system", "subtype": "task_notification", "task_id": "agent-1", "status": "completed"})
+        await client.emit({"type": "result", "result": "done"})
+        await asyncio.wait_for(collect(handle), 5)
+
+        # The process stays on them, and an unset model or effort is Claude's default.
+        handle = await self.manager.start_run("live", "Same", run_id="r3", options=fable, configuration_key="same")
+        await client.emit({"type": "result", "result": "done"})
+        await asyncio.wait_for(collect(handle), 5)
+        await self.manager.start_run("live", "Default", run_id="r4", options={"model": ""}, configuration_key="same")
+        self.assertEqual(
+            [call[1:] for call in client.calls if call[0] == "apply_model_and_effort"],
+            [("fable", "xhigh"), (None, None)],
+        )
+
+    async def test_a_run_whose_model_switch_fails_is_not_sent_to_the_old_model(self) -> None:
+        client = await self.released_run_with_live_agent(options={"model": "opus"})
+        client.switch_error = RuntimeError("apply_flag_settings failed")
+        with self.assertRaisesRegex(ClaudeSDKSupervisorError, "could not switch to the chat's model and effort: apply_flag_settings failed"):
+            await self.manager.start_run("live", "Again", run_id="r2", options={"model": "fable"}, configuration_key="same")
+        self.assertEqual([call[1] for call in client.calls if call[0] == "query"], ["Work"])
+        self.assertEqual(self.manager.inflight_task_count("live"), 1)
+
+        # The next run asks again.
+        client.switch_error = None
+        await self.manager.start_run("live", "Again", run_id="r3", options={"model": "fable"}, configuration_key="same")
+        self.assertEqual([call[1] for call in client.calls if call[0] == "query"], ["Work", "Again"])
 
 
 if __name__ == "__main__":
