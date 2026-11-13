@@ -5650,8 +5650,12 @@ function installAppLifecycle(
       else void routeActiveConnection()
       if (NativeAppState.currentState !== 'active') return
       if (get().connected) {
+        // The open chat catches up while the server's health and chat list load. On a remote behind the hub each
+        // of those is a round trip of its own (0.5 s to a cluster, measured), and the timeline needs neither.
+        const openChatSync = get().syncSelectedSession('foreground')
         await get().refreshSessions()
         reloadMissingRuntime(get, set)
+        await openChatSync
       } else await get().reconnect()
       const selectedSessionId = get().selectedSessionId
       const selectedSyncInFlight = Boolean(

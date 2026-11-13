@@ -139,6 +139,7 @@ const requests: RequestRecord[] = []
 const firstHealthStarted = deferred<void>()
 const firstHealthResponse = deferred<Response>()
 let delayFirstHealth = true
+let heldHealth: Promise<Response> | null = null
 
 try {
   await AsyncStorage.clear()
@@ -172,6 +173,7 @@ try {
         firstHealthStarted.resolve(undefined)
         return firstHealthResponse.promise
       }
+      if (heldHealth) return heldHealth
       return jsonResponse({
         ok: true,
         server_identity: 'server-lifecycle',
@@ -314,6 +316,31 @@ try {
   })
   assert.equal(runtimeNotifications.length, 1, 'a stopped stale stream must not publish runtime invalidations')
   unsubscribeRuntime()
+
+  // Returning with a chat open: its timeline catches up and its stream restarts while the server's health is
+  // still on its way. Through a hub each read of a remote is a round trip of its own, and the timeline waits
+  // for none of them.
+  const timelineRequests = () => requests.filter(request => request.pathname === `/api/sessions/${session.id}`).length
+  const chatListRequests = () => requests.filter(request => request.pathname === '/api/sessions').length
+  const chatListRequestsBeforeReturn = chatListRequests()
+  const returnHealth = deferred<Response>()
+  heldHealth = returnHealth.promise
+  appState.__emitAppState('active')
+  await waitFor(() => FakeWebSocket.instances.length === 2, 'the open chat must catch up before the server health arrives')
+  assert.equal(chatListRequests(), chatListRequestsBeforeReturn, 'the chat list still waits for the health')
+  const timelineRequestsAfterCatchUp = timelineRequests()
+  heldHealth = null
+  returnHealth.resolve(jsonResponse({
+    ok: true,
+    server_identity: 'server-lifecycle',
+    server_version: 'test-lifecycle',
+    api_contract_version: 9,
+    active_sessions: [],
+  }))
+  await waitFor(() => chatListRequests() === chatListRequestsBeforeReturn + 1, 'the chat list must load after the health')
+  await nextTurn()
+  await nextTurn()
+  assert.equal(timelineRequests(), timelineRequestsAfterCatchUp, 'the chat list arriving afterwards must not request the same catch-up again')
 
   console.log('store lifecycle, runtime invalidation, passive trace, and read-receipt regressions passed')
 } finally {
