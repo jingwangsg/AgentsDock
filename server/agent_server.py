@@ -11283,7 +11283,6 @@ class SessionStore:
             with suppress(BaseException):
                 await join_task_despite_caller_cancellation(cleanup_task)
             raise
-        await remember_folder(sess.get("folder"))
         return sess
 
     async def update(
@@ -90253,6 +90252,8 @@ async def create_session_with_history(req: CreateSessionRequest) -> dict[str, An
             model, effort = await asyncio.to_thread(resumed_chat_runtime, backend, provider_id)
             req = req.model_copy(update={"model": model, "effort": effort})
     sess = await STORE.create(req)
+    # A chat a person or an agent creates (not a fork or a job's run chat) can bring a new folder.
+    await remember_folder(sess.get("folder"))
     provider_id = session_provider_id(sess)
     should_import = bool(provider_id) if req.import_history is None else req.import_history
     if should_import:

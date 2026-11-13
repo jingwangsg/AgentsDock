@@ -85,8 +85,9 @@ class FolderOrderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_chat_filed_under_a_new_folder_adds_it_and_a_moved_chat_is_pushed(self) -> None:
         await self.put("General")
-        with fresh_store() as store:
-            created = await store.create(agent_server.CreateSessionRequest(title="Plan", folder="Projects", backend="claude"))
+        with fresh_store():
+            created = (await agent_server.create_session(
+                agent_server.CreateSessionRequest(title="Plan", folder="Projects", backend="claude")))["session"]
             self.assertEqual(agent_server.FOLDER_ORDER, ["General", "Projects"])
             with patch.object(agent_server, "broadcast_session_summary", AsyncMock()) as push:
                 # A title change does not move the chat in the list.

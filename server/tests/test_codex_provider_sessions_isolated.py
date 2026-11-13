@@ -88,6 +88,7 @@ def make_namespace(root: Path):
         "session_provider_id": lambda session: session.get("session_id"), "import_session_history": AsyncMock(),
         "resumed_chat_runtime": Mock(return_value=(None, None)),
         "carry_over_moved_chat_state": AsyncMock(),
+        "remember_folder": AsyncMock(), "broadcast_session_summary": AsyncMock(),
         "ensure_session_not_initializing": lambda session: None,
         "SESSION_LIFECYCLE_UPDATE_FIELDS": {"backend", "codex_provider", "model", "effort", "archived"},
         "SESSION_DISPLAY_UPDATE_FIELDS": {"title", "folder", "pinned"},
