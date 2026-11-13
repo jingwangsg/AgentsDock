@@ -32,6 +32,8 @@ Real boundaries exercised; any mocked/stubbed boundaries: ssh through Sky's webs
 Focused regression / typecheck / production build: tests/test_remote_servers.py and tests/test_remote_bootstrap_env.py; all 8 server shards.
 Remaining limitations or blocked acceptance: the isolated deploy was cancelled during the setup, because the cluster's NFS was too slow at the time for an install to finish; a deploy onto such storage still takes as long as the storage needs. A setup step that never returns now holds the deploy for up to about an hour instead of three minutes; Cancel ends it. The search needs at least one configured home, whose last path component it searches for. The hub must restart on this version for the search; the setup's line each minute applies from the next deploy.
 Availability: source only until the hub restarts on this version.
+```
+
 ## 2026-11-13 — Android: the open chat catches up first on return to the app (Android 88)
 
 - On return to the app, it read the server's health, then the chat list, and
@@ -91,6 +93,8 @@ Real boundaries exercised; any mocked/stubbed boundaries: desktop and Android ap
 Focused regression / typecheck / production build: server tests for the order, its stream and the drag push; desktop typecheck and full vitest suite (288 files); mobile typecheck and all suites; all 8 server shards; desktop production build.
 Remaining limitations or blocked acceptance: a folder named "Pinned" or "Archived" is merged into those sections on Android (as before), so Android leaves it out of the orders it sends. Two devices that both send an order while the server has none keep the later one.
 Availability: source only until the hub restarts, the remotes are redeployed, and desktop 144 and Android 87 are installed.
+
+```
 
 ## 2026-11-13 — Claude chats: another model or effort no longer needs a new process (server)
 
