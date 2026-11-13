@@ -274,7 +274,7 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
   // Exactly the folders the unfiltered sidebar renders, in display order, so
   // Move Folder Up/Down and duplicate-name checks act on what is on screen.
   // Pinned is a virtual section, not a folder.
-  const folders = useMemo(() => sidebarFolderOrder(sessions, folderOrder, surfaces), [folderOrder, sessions, surfaces])
+  const folders = useMemo(() => sidebarFolderOrder(sessions, folderOrder), [folderOrder, sessions])
   const chatBackends = useMemo(() => readyChatBackends(health, runtime), [health, runtime])
   const createFolder = () => {
     const scope = profileScope
@@ -288,7 +288,10 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
     }).then(value => {
       if (!profileScopeIsCurrent(scope)) return
       const name = value?.trim()
-      if (name && !folders.includes(name)) void setFolderOrder([...folders, name], scope.profileGeneration)
+      // Read now, not when the prompt opened: another device may have changed the shared folder order meanwhile.
+      const state = useAppStore.getState()
+      const shown = sidebarFolderOrder(state.sessions, state.folderOrder)
+      if (name && !shown.includes(name)) void setFolderOrder([...shown, name], scope.profileGeneration)
     })
   }
   const moveFolder = (folder: string, direction: 'up' | 'down') => {
@@ -313,17 +316,21 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
     }).then(async value => {
       if (!profileScopeIsCurrent(scope)) return
       const name = value?.trim()
-      if (!name || name === folder || folders.some(entry => entry !== folder && entry.toLowerCase() === name.toLowerCase())) return
-      const renamed = folders.map(entry => entry === folder ? name : entry)
-      // A server that keeps the order takes the new name in the old one's place first: a chat moved there before
-      // would add it at the end, and other devices would see the folder jump.
-      const shared = sharesFolderOrder(useAppStore.getState().health)
+      // Read now, not when the prompt opened: another device may have changed the shared folder order meanwhile.
+      const state = useAppStore.getState()
+      const shown = sidebarFolderOrder(state.sessions, state.folderOrder)
+      if (!name || name === folder || shown.some(entry => entry !== folder && entry.toLowerCase() === name.toLowerCase())) return
+      const renamed = shown.map(entry => entry === folder ? name : entry)
+      // The shared folder order takes the new name in the old one's place first: a chat moved there before would
+      // add it at the end, and other devices would see the folder jump.
+      const shared = sharesFolderOrder(state.health)
       if (shared && !await setFolderOrder(renamed, scope.profileGeneration)) return
-      await Promise.all(sessions
+      await Promise.all(state.sessions
         // The welcome chat is local-only; the server has no record to update.
         .filter(session => !isWelcomeSession(session.id) && (session.folder?.trim() || 'General') === folder)
         .map(session => updateSession(session.id, { folder: name }, scope.profileGeneration)))
       if (!profileScopeIsCurrent(scope)) return
+      // load-bearing: renamed first, the folder subscriber re-adds the old name from a chat not yet moved.
       if (!shared) void setFolderOrder(renamed, scope.profileGeneration)
       if (collapsed.has(folder)) setCollapsedFolders(collapsedFolders.map(entry => entry === folder ? name : entry), scope.profileGeneration)
     })
@@ -340,8 +347,9 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
       Alert.alert('Create another folder first', `The chats in “${folder}” need somewhere to go.`)
       return
     }
-    void Promise.all(destination ? moving.map(session => updateSession(session.id, { folder: destination }, scope.profileGeneration)) : []).then(() => {
-      if (!profileScopeIsCurrent(scope)) return
+    void Promise.all(destination ? moving.map(session => updateSession(session.id, { folder: destination }, scope.profileGeneration)) : []).then(moved => {
+      // A chat that did not move still holds the folder, so the order keeps it; updateSession has shown the error.
+      if (!profileScopeIsCurrent(scope) || !moved.every(Boolean)) return
       void setFolderOrder(others, scope.profileGeneration)
       if (collapsed.has(folder)) setCollapsedFolders(collapsedFolders.filter(entry => entry !== folder), scope.profileGeneration)
     })
@@ -397,7 +405,7 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
     // Chat and folder drops are judged without the tab rows, which sit after the chats of a folder.
     const chatRows = data.filter((row): row is Exclude<Row, { kind: 'surface' }> => row.kind !== 'surface')
     // A drop made while the server changed is refused (and drawn back) like any other.
-    const drop = profileScopeIsCurrent(profileScope) ? resolveSidebarDrop(chatRows, chatRows.indexOf(moved), sessions, folders) : null
+    const drop = profileScopeIsCurrent(profileScope) ? resolveSidebarDrop(chatRows, chatRows.indexOf(moved), sessions, folders, sharesFolderOrder(health)) : null
     setDropped({ base: rows, data, refused: !drop })
     if (!drop) return
     // A folder order the server refuses is drawn back like a refused chat move.

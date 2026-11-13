@@ -146,7 +146,7 @@ const SESSION_SUMMARY_STREAM_PROTOCOL = 'agentsdock-session-summaries-v1'
 // v1 plus folder_order packets; a server without it accepts v1 from the same offer.
 const SESSION_SUMMARY_STREAM_PROTOCOL_V2 = 'agentsdock-session-summaries-v2'
 
-/** A summary stream v2 packet: the server's folder order after a change. */
+/** A summary stream v2 packet: the shared folder order after a change. */
 export interface PushedFolderOrder extends FolderOrder {
   server_identity: string
 }
@@ -588,7 +588,7 @@ export class AgentServerClient {
   }
   async deleteSurface(surfaceId: string): Promise<void> { await this.delete(`/api/surfaces/${encodeURIComponent(surfaceId)}`) }
   async reorderSurfaces(ids: string[]): Promise<Surface[]> { return (await this.put<{ surfaces: Surface[] }>('/api/surfaces/order', { ids })).surfaces }
-  /** The order is null until a client first sends one. */
+  /** The shared folder order; null until a client first sends one. */
   folderOrder(): Promise<{ order: string[] | null; revision: number }> { return this.get('/api/folders/order') }
   /** Replaces the whole order; the server trims names, drops empty and repeated ones, and answers with what it keeps. */
   putFolderOrder(order: string[]): Promise<FolderOrder> { return this.put('/api/folders/order', { order }) }
@@ -1334,7 +1334,7 @@ export class AgentServerClient {
 
   /**
    * Live chat list rows for chats without an open timeline: a turn starting or
-   * ending, a provider waiting for the user; on v2 also the server's folder
+   * ending, a provider waiting for the user; on v2 also the shared folder
    * order after each change. Only servers advertising
    * session_summary_events_v1; the list poll stays as the fallback. Same
    * backoff rules as stream(): a socket that is accepted and dropped must not
