@@ -218,7 +218,7 @@ class ClaudeSDKClientProtocol(Protocol):
 
     async def send_queued_now(self) -> dict[str, Any]: ...
 
-    async def apply_model_and_effort(self, model: str | None, effort: str | None) -> None: ...
+    async def switch_model_and_effort(self, model: str | None, effort: str | None) -> None: ...
 
     async def get_context_usage(self) -> dict[str, Any]: ...
 
@@ -673,12 +673,13 @@ def default_claude_sdk_client_factory(options: Any) -> ClaudeSDKClientProtocol:
                 raise ClaudeSDKSupervisorClosed("Claude SDK client is not connected")
             return await self._query._send_control_request({"subtype": "interrupt", "send_now": True})
 
-        async def apply_model_and_effort(self, model: str | None, effort: str | None) -> None:
-            # What Claude Code's /model and /effort do: the process's next turn
-            # runs on them and its background tasks keep running. The settings
-            # are the --model and --effort launch flags; None is the default, as
-            # without the flag (measured, CLI 2.1.323).
-            # SDK 0.2.130 has no public method for this control request.
+        async def switch_model_and_effort(self, model: str | None, effort: str | None) -> None:
+            # Has the effect of Claude Code's /model and /effort: the process's
+            # next turn runs on the given model and effort, and its background
+            # tasks keep running. The values replace what the --model and
+            # --effort launch flags gave; None selects Claude's default, as a
+            # launch without the flag does (measured, CLI 2.1.323).
+            # SDK 0.2.130 has set_model() but no method that also sets effort.
             if self._query is None:
                 raise ClaudeSDKSupervisorClosed("Claude SDK client is not connected")
             await self._query._send_control_request(
@@ -1157,9 +1158,10 @@ def claude_background_tracking_hooks() -> dict[str, list[ClaudeSDKHookMatcher]]:
 
 
 def _model_and_effort(options: Any) -> tuple[str | None, str | None]:
-    """The model and effort a process started from these options runs on; None is Claude's default."""
-    read = options.get if isinstance(options, dict) else lambda name: getattr(options, name, None)
-    return read("model") or None, read("effort") or None
+    """Return the model and effort these options select; None is Claude's default."""
+    if isinstance(options, dict):
+        return options.get("model"), options.get("effort")
+    return getattr(options, "model", None), getattr(options, "effort", None)
 
 
 def bind_permission_owner(options: Any, ownership_token: str) -> None:
@@ -1512,7 +1514,7 @@ class ClaudeSDKSupervisorSnapshot:
 class _StartRun:
     prompt: str
     run_id: str
-    model_effort: tuple[str | None, str | None]
+    model_and_effort: tuple[str | None, str | None]
     query_session_id: str | None
     validated_provider_command_name: str | None
     expected_provider_command_generation: str | None
@@ -1669,8 +1671,10 @@ class ClaudeSDKSupervisor:
         # The chat's current options, for the next process this actor starts.
         self.next_options: Any = None
         self.configuration_key = str(configuration_key)
-        # What the connected process runs on; a run on another model or effort switches it first.
-        self._live_model_effort: tuple[str | None, str | None] = (None, None)
+        # The model and effort the connected process runs on now: those of its
+        # launch options until a run switches them (self.options is not updated).
+        # None after a failed switch: the CLI may have applied part of it.
+        self._process_model_and_effort: tuple[str | None, str | None] | None = (None, None)
         self.ownership_token = f"claudeowner_{uuid.uuid4().hex}"
         bind_permission_owner(self.options, self.ownership_token)
         self._client_factory = client_factory
@@ -1819,7 +1823,7 @@ class ClaudeSDKSupervisor:
         prompt: str,
         *,
         run_id: str,
-        model_effort: tuple[str | None, str | None],
+        model_and_effort: tuple[str | None, str | None],
         query_session_id: str | None = None,
         validated_provider_command_name: str | None = None,
         expected_provider_command_generation: str | None = None,
@@ -1838,7 +1842,7 @@ class ClaudeSDKSupervisor:
             _StartRun(
                 prompt=str(prompt),
                 run_id=str(run_id),
-                model_effort=model_effort,
+                model_and_effort=model_and_effort,
                 query_session_id=(
                     str(query_session_id)
                     if query_session_id is not None
@@ -2244,7 +2248,7 @@ class ClaudeSDKSupervisor:
         self._generation += 1
         self._client = client
         self._connected = True
-        self._live_model_effort = _model_and_effort(self.options)
+        self._process_model_and_effort = _model_and_effort(self.options)
         # A fork's id is unknown until Claude reports it; until then the hooks
         # match on the prompt alone.
         options = self.options
@@ -2472,24 +2476,35 @@ class ClaudeSDKSupervisor:
                     )
                 )
             return
+        client = self._client
+        if client is not None and self._connected and command.model_and_effort != self._process_model_and_effort:
+            # The process runs on another model or effort. Switch it in place:
+            # replacing it would kill the agents and shells it still tracks.
+            # load-bearing: before on_supervisor_ready. Once that has published
+            # the owner token, AgentServer evicts the process when a start fails.
+            try:
+                await self._deliver_query_bounded(
+                    client.switch_model_and_effort(*command.model_and_effort), run_id=command.run_id,
+                )
+                self._process_model_and_effort = command.model_and_effort
+            except Exception as exc:
+                self._process_model_and_effort = None
+                if self._inflight_tasks:
+                    if not command.response.done():
+                        command.response.set_exception(ClaudeSDKConfigurationConflict(
+                            f"this chat's Claude process could not switch to the chat's model and effort ({exc}), "
+                            f"and replacing it would end the {len(self._inflight_tasks)} background task(s) it still runs."
+                        ))
+                    return
+                # No task to lose: the process started below runs on the run's
+                # model and effort, as every such run did before the switch existed.
+                await self._disconnect_current_client()
         try:
             client = await self._ensure_client()
         except Exception as exc:
             if not command.response.done():
                 command.response.set_exception(exc)
             return
-        if command.model_effort != self._live_model_effort:
-            # The process started on another model or effort. Replacing it
-            # would end the agents and shells it still tracks.
-            try:
-                await client.apply_model_and_effort(*command.model_effort)
-            except Exception as exc:
-                if not command.response.done():
-                    command.response.set_exception(ClaudeSDKSupervisorError(
-                        f"Claude could not switch to the chat's model and effort: {exc}"
-                    ))
-                return
-            self._live_model_effort = command.model_effort
         expected_generation = command.expected_provider_command_generation
         if (
             expected_generation is not None
@@ -3809,8 +3824,8 @@ class ClaudeSDKSupervisorManager:
                 # still tracks. Report it instead; Stop ends them explicitly.
                 raise ClaudeSDKConfigurationConflict(
                     f"{supervisor.inflight_task_count} background task(s) are still "
-                    "running on this chat's Claude process; its changed settings need "
-                    "a new process, which starts after they finish."
+                    "running on this chat's Claude process; the new directory, "
+                    "permission mode or runtime applies after they finish or after Stop."
                 )
             self._supervisors.pop(chat_id, None)
             old_to_close = supervisor
@@ -3903,7 +3918,7 @@ class ClaudeSDKSupervisorManager:
             return await supervisor.start_run(
                 prompt,
                 run_id=run_id,
-                model_effort=_model_and_effort(options),
+                model_and_effort=_model_and_effort(options),
                 query_session_id=query_session_id,
                 validated_provider_command_name=validated_provider_command_name,
                 expected_provider_command_generation=(

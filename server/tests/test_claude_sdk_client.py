@@ -138,8 +138,8 @@ class FakeClaudeClient:
         self._record("send_queued_now")
         return {"still_queued": [], "send_now": self.send_now_answer}
 
-    async def apply_model_and_effort(self, model: str | None, effort: str | None) -> None:
-        self._record("apply_model_and_effort", model, effort)
+    async def switch_model_and_effort(self, model: str | None, effort: str | None) -> None:
+        self._record("switch_model_and_effort", model, effort)
         if self.switch_error is not None:
             raise self.switch_error
 
@@ -1919,7 +1919,7 @@ class ClaudeSDKSupervisorTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(self.manager.is_loaded("chat-1"))
 
-        handle = await supervisor.start_run("Prompt", run_id="run-1", model_effort=(None, None))
+        handle = await supervisor.start_run("Prompt", run_id="run-1", model_and_effort=(None, None))
         self.assertTrue(self.manager.is_loaded("chat-1"))
         await self.factory.clients[0].emit({"type": "result", "result": "done"})
         await handle.wait_result()
@@ -3969,8 +3969,9 @@ class LiveBackgroundTasksKeepTheProcessTests(unittest.IsolatedAsyncioTestCase):
     2026-10-08: disconnecting the chat's process kills them. Idle TTL, LRU
     overflow and a changed configuration (directory, permission mode, runtime)
     must not replace such a process; only Stop, Delete or Rewind end them.
-    2026-11-13: a changed model or effort is no such configuration; the process
-    switches to them, as Claude Code's /model and /effort do.
+    2026-11-13: model and effort left that configuration; a run on another
+    model or effort switches the running process, as Claude Code's /model
+    and /effort do.
     """
 
     async def asyncSetUp(self) -> None:
@@ -4034,15 +4035,16 @@ class LiveBackgroundTasksKeepTheProcessTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_changed_model_or_effort_switches_the_process_that_still_runs_tasks(self) -> None:
         client = await self.released_run_with_live_agent(options={"model": "opus", "effort": "high"})
         # A process runs on the model and effort it started with: nothing to switch.
-        self.assertNotIn("apply_model_and_effort", [call[0] for call in client.calls])
+        self.assertNotIn("switch_model_and_effort", [call[0] for call in client.calls])
 
         fable = {"model": "fable", "effort": "xhigh"}
         handle = await self.manager.start_run("live", "Again", run_id="r2", options=fable, configuration_key="same")
         self.assertIs(self.factory.clients[-1], client)
         self.assertEqual(self.manager.inflight_task_count("live"), 1)
+        # The switch is requested before the prompt is delivered.
         self.assertEqual(
-            [call for call in client.calls if call[0] in {"apply_model_and_effort", "query"}][-2:],
-            [("apply_model_and_effort", "fable", "xhigh"), ("query", "Again", {})],
+            [call for call in client.calls if call[0] in {"switch_model_and_effort", "query"}][-2:],
+            [("switch_model_and_effort", "fable", "xhigh"), ("query", "Again", {})],
         )
         await client.emit({"type": "system", "subtype": "task_notification", "task_id": "agent-1", "status": "completed"})
         await client.emit({"type": "result", "result": "done"})
@@ -4052,24 +4054,47 @@ class LiveBackgroundTasksKeepTheProcessTests(unittest.IsolatedAsyncioTestCase):
         handle = await self.manager.start_run("live", "Same", run_id="r3", options=fable, configuration_key="same")
         await client.emit({"type": "result", "result": "done"})
         await asyncio.wait_for(collect(handle), 5)
-        await self.manager.start_run("live", "Default", run_id="r4", options={"model": ""}, configuration_key="same")
+        await self.manager.start_run("live", "Default", run_id="r4", options={}, configuration_key="same")
         self.assertEqual(
-            [call[1:] for call in client.calls if call[0] == "apply_model_and_effort"],
+            [call[1:] for call in client.calls if call[0] == "switch_model_and_effort"],
             [("fable", "xhigh"), (None, None)],
         )
 
-    async def test_a_run_whose_model_switch_fails_is_not_sent_to_the_old_model(self) -> None:
+    async def test_a_run_whose_model_switch_fails_is_not_sent_while_tasks_run(self) -> None:
         client = await self.released_run_with_live_agent(options={"model": "opus"})
         client.switch_error = RuntimeError("apply_flag_settings failed")
-        with self.assertRaisesRegex(ClaudeSDKSupervisorError, "could not switch to the chat's model and effort: apply_flag_settings failed"):
+        with self.assertRaisesRegex(
+            ClaudeSDKConfigurationConflict,
+            r"could not switch to the chat's model and effort \(apply_flag_settings failed\), "
+            r"and replacing it would end the 1 background task\(s\) it still runs",
+        ):
             await self.manager.start_run("live", "Again", run_id="r2", options={"model": "fable"}, configuration_key="same")
         self.assertEqual([call[1] for call in client.calls if call[0] == "query"], ["Work"])
+        self.assertIs(self.factory.clients[-1], client)
         self.assertEqual(self.manager.inflight_task_count("live"), 1)
 
-        # The next run asks again.
+        # The CLI may have applied part of the failed request, so even a run on the model
+        # the process started with requests the switch.
         client.switch_error = None
-        await self.manager.start_run("live", "Again", run_id="r3", options={"model": "fable"}, configuration_key="same")
+        await self.manager.start_run("live", "Again", run_id="r3", options={"model": "opus"}, configuration_key="same")
+        self.assertEqual([call[1:] for call in client.calls if call[0] == "switch_model_and_effort"], [("fable", None), ("opus", None)])
         self.assertEqual([call[1] for call in client.calls if call[0] == "query"], ["Work", "Again"])
+
+    async def test_a_process_without_tasks_that_cannot_switch_is_replaced(self) -> None:
+        handle = await self.manager.start_run("idle", "Work", run_id="r1", options={"model": "opus"}, configuration_key="same")
+        client = self.factory.clients[-1]
+        await client.emit({"type": "result", "result": "done"})
+        await asyncio.wait_for(collect(handle), 5)
+        client.switch_error = RuntimeError("apply_flag_settings failed")
+
+        fable = {"model": "fable"}
+        await self.manager.start_run("idle", "Again", run_id="r2", options=fable, configuration_key="same")
+        replacement = self.factory.clients[-1]
+        self.assertIsNot(replacement, client)
+        self.assertTrue(client.disconnected)
+        # The new process starts on the run's model: there is nothing to switch.
+        self.assertIs(replacement.options, fable)
+        self.assertEqual([call[0] for call in replacement.calls if call[0] in {"switch_model_and_effort", "query"}], ["query"])
 
 
 if __name__ == "__main__":

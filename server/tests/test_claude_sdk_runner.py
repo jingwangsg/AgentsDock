@@ -2267,6 +2267,19 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ceiling_options["env"]["BASH_MAX_TIMEOUT_MS"], "2147483647")
         self.assertEqual(server_options["env"]["BASH_MAX_TIMEOUT_MS"], "86400000")
 
+    async def test_sdk_options_fix_the_entrypoint_history_import_reads(self) -> None:
+        with patch.object(
+            agent_server, "claude_sdk_cli_path", return_value="/usr/bin/claude",
+        ), patch.object(
+            agent_server, "resolve_claude_resume_provider", return_value=(None, None),
+        ), patch.object(
+            agent_server, "create_claude_agent_options", side_effect=lambda **values: values,
+        ), patch.dict(os.environ, {"CLAUDE_CODE_ENTRYPOINT": "cli"}):
+            options, _, _ = agent_server.build_claude_sdk_options(
+                "chat-claude", self.session, self.cwd, Path(self.cwd) / ".manifest.json",
+            )
+        self.assertEqual(options["env"]["CLAUDE_CODE_ENTRYPOINT"], "sdk-py")
+
     async def test_server_secrets_are_removed_from_process_environment(self) -> None:
         inherited = {
             name: f"server-secret-{index}"
@@ -6943,19 +6956,19 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
         def key(session: dict[str, object]) -> str:
             return agent_server.claude_sdk_configuration_key(session, self.cwd, "/usr/bin/claude", "prompt")
 
-        # The process switches model and effort itself, so they are not what a new process is for.
+        # Model and effort are left out of the key: the running process switches them. Permission mode still needs a new process.
         self.assertEqual(key(self.session), key({**self.session, "model": "claude-fable", "effort": "xhigh"}))
         self.assertNotEqual(key(self.session), key({**self.session, "claude_permission_mode": "plan"}))
 
-        # The running turn keeps its own: a queued message on another model or effort is not steered into it.
-        active = {"configuration_key": "key", "provider_model": "claude-opus", "provider_effort": "high"}
+        # A running turn keeps its model and effort: a queued message on another model or effort is not steered into it.
+        active = {"configuration_key": "key", "provider_model": self.session["model"], "provider_effort": self.session["effort"]}
         capability = [agent_server.CLAUDE_SDK_INTERACTIVE_CLIENT_CAPABILITY]
         with patch.object(agent_server, "claude_sdk_configuration_key", return_value="key"), \
                 patch.object(agent_server, "claude_sdk_cli_path", return_value="/usr/bin/claude"), \
                 patch.object(agent_server, "session_system_prompt", return_value="prompt"):
             for selected, steered in (
                 ({}, True),
-                ({"model": "claude-opus", "effort": "high"}, True),
+                ({"model": self.session["model"], "effort": self.session["effort"]}, True),
                 ({"model": "claude-fable"}, False),
                 ({"effort": "xhigh"}, False),
             ):
@@ -6984,7 +6997,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(agent_server.claude_sdk_turn_cwd("chat-claude", self.session, manifest), gone)
             # A queued message still steers into the turn that process runs.
             selected = {"client_capabilities": [agent_server.CLAUDE_SDK_INTERACTIVE_CLIENT_CAPABILITY]}
-            active = {"configuration_key": live.configuration_key, "provider_model": "claude-opus", "provider_effort": "high"}
+            active = {"configuration_key": live.configuration_key, "provider_model": self.session["model"], "provider_effort": self.session["effort"]}
             self.assertTrue(agent_server.queued_claude_runtime_matches_active("chat-claude", selected, active))
 
             # A turn that replaces the process anyway (another permission mode here), or a chat without a live

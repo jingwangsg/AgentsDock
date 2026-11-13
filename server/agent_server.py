@@ -23870,8 +23870,9 @@ def queued_claude_runtime_matches_active(
         return False
     return (
         configuration_key == str(active.get("configuration_key") or "")
-        # The running turn keeps its model and effort; a message that changes
-        # them starts the next turn, where the process switches.
+        # The key leaves out model and effort, but a running turn keeps the ones
+        # it started with: a message on another model or effort waits for the
+        # next turn, which switches the process first.
         and str(session.get("model") or "") == str(active.get("provider_model") or "")
         and str(session.get("effort") or "") == str(active.get("provider_effort") or "")
     )
@@ -63415,16 +63416,13 @@ def claude_sdk_configuration_key(
     cli_path: str,
     system_prompt: str,
 ) -> str:
-    """Hash what only a new Claude process can change.
-
-    Not the evolving provider session ID, and not the model and effort: the
-    supervisor switches those on the running process.
-    """
+    """Hash only process configuration, not the evolving provider session ID."""
 
     payload = {
         "version": CLAUDE_SDK_CONFIGURATION_VERSION,
         "cwd": cwd,
         "cli_path": cli_path,
+        # No model or effort: the supervisor switches those on the running process.
         "system_prompt": system_prompt,
         "permission_mode": effective_claude_permission_mode(sess),
         "setting_sources": ["user", "project", "local"],
@@ -63472,6 +63470,11 @@ def build_claude_sdk_options(
         ):
             env[inherited_name] = ""
     env["AGENTSDOCK_CHAT_ID"] = session_id
+    # ClaudeCommandHistoryNormalizer tells a model switch this server requested
+    # from a typed /model by this value in the transcript. It is the SDK's own
+    # default, which a server started from a Claude Code shell would override
+    # with that shell's value.
+    env["CLAUDE_CODE_ENTRYPOINT"] = "sdk-py"
     # Claude caps a run_in_background command's timeout at BASH_MAX_TIMEOUT_MS,
     # or at 2 h when that is lower or unset, so a service the user asked to keep
     # running could not outlast 2 h. 2147483647 ms is the largest value the CLI
