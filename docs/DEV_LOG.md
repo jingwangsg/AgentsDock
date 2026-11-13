@@ -1,5 +1,31 @@
 # Public development log
 
+## 2026-11-13 — Server: eight more JSON reads are gzipped for a client that accepts it (server)
+
+- The server already gzipped the chat list, a chat's page, its subagent and
+  file lists, and health. Other JSON reads that clients repeat went out
+  plain. On one hub the scheduled-jobs list was 22 KB on each poll, a long
+  chat's timeline index 91 KB, and a deploy's status 12.6 KB every few
+  seconds, each time with the whole log.
+- Eight more reads now use the same route class: the jobs list, the runtime
+  catalog, working-directory completion, a chat's timeline index, its Claude
+  and its Codex runtime, the hub's remote-server list and a deploy's status.
+  A client that does not ask for gzip gets the same bytes as before.
+- A body that gzip cannot make smaller now stays plain, on these reads and on
+  the ones gzipped before: the gzip frame adds about 20 bytes, so an 11-byte
+  empty list would have grown to 31.
+
+```text
+Change and expected user behavior: those reads cost fewer bytes on a slow link. Nothing on screen changes.
+Source commit / app build / server version: branch perf/gzip-remaining-json; server 1.0.7-beta.11 plus the branch; desktop and Android unchanged.
+Test surface: unit tests through the server's HTTP app; main against the branch, in process, on one frozen copy of a hub's state; a server from the branch on a loopback port, read with the desktop main process's own HTTP client (Electron's Node fetch) and with curl.
+Actions exercised and observed outcomes: (1) Main against the branch, bytes on the wire for a client that accepts gzip: jobs list 22,025 to 9,913; timeline index of a long chat 91,376 to 34,304; runtime catalog 8,773 to 1,431; remote-server list 2,032 to 548; Claude runtime 1,773 to 582; directory completion 238 to 157; a 404 stays 30 bytes, plain. Decoded, the jobs list, the completion, the Claude runtime and the remote-server list equal main's byte for byte. The timeline index and the catalog differ from main's only in their generated_at and checked_at times, which also differ between two requests on main. (2) The branch server over a socket: Electron's Node fetch received Content-Encoding gzip and valid JSON for the catalog and the completion, and a plain 11-byte answer for an empty jobs list; curl measured 7,324 against 1,449 bytes for the catalog. (3) Unit test: each of the eight reads is plain for a client that does not ask, gzipped for one that does, with the same decoded bytes and no ETag; an empty jobs list stays plain. Without the change the test fails on all eight.
+Real boundaries exercised; any mocked/stubbed boundaries: the route handlers on real data through the ASGI app, and a real server over a loopback socket with the desktop's HTTP client. The deploy status and the Codex runtime ran only in the unit test with stubbed data; gzipping the running hub's plain answers gives 12,618 to 1,606 and 4,593 to 916 bytes. The phone and the hub's forwarding of a remote's answer were not exercised with this change; the forwarding passes an encoded body through unchanged, as it does for the reads gzipped before.
+Focused regression / typecheck / production build: tests/test_list_revalidation.py, tests/test_session_page_gzip.py, tests/test_remote_servers.py; all 8 server shards.
+Remaining limitations or blocked acceptance: file downloads and the remaining small JSON reads stay plain. A chat's page is still sent whole on every open, and health is still read once a minute for each server; those two carry more bytes than the reads changed here.
+Availability: source only until the hub restarts and the remotes are redeployed.
+```
+
 ## 2026-11-13 — Hub: reads of a remote server keep their connection for 30 s (server)
 
 - A request that the hub forwards to a remote server costs two network round

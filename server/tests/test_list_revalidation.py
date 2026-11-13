@@ -1,10 +1,11 @@
 """The chat list, a chat's subagents and its files list: gzipped for a client that accepts it, and an empty 304 for
-a client whose cached copy is still current; health is gzipped only. Decoded, every 200 is the same bytes as before."""
+a client whose cached copy is still current; health and the other JSON reads clients repeat are gzipped only.
+Decoded, every 200 is the same bytes as before."""
 
 import gzip
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi.testclient import TestClient
 
@@ -74,6 +75,54 @@ class ListRevalidationTests(unittest.TestCase):
         status, headers, plain = self.raw("/api/health")
         self.assertNotIn("content-encoding", headers)
         self.assertTrue(json.loads(plain)["ok"])
+
+    def test_the_other_repeated_json_reads_are_gzipped_and_a_body_gzip_cannot_shrink_stays_plain(self):
+        # 2026-11-13: these went out plain; the jobs list was 22 KB on every poll and a deploy's log 12.6 KB every few seconds.
+        rows = [{"id": f"row-{index}", "name": f"entry {index}", "detail": "state " * 20} for index in range(30)]
+        job = Mock(server=None)
+        job.view.return_value = {"log": rows}
+        for name, value in (("public_job", lambda job: job), ("discover_runtime_catalog", lambda **_: {"backends": rows}),
+                            ("build_timeline_index", lambda session_id: {"rows": rows}),
+                            ("claude_runtime_snapshot", AsyncMock(return_value={"runtime": rows})),
+                            ("codex_runtime_snapshot", AsyncMock(return_value={"runtime": rows})),
+                            ("complete_working_directory_sync", lambda path, limit: {"entries": rows})):
+            self.enterContext(patch.object(server, name, value))
+        self.enterContext(patch.dict(server.JOBS.jobs, {row["id"]: row for row in rows}, clear=True))
+        self.enterContext(patch.object(server.REMOTE_SERVERS, "list", lambda: rows))
+        self.enterContext(patch.object(server.REMOTE_SERVERS, "job", lambda job_id: job))
+        paths = [(path, AUTH) for path in ("/api/jobs", "/api/runtime/catalog", "/api/working-directories/complete?path=/w",
+                                           f"/api/sessions/{SESSION}/timeline-index", f"/api/sessions/{SESSION}/claude/runtime",
+                                           f"/api/sessions/{SESSION}/codex/runtime")]
+        # The hub's admin routes take the native header, and no Authorization header beside it.
+        paths += [(path, {"X-AgentsDock-Token": "test-secret"})
+                  for path in ("/api/admin/remote-servers", "/api/admin/remote-servers/deploy/0123456789abcdef")]
+
+        def fetch(path: str, auth: dict[str, str], encoding: str):
+            with self.client.stream("GET", path, headers={**auth, "Accept-Encoding": encoding}) as response:
+                return response.status_code, response.headers, b"".join(response.iter_raw())
+
+        for path, auth in paths:
+            with self.subTest(path=path):
+                status, headers, plain = fetch(path, auth, "identity")
+                self.assertEqual(status, 200)
+                self.assertNotIn("content-encoding", headers)
+                self.assertEqual(headers["vary"], "Accept-Encoding")
+                self.assertNotIn("etag", headers)
+                self.assertIn(b"entry 29", plain)
+
+                status, headers, packed = fetch(path, auth, "gzip, deflate, br")
+                self.assertEqual(status, 200)
+                self.assertEqual(headers["content-encoding"], "gzip")
+                self.assertEqual(int(headers["content-length"]), len(packed))
+                self.assertEqual(gzip.decompress(packed), plain)
+                self.assertLess(len(packed), len(plain) / 2)
+
+        # The gzip frame is about 20 bytes: a remote without scheduled jobs answers 11 bytes, which would grow to 31.
+        server.JOBS.jobs.clear()
+        status, headers, body = self.raw("/api/jobs", **{"Accept-Encoding": "gzip"})
+        self.assertEqual((status, body), (200, b'{"jobs":[]}'))
+        self.assertNotIn("content-encoding", headers)
+        self.assertEqual(int(headers["content-length"]), len(body))
 
     def test_a_change_moves_the_tag(self):
         path = f"/api/sessions/{SESSION}/subagents?limit=64"
