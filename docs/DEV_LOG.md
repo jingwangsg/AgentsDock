@@ -1,5 +1,28 @@
 # Public development log
 
+## 2026-11-13 — Hub: reads of a remote server keep their connection for 30 s (server)
+
+- A request that the hub forwards to a remote server costs two network round
+  trips when it needs a new connection and one when a connection is already
+  open. The hub closed idle connections to a remote after 2 s, so most reads
+  from the desktop or the phone (chat list, timeline pages, status) paid both.
+- Reads now reuse a connection for 30 s. Through a hub to an OCI remote, with
+  reads 5 s apart, a read took 969 ms before and 492 ms after. Sending a
+  message and every other write are unchanged.
+- A read that reaches a connection the remote has just closed is sent once
+  more instead of failing.
+
+```text
+Change and expected user behavior: reading a chat on a remote server through the hub takes about half the time when the previous read was less than 30 s ago.
+Source commit / app build / server version: branch perf/hub-remote-reads; no client build; server 1.0.7-beta.11.
+Test surface: two isolated hubs on this Mac (main and the branch), each reaching a real OCI remote through the running hub's ssh tunnel (a local forwarder stood in for the tunnel process); unit tests with a fake remote.
+Actions exercised and observed outcomes: 10 reads 5 s apart through each hub: main median 969 ms (934-1341), branch median 492 ms (471-516). One write through each: the remote's 404 came back in about 975 ms on both. The HTTP client alone against the tunnel port: 1005 ms with a 2 s keep-alive, 485 ms with 30 s.
+Real boundaries exercised; any mocked/stubbed boundaries: hub proxy, ssh tunnel, remote AgentsServer behind the cluster proxy. The isolated hubs did not manage the tunnel themselves, and the running hub was not restarted, so no desktop or phone used the change yet.
+Focused regression / typecheck / production build: proxy tests against an upstream that closes kept connections (a read is sent again once, a write is not; reads and writes use their own connections), both keep-alive limits against the remote's; all 8 server shards.
+Remaining limitations or blocked acceptance: takes effect when the hub restarts. The first read after 30 s without one still opens a connection. A round trip to an OCI remote stays about 0.5 s.
+Availability: source only; needs a hub restart.
+```
+
 ## 2026-11-13 — The chat list's folder order is the same on every device and follows changes at once (server, desktop and Android source)
 
 - Each app kept its own folder order, so one server's folders appeared in a

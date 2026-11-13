@@ -2570,45 +2570,77 @@ time.sleep(30)
         # keep-alive fires, otherwise a request arriving just before it is written to a
         # connection the remote has already closed. The race needs a real ssh forward
         # (the remote's close arrives late there), so this pins the invariant rather
-        # than the race itself. A write cannot be sent again, so its pool stays under
-        # uvicorn's default, which a remote older than SERVER_KEEPALIVE_SECONDS runs.
+        # than the race itself. A write is not sent again, so its client stays under
+        # uvicorn's default 5 s, which a remote deployed before SERVER_KEEPALIVE_SECONDS
+        # still runs.
         manager = rs.RemoteServerManager(self.tmp_path, source_dir=self.tmp_path, manage_tunnels=False)
         try:
             assert manager.http._transport._pool._keepalive_expiry <= uvicorn.Config(FastAPI()).timeout_keep_alive / 2
-            assert manager.read_http._transport._pool._keepalive_expiry == rs.READ_KEEPALIVE_SECONDS <= rs.SERVER_KEEPALIVE_SECONDS / 2
+            assert manager.read_http._transport._pool._keepalive_expiry == rs.READ_KEEPALIVE_SECONDS
+            assert rs.READ_KEEPALIVE_SECONDS <= rs.SERVER_KEEPALIVE_SECONDS / 2
         finally:
             asyncio.run(manager.stop())
 
-    def test_hub_proxy_reads_use_the_kept_connections_and_are_sent_again_when_one_was_closed(self) -> None:
+    def test_hub_proxy_sends_a_read_again_after_a_closed_connection_and_never_a_write(self) -> None:
         async def main() -> None:
             manager, remote, dead, hub_port, close = await hub_with_fake(self.tmp_path)
-            base = f"http://127.0.0.1:{hub_port}/api/remote/{remote.id}"
+            received: list[str] = []
+            closes_every_request = False
+
+            async def closing_remote(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+                # Answers the first request on a connection and closes under the next one: a remote
+                # whose idle keep-alive ran out while the hub still kept the connection.
+                answered = False
+                try:
+                    while head := await reader.readuntil(b"\r\n\r\n"):
+                        method = head.split(b" ", 1)[0].decode()
+                        length = next((int(line.split(b":")[1]) for line in head.split(b"\r\n") if line.lower().startswith(b"content-length:")), 0)
+                        await reader.readexactly(length)
+                        received.append(method)
+                        if answered or closes_every_request:
+                            break
+                        answered = True
+                        writer.write(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n" + (b"" if method == "HEAD" else b"ok"))
+                        await writer.drain()
+                except asyncio.IncompleteReadError:
+                    pass
+                finally:
+                    writer.close()
+
+            listener = await asyncio.start_server(closing_remote, "127.0.0.1", 0)
+            closing = make_server(id="closingclose", name="closing", local_port=listener.sockets[0].getsockname()[1])
+            manager.servers[closing.id] = closing
             sent: list[tuple[str, str]] = []
-            closed_once = {"GET": True, "POST": True}
-
-            def record(pool: str, send):
-                async def recording(request: httpx.Request, **kwargs):
-                    sent.append((pool, request.method))
-                    if closed_once.pop(request.method, False):
-                        raise httpx.RemoteProtocolError("Server disconnected without sending a response.", request=request)
-                    return await send(request, **kwargs)
-                return recording
-
-            manager.read_http.send = record("read", manager.read_http.send)
-            manager.http.send = record("write", manager.http.send)
+            for name in ("http", "read_http"):
+                def recording(request: httpx.Request, *, name: str = name, send=getattr(manager, name).send, **kwargs):
+                    sent.append((name, request.method))
+                    return send(request, **kwargs)
+                getattr(manager, name).send = recording
+            base = f"http://127.0.0.1:{hub_port}/api/remote/{closing.id}"
+            headers = {"X-AgentsDock-Token": HUB_TOKEN}
             try:
                 async with httpx.AsyncClient() as client:
-                    # The remote closed the kept connection under a read: it goes out again and the client sees the answer.
-                    response = await client.get(f"{base}/echo/a", headers={"X-AgentsDock-Token": HUB_TOKEN})
-                    assert response.status_code == 200 and response.json()["method"] == "GET"
-                    # A write is never sent twice: the remote may have acted on the first.
-                    response = await client.post(f"{base}/echo/b", headers={"X-AgentsDock-Token": HUB_TOKEN}, content=b"x")
+                    # The second read meets the kept connection as the remote closes it; it is sent again and answered.
+                    assert [(await client.get(f"{base}/a", headers=headers)).status_code for _ in range(2)] == [200, 200]
+                    assert received == ["GET", "GET", "GET"]
+                    # HEAD is a read as well.
+                    assert (await client.head(f"{base}/a", headers=headers)).status_code == 200
+                    assert received[3:] == ["HEAD", "HEAD"]
+                    # Sent again once, not until it succeeds.
+                    closes_every_request = True
+                    response = await client.get(f"{base}/a", headers=headers)
                     assert response.status_code == 502 and response.json()["detail"]["code"] == "remote_proxy_error"
-                    response = await client.post(f"{base}/echo/b", headers={"X-AgentsDock-Token": HUB_TOKEN}, content=b"x")
-                    assert response.status_code == 200 and response.json()["method"] == "POST"
-                    assert (await client.head(f"{base}/echo/c", headers={"X-AgentsDock-Token": HUB_TOKEN})).status_code == 405
-                assert sent == [("read", "GET"), ("read", "GET"), ("write", "POST"), ("write", "POST"), ("read", "HEAD")]
+                    assert received[5:] == ["GET", "GET"]
+                    closes_every_request = False
+                    # A write is never sent again: the remote may have acted on the first.
+                    assert (await client.post(f"{base}/b", headers=headers, content=b"x")).status_code == 200
+                    response = await client.post(f"{base}/b", headers=headers, content=b"x")
+                    assert response.status_code == 502 and response.json()["detail"]["code"] == "remote_proxy_error"
+                    assert received[7:] == ["POST", "POST"]
+                # Reads went through the client that keeps connections for READ_KEEPALIVE_SECONDS, writes through the other.
+                assert sent == [("read_http", method) for method in received[:7]] + [("http", "POST"), ("http", "POST")]
             finally:
+                listener.close()
                 await close()
 
         asyncio.run(main())

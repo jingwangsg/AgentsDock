@@ -75,11 +75,12 @@ SSH_FORWARD_PROBE_INTERVAL = 10.0
 HEALTH_REQUEST_TIMEOUT = 20.0
 # The idle keep-alive agent_server.main gives uvicorn on every server.
 SERVER_KEEPALIVE_SECONDS = 75
-# How long the hub keeps an idle connection to a remote for the next read. A new connection costs a
-# second round trip, 0.2-0.5 s to a remote behind a cluster proxy (measured 2026-11-13: reads 5 s apart
-# took 1.0 s each on new connections and 0.5 s on a kept one).
+# How long the hub keeps an idle connection to a remote for the next read (a proxied GET or HEAD). A new
+# connection costs a second round trip, 0.2-0.5 s to a remote behind a cluster proxy (measured
+# 2026-11-13: reads 5 s apart took 1.0 s each on new connections and 0.5 s on a kept one).
 # load-bearing: at most half of SERVER_KEEPALIVE_SECONDS. The remote starts its idle timer when it
-# sends a response and the hub when the response arrives, seconds later over a slow forward.
+# sends a response and the hub when that response arrives, so 30 s leaves the response 45 s to cross a
+# slow forward.
 READ_KEEPALIVE_SECONDS = 30.0
 DEPLOY_HEALTH_WAIT_SECONDS = 120.0
 # HTTP timeout for a remote's /api/admin/runtimes/{backend}/update: the remote itself stops the CLI
@@ -1602,25 +1603,24 @@ class RemoteServerManager:
         self.forwards: dict[str, SSHForward] = {}
         self.forward_tunnels: dict[str, Tunnel] = {}
         self.jobs: dict[str, DeployJob] = {}
-        # keepalive_expiry must stay well below the remote uvicorn's idle keep-alive
-        # (SERVER_KEEPALIVE_SECONDS) plus the forward's delay: the remote starts its
-        # idle timer when it sends a response, this one when the response arrives.
-        # Otherwise a request reuses a connection the remote has already closed and
-        # fails with "Server disconnected without sending a response".
-        options: dict[str, Any] = {
+        http_options: dict[str, Any] = {
             "timeout": httpx.Timeout(connect=5.0, read=None, write=None, pool=5.0),
             "trust_env": False,
             "event_hooks": {"request": [self._refuse_down_tunnel]},
         }
-        self.http = httpx.AsyncClient(limits=httpx.Limits(keepalive_expiry=2.0), **options)
-        # The proxy's GET and HEAD requests. A read that meets a closed connection is sent again
-        # (remote_servers_proxy_http); a write cannot be, so writes keep the 2 s of self.http.
-        self.read_http = httpx.AsyncClient(limits=httpx.Limits(keepalive_expiry=READ_KEEPALIVE_SECONDS), **options)
+        # Proxied writes and the hub's own requests. None of them is sent again when it meets a
+        # connection the remote has closed ("Server disconnected without sending a response"), so
+        # the connection is kept 2 s: under half of uvicorn's default 5 s, which a remote deployed
+        # before SERVER_KEEPALIVE_SECONDS still runs. READ_KEEPALIVE_SECONDS explains the half.
+        self.http = httpx.AsyncClient(limits=httpx.Limits(keepalive_expiry=2.0), **http_options)
+        # Proxied GET and HEAD. Only these are sent again (remote_servers_proxy_http): a read
+        # changes nothing on the remote, a write may already have been acted on.
+        self.read_http = httpx.AsyncClient(limits=httpx.Limits(keepalive_expiry=READ_KEEPALIVE_SECONDS), **http_options)
         # Forward exactly the client's headers: httpx's defaults would change the
         # Accept-Encoding the remote sees and add a User-Agent the client never sent.
-        for client in (self.http, self.read_http):
+        for http in (self.http, self.read_http):
             for name in ("accept", "accept-encoding", "connection", "user-agent"):
-                client.headers.pop(name, None)
+                http.headers.pop(name, None)
 
     async def start(self) -> None:
         for forward in load_forward_registry(self.forward_path):
@@ -1764,7 +1764,7 @@ class RemoteServerManager:
             tunnel._proc.returncode is not None if tunnel._proc is not None else tunnel.status["state"] == "reconnecting")), None)
 
     async def _refuse_down_tunnel(self, request: httpx.Request) -> None:
-        # Every user of this client (the proxy, health probes, CLI updates, the cross-server mail relay)
+        # Every user of these clients (the proxy, health probes, CLI updates, the cross-server mail relay)
         # sends a remote's token to a tunnel port, so the check sits here and not at each call site;
         # each already treats ConnectError as the remote being unreachable.
         if (tunnel := self.tunnel_down_on(request.url.port)) is not None:
@@ -2502,17 +2502,23 @@ def register_remote_server_routes(
             while (await request.receive())["type"] != "http.disconnect":
                 pass
 
+        read = request.method in ("GET", "HEAD")
+        http = manager.read_http if read else manager.http
+        upstream_request = http.build_request(request.method, url, headers=headers, content=content)
+
         async def send() -> httpx.Response:
-            if request.method not in ("GET", "HEAD"):
-                return await manager.http.send(manager.http.build_request(request.method, url, headers=headers, content=content), stream=True)
             try:
-                return await manager.read_http.send(manager.read_http.build_request(request.method, url, headers=headers), stream=True)
-            except httpx.RemoteProtocolError:
-                # The remote closed this kept connection as the request went out: a remote older than
-                # SERVER_KEEPALIVE_SECONDS, or a response that took longer to arrive than the margin
-                # READ_KEEPALIVE_SECONDS leaves. No answer came back and a read changes nothing, so it
-                # goes out once more, on a new connection.
-                return await manager.read_http.send(manager.read_http.build_request(request.method, url, headers=headers), stream=True)
+                return await http.send(upstream_request, stream=True)
+            except httpx.RemoteProtocolError as exc:
+                if not read:
+                    raise  # the remote may have acted on a write
+                # The connection closed before any response arrived. On a kept connection the remote
+                # dropped it as the request went out: its server predates SERVER_KEEPALIVE_SECONDS
+                # (uvicorn's default 5 s), or the previous response spent more than
+                # SERVER_KEEPALIVE_SECONDS - READ_KEEPALIVE_SECONDS on the forward. A read changes
+                # nothing on the remote, so it is sent again, once.
+                logger.info("remote %s closed the connection under %s /%s (%s); sending the read again", remote_id, request.method, path, exc)
+                return await http.send(upstream_request, stream=True)
 
         # The upstream request lives only as long as its client. The read timeout is
         # None, so a remote that accepts and never answers (a frozen server behind its

@@ -104101,10 +104101,10 @@ def main() -> int:
         # work after SIGTERM, and the restart watchdog is the only way out.
         timeout_graceful_shutdown=uvicorn_graceful_shutdown_seconds(),
         # load-bearing: a hub proxies to this server over an ssh forward and reuses a
-        # connection for up to READ_KEEPALIVE_SECONDS after a response reaches it
-        # (remote_servers.py). A slow forward delivers that response seconds after it
-        # left here, so with uvicorn's default 5 s this side closed the connection under
-        # the hub's next request: "Server disconnected without sending a response".
+        # connection for up to READ_KEEPALIVE_SECONDS (remote_servers.py), counted from the
+        # arrival of a response that left here seconds earlier. This side must keep the
+        # connection longer, or it closes under the hub's next request: "Server disconnected
+        # without sending a response" (seen with uvicorn's default 5 s against a 2 s hub).
         timeout_keep_alive=remote_servers.SERVER_KEEPALIVE_SECONDS,
     )
     return 0
