@@ -1,7 +1,7 @@
 import type { ProviderUsageScope, ProviderUsageSnapshot, UsageBackend } from '../shared/provider-usage'
 import { app, BrowserWindow, clipboard, dialog, nativeImage, Notification, session, shell } from 'electron'
 import { bannerDedupeKey, notificationBannerContent, type NotificationPopupController } from './notification-popup'
-import { rememberedFolderOrder } from '../shared/folders'
+import { rememberedFolderOrder, sidebarFolders } from '../shared/folders'
 import { applyOpenCodeSessionEvent } from '../shared/opencode'
 import { chmodSync, createWriteStream, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { open, rename, rm, stat, writeFile } from 'node:fs/promises'
@@ -99,6 +99,7 @@ import type {
   ProviderReloadResult,
   ProviderRuntimeChanged,
   ProfileBootstrapPayload,
+  ProfileFolderOrderEvent,
   ProfileNotificationPayload,
   ProfileNotificationRoute,
   ProfileSessionSearchResult,
@@ -254,6 +255,9 @@ const MAX_AGENT_TEXT_PREVIEW_BYTES = 2 * 1024 * 1024
 const AGENT_TEXT_FILE_TIMEOUT_MS = 30_000
 const WORKSPACE_PREVIEW_PROBE_TIMEOUT_MS = 30_000
 const RUNTIME_CATALOG_CACHE_KEY = 'runtimeCatalog:v1'
+// The revision of the shared folder order (folder_order_v1) the `folderOrder` preference holds; absent while
+// that preference holds this device's own order.
+const FOLDER_ORDER_REVISION_KEY = 'folderOrderRevision'
 const SERVER_VERSION_CACHE_KEY = 'serverVersion:v1'
 const SEMANTIC_TIMELINE_CAPABILITY_CACHE_KEY = 'semanticTimelineCapability:v1'
 const RUNTIME_CATALOG_RETRY_MS = 30_000
@@ -3840,6 +3844,8 @@ export class AppService {
         profileId: scope.profileId,
         error
       })
+    }, (order, revision) => {
+      if (this.isValidatedScope(scope)) this.adoptFolderOrder(scope, order, revision)
     })
     if (!this.isCurrentScope(scope)) {
       stop()
@@ -5744,8 +5750,28 @@ export class AppService {
     return this.cache.preference(this.requireWorkspaceScope(expected).namespace, key, fallback)
   }
   putScopedPreference<T>(expected: WorkspaceProfileScope, key: string, value: T): void {
-    this.cache.putPreference(this.requireWorkspaceScope(expected).namespace, key, value)
+    const namespace = this.requireWorkspaceScope(expected).namespace
+    // load-bearing: a renderer that has not yet heard of the shared folder order (its first read can land
+    // between a reorder and this write) must not replace it in the cache with this device's own order.
+    if (key === 'folderOrder' && this.sharedFolderOrderRevision(namespace) !== null) return
+    this.cache.putPreference(namespace, key, value)
     if (key === 'selectedSessionId') this.focusedSessionId = typeof value === 'string' ? value : null
+  }
+
+  /** A folder change the user made (reorder, new folder, rename, delete) to the shared folder order: the sidebar's
+   *  folder list, without tab-only folders the order does not list, replaces it. When that fails, the shared
+   *  folder order the server last sent replaces the one the renderer already shows. */
+  async setFolderOrder(expected: WorkspaceProfileScope, order: string[]): Promise<void> {
+    const scope = this.requireWorkspaceScope(expected)
+    try {
+      await this.ensureValidatedScope(scope)
+      this.assertCurrentScope(scope)
+      const saved = await scope.client.putFolderOrder(order)
+      if (saved.order) this.adoptFolderOrder(scope, saved.order, saved.revision)
+    } catch (error) {
+      if (this.isCurrentScope(scope)) this.emitFolderOrder(scope, this.folderOrderProjection(scope.namespace))
+      throw error
+    }
   }
   async workspacePreviewAvailable(
     expected: WorkspaceProfileScope,
@@ -5916,6 +5942,62 @@ export class AppService {
     const remembered = rememberedFolderOrder(stored, this.sessions)
     if (remembered.length !== stored.length) { try { this.cache.putPreference(namespace, 'folderOrder', remembered) } catch { /* cache unavailable: served from memory this run */ } }
     return remembered
+  }
+
+  /** The revision of the shared folder order this namespace's cache holds; null while the cache holds this
+   *  device's own order (a server without folder_order_v1, or one whose order has not been read yet). */
+  private sharedFolderOrderRevision(namespace: string): number | null {
+    try { return this.cache.preference<number | null>(namespace, FOLDER_ORDER_REVISION_KEY, null) } catch { return null }
+  }
+
+  /** The order the chat list shows: the shared folder order as the server sent it, once read (the server adds
+   *  the folders chats are filed under itself), otherwise this device's own order with every folder its chats
+   *  were filed under. */
+  private folderOrderProjection(namespace: string): Pick<ProfileFolderOrderEvent, 'folderOrder' | 'sharedFolderOrder'> {
+    if (this.sharedFolderOrderRevision(namespace) === null) return { folderOrder: this.rememberSessionFolders(namespace), sharedFolderOrder: false }
+    let folderOrder: string[] = []
+    try { folderOrder = this.cache.preference(namespace, 'folderOrder', [] as string[]) } catch { /* cache unavailable: the next read sends it again */ }
+    return { folderOrder, sharedFolderOrder: true }
+  }
+
+  /** Reads the shared folder order (folder_order_v1) when the cache holds none of its revisions, or health
+   *  reports another revision than the cached one: a push the summary stream missed. A server without one yet
+   *  takes this device's own order as the sidebar shows it, so the first client to connect sets it for all. */
+  private syncFolderOrder(scope: ConnectionScope, health: Health): void {
+    const cached = this.sharedFolderOrderRevision(scope.namespace)
+    if (health.capabilities?.folder_order_v1?.available !== true) {
+      if (cached === null) return
+      // The server runs an older version again: back to this device's own order, as before.
+      try { this.cache.putPreference(scope.namespace, FOLDER_ORDER_REVISION_KEY, null) } catch { return }
+      this.emitFolderOrder(scope, this.folderOrderProjection(scope.namespace))
+      return
+    }
+    if (cached !== null && health.folder_order_revision === cached) return
+    void (async () => {
+      try {
+        let current = await scope.client.folderOrder()
+        if (!this.isCurrentScope(scope)) return
+        if (current.order === null) current = await scope.client.putFolderOrder(sidebarFolders(this.sessions, this.rememberSessionFolders(scope.namespace)))
+        if (current.order) this.adoptFolderOrder(scope, current.order, current.revision)
+      } catch (error) {
+        if (this.isCurrentScope(scope)) appLog('folders', 'shared folder order read failed', { profileId: scope.profileId, error: errorText(error) })
+      }
+    })()
+  }
+
+  /** Takes a shared folder order the server sent (a read, a write's reply or a push) into the cache and the
+   *  renderer, when its revision is newer than the cached one. */
+  private adoptFolderOrder(scope: ConnectionScope, order: string[], revision: number): void {
+    if (!this.isCurrentScope(scope)) return
+    const cached = this.sharedFolderOrderRevision(scope.namespace)
+    if (cached !== null && revision <= cached) return
+    try {
+      this.cache.putPreference(scope.namespace, 'folderOrder', order)
+      this.cache.putPreference(scope.namespace, FOLDER_ORDER_REVISION_KEY, revision)
+    } catch (error) {
+      appLog('folders', 'shared folder order was not cached', { profileId: scope.profileId, error: errorText(error) })
+    }
+    this.emitFolderOrder(scope, { folderOrder: order, sharedFolderOrder: true })
   }
 
   private notificationRouteIsCurrent(route: ProfileNotificationRoute): boolean {
@@ -6244,6 +6326,8 @@ export class AppService {
       }
       this.refreshProfileUnread(activeScope)
     }
+    // After the merge: a server without a shared folder order yet takes this device's own order as the chat list shows it.
+    if (sessions.status === 'fulfilled' && health.status === 'fulfilled') this.syncFolderOrder(activeScope, health.value)
     if (jobs.status === 'fulfilled') {
       const changed = !jsonEqual(this.jobs, jobs.value)
       this.jobs = jobs.value
@@ -7711,7 +7795,7 @@ export class AppService {
       jobs: this.jobs,
       runtimeCatalog: this.runtimeCatalog,
       selectedSessionId: this.focusedSessionId,
-      folderOrder: resetPending ? [] : this.rememberSessionFolders(scope.namespace),
+      ...(resetPending ? { folderOrder: [], sharedFolderOrder: false } : this.folderOrderProjection(scope.namespace)),
       collapsedFolders: resetPending ? [] : cacheValue(() => this.cache.preference(scope.namespace, 'collapsedFolders', [] as string[]), []),
       // Never restored: the user wants Archived collapsed by default, and expanding it is a per-session choice.
       archivedCollapsed: true,
@@ -8286,6 +8370,11 @@ export class AppService {
       profileGeneration: scope.generation,
       event
     })
+  }
+
+  private emitFolderOrder(scope: ConnectionScope, projection: Pick<ProfileFolderOrderEvent, 'folderOrder' | 'sharedFolderOrder'>): void {
+    if (!this.isCurrentScope(scope)) return
+    this.emit('server:folder-order', { profileId: scope.profileId, profileGeneration: scope.generation, ...projection })
   }
 
   private emitJobs(scope: ConnectionScope, jobs: Job[]): void {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Session } from '../types'
-import { orderedSessionSections, rankMentionRows, rememberedFolderOrder, resolveSidebarDrop, sidebarVisibleSessions, unreadCount, type SidebarDropRow } from './session-order'
+import { orderedSessionSections, rankMentionRows, rememberedFolderOrder, resolveSidebarDrop, sharesFolderOrder, sidebarFolderOrder, sidebarVisibleSessions, unreadCount, type SidebarDropRow } from './session-order'
 
 function session(id: string, folder = 'General'): Session {
   return { id, title: id, folder, backend: 'codex' } as Session
@@ -49,11 +49,42 @@ test('General is hidden when it is empty and not in folderOrder', () => {
   )
 })
 
-test('folders missing from folderOrder follow it in first-seen order', () => {
+test('folders missing from folderOrder follow it alphabetically, as on the desktop', () => {
   assert.deepEqual(
-    orderedSessionSections([session('z', 'Zeta'), session('g'), session('a', 'Alpha')], ['Work'], true, true).map(section => section.id),
-    ['Work', 'Zeta', 'General', 'Alpha'],
+    orderedSessionSections([session('z', 'Zeta'), session('g'), session('a', 'alpha')], ['Work'], true, true).map(section => section.id),
+    ['Work', 'alpha', 'General', 'Zeta'],
   )
+})
+
+test('a folder holding only tabs keeps its place in folderOrder, else follows the chat folders, sorted, before Archived', () => {
+  const sessions = [session('w', 'Work'), session('z', 'Zeta'), { ...session('old', 'Work'), archived: true }]
+  // Tabs in Work share its section; Ops is placed by the order; Lab and Beta come after the chat folders.
+  const tabFolders = ['Lab', 'Ops', 'Work', 'Beta', 'Lab']
+  assert.deepEqual(
+    orderedSessionSections(sessions, ['Ops', 'Work'], true, true, tabFolders).map(section => [section.id, section.sessions.length]),
+    [['Ops', 0], ['Work', 1], ['Zeta', 1], ['Beta', 0], ['Lab', 0], ['Archived', 1]],
+  )
+  // What folder actions act on and the shared folder order is replaced with: Pinned, Archived and the folders holding
+  // only tabs that the order does not list are left out.
+  assert.deepEqual(sidebarFolderOrder([{ ...session('p', 'Work'), pinned: true }, ...sessions], ['Ops', 'Work']), ['Ops', 'Work', 'Zeta'])
+})
+
+test('with a shared folder order, a dropped folder order leaves out folders holding only tabs it does not list', () => {
+  const sessions = [session('w1', 'Work'), session('a')]
+  const folders = ['Work', 'General']
+  // As the sidebar draws it: Tabs holds only tabs, so it follows the chat folders.
+  const rows: SidebarDropRow[] = [...rowsOf(sessions, folders), { kind: 'header', folder: 'Tabs' }]
+  // General dragged above Work: this device's own order takes Tabs along, the shared folder order does not.
+  assert.deepEqual(resolveSidebarDrop(dropped(rows, 2, 0), 0, sessions, folders), { kind: 'folder-order', order: ['General', 'Work', 'Tabs'] })
+  assert.deepEqual(resolveSidebarDrop(dropped(rows, 2, 0), 0, sessions, folders, true), { kind: 'folder-order', order: ['General', 'Work'] })
+  // Dragging Tabs itself changes nothing in the shared folder order.
+  assert.equal(resolveSidebarDrop(dropped(rows, 4, 0), 0, sessions, folders, true), null)
+})
+
+test('only a server advertising folder_order_v1 keeps the folder order', () => {
+  assert.equal(sharesFolderOrder({ ok: true, capabilities: { folder_order_v1: { available: true, version: 1, path: '/api/folders/order', stream_protocol: 'agentsdock-session-summaries-v2' } } }), true)
+  assert.equal(sharesFolderOrder({ ok: true, capabilities: {} }), false)
+  assert.equal(sharesFolderOrder(null), false)
 })
 
 test('remembered folder order keeps folders that only exist on sessions, General included', () => {

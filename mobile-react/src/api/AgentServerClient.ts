@@ -89,6 +89,7 @@ import type {
   WorkspaceRenameResult,
   WorkspaceSearchPage,
   CreateSurfaceInput,
+  FolderOrder,
   Surface,
   UpdateSurfaceInput,
 } from '../types'
@@ -142,6 +143,13 @@ const UPLOAD_TIMEOUT_CAP_MS = 8 * 60 * 60_000
 const FATAL_WEBSOCKET_CLOSE_CODES = new Set([4401, 4404, 4409])
 const EVENTS_STREAM_PROTOCOL = 'agentsdock-events-v1'
 const SESSION_SUMMARY_STREAM_PROTOCOL = 'agentsdock-session-summaries-v1'
+// v1 plus folder_order packets; a server without it accepts v1 from the same offer.
+const SESSION_SUMMARY_STREAM_PROTOCOL_V2 = 'agentsdock-session-summaries-v2'
+
+/** A summary stream v2 packet: the shared folder order after a change. */
+export interface PushedFolderOrder extends FolderOrder {
+  server_identity: string
+}
 
 export interface ServerErrorDetail {
   code?: string
@@ -580,6 +588,10 @@ export class AgentServerClient {
   }
   async deleteSurface(surfaceId: string): Promise<void> { await this.delete(`/api/surfaces/${encodeURIComponent(surfaceId)}`) }
   async reorderSurfaces(ids: string[]): Promise<Surface[]> { return (await this.put<{ surfaces: Surface[] }>('/api/surfaces/order', { ids })).surfaces }
+  /** The shared folder order; null until a client first sends one. */
+  folderOrder(): Promise<{ order: string[] | null; revision: number }> { return this.get('/api/folders/order') }
+  /** Replaces the whole order; the server trims names, drops empty and repeated ones, and answers with what it keeps. */
+  putFolderOrder(order: string[]): Promise<FolderOrder> { return this.put('/api/folders/order', { order }) }
   forkSession(sessionId: string): Promise<{ session: Session; sessions?: Session[] }> {
     return this.post(`/api/sessions/${encodeURIComponent(sessionId)}/fork`, {})
   }
@@ -1322,12 +1334,13 @@ export class AgentServerClient {
 
   /**
    * Live chat list rows for chats without an open timeline: a turn starting or
-   * ending, a provider waiting for the user. Only servers advertising
+   * ending, a provider waiting for the user; on v2 also the shared folder
+   * order after each change. Only servers advertising
    * session_summary_events_v1; the list poll stays as the fallback. Same
    * backoff rules as stream(): a socket that is accepted and dropped must not
    * reconnect twice a second.
    */
-  sessionSummaryStream(handlers: { onSession: (session: Session) => void; onOpen: () => void }): () => void {
+  sessionSummaryStream(handlers: { onSession: (session: Session) => void; onFolderOrder: (packet: PushedFolderOrder) => void; onOpen: () => void }): () => void {
     const scope = this.captureScope()
     if (!scope.configuration.sessionSummaryEvents) return () => undefined
     const endpoint = new URL(buildURL(scope.configuration.baseURL, '/api/session-summaries/events'))
@@ -1356,7 +1369,7 @@ export class AgentServerClient {
       if (stopped || !this.isAddressOpen) return
       clearConnectTimeout()
       const url = new URL(endpoint)
-      const protocols = [SESSION_SUMMARY_STREAM_PROTOCOL]
+      const protocols = [SESSION_SUMMARY_STREAM_PROTOCOL_V2, SESSION_SUMMARY_STREAM_PROTOCOL]
       if (scope.configuration.websocketSubprotocolAuth && token) {
         protocols.push(`agentsdock-token.${base64(token).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}`)
       } else if (token) url.searchParams.set('token', token)
@@ -1382,8 +1395,12 @@ export class AgentServerClient {
       connectingSocket.onmessage = message => {
         if (stopped || socket !== connectingSocket) return
         try {
-          const packet = JSON.parse(String(message.data)) as { type?: unknown; session?: Session }
+          const packet = JSON.parse(String(message.data)) as { type?: unknown; session?: Session; server_identity?: unknown; order?: unknown; revision?: unknown }
           if (packet.type === 'session_summary' && packet.session && typeof packet.session.id === 'string') handlers.onSession(packet.session)
+          else if (
+            packet.type === 'folder_order' && typeof packet.server_identity === 'string' && Number.isInteger(packet.revision)
+            && Array.isArray(packet.order) && packet.order.every(name => typeof name === 'string')
+          ) handlers.onFolderOrder(packet as PushedFolderOrder)
         } catch { /* malformed packets are ignored */ }
       }
       connectingSocket.onclose = event => {

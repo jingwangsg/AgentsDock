@@ -16,3 +16,10 @@ export function rememberedFolderOrder(folderOrder: readonly string[], sessions: 
   }
   return next.length === known.size && next.length === folderOrder.length && next.every((folder, i) => folder === folderOrder[i]) ? [...folderOrder] as string[] : next
 }
+
+/** Folders the sidebar lists, in display order: `folderOrder` first, then folders only live chats know about. */
+export function sidebarFolders(sessions: readonly Session[], folderOrder: readonly string[]): string[] {
+  const order = new Map(folderOrder.map((folder, index) => [folder, index]))
+  const folders = new Set([...folderOrder, ...sessions.filter(session => !session.archived && !session.pinned).map(session => session.folder?.trim() || 'General')])
+  return [...folders].sort((a, b) => (order.get(a) ?? Number.MAX_SAFE_INTEGER) - (order.get(b) ?? Number.MAX_SAFE_INTEGER) || a.localeCompare(b))
+}

@@ -241,6 +241,9 @@ const api: AgentsDockAPI = {
     update: (surfaceId, patch) => ipcRenderer.invoke('surfaces:update', surfaceId, patch),
     remove: surfaceId => ipcRenderer.invoke('surfaces:remove', surfaceId)
   },
+  folders: {
+    setOrder: (scope, order) => ipcRenderer.invoke('folders:set-order', scope, order)
+  },
   providerCommands: {
     list: (sessionId, refresh) => ipcRenderer.invoke('provider-commands:list', sessionId, refresh)
   },

@@ -4333,12 +4333,14 @@ describe('AgentServerClient emergency contact bridge', () => {
     const stop = client.sessionSummaryStream(
       'server-expected',
       session => received.push(session),
-      (connected, error) => states.push({ connected, error })
+      (connected, error) => states.push({ connected, error }),
+      vi.fn()
     )
     const socket = FakeWebSocket.instances[0]
     expect(socket.url.pathname).toBe('/api/session-summaries/events')
     expect(socket.url.searchParams.get('token')).toBeNull()
     expect(socket.protocols).toEqual([
+      'agentsdock-session-summaries-v2',
       'agentsdock-session-summaries-v1',
       `agentsdock-token.${Buffer.from('stream-secret', 'utf8').toString('base64url')}`
     ])
@@ -4357,13 +4359,74 @@ describe('AgentServerClient emergency contact bridge', () => {
     const other = new AgentServerClient('https://example.test:7850', 'stream-secret')
     const otherStates: Array<{ connected: boolean; error?: string }> = []
     const otherReceived = vi.fn()
-    const stopOther = other.sessionSummaryStream('server-expected', otherReceived, (connected, error) => otherStates.push({ connected, error }))
+    const stopOther = other.sessionSummaryStream('server-expected', otherReceived, (connected, error) => otherStates.push({ connected, error }), vi.fn())
     const otherSocket = FakeWebSocket.instances[1]
     otherSocket.emit('open')
     otherSocket.emit('message', JSON.stringify({ type: 'session_summary', server_identity: 'server-replacement', session: row }))
     expect(otherReceived).not.toHaveBeenCalled()
     expect(otherStates.at(-1)).toEqual({ connected: false, error: 'Session summary stream server identity changed' })
     stopOther()
+  })
+
+  it('takes shared folder order pushes on a v2 stream, and an older server\'s v1 stream still brings chat rows', () => {
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const row: Session = { id: 'bg', title: 'Background', backend: 'claude' }
+    const connect = (accepted: string) => {
+      const sessions: Session[] = []
+      const orders: Array<[string[], number]> = []
+      const states: Array<{ connected: boolean; error?: string }> = []
+      const stop = new AgentServerClient('https://example.test:7850', 'stream-secret').sessionSummaryStream(
+        'server-expected',
+        session => sessions.push(session),
+        (connected, error) => states.push({ connected, error }),
+        (order, revision) => orders.push([order, revision])
+      )
+      const socket = FakeWebSocket.instances.at(-1)!
+      socket.protocol = accepted
+      socket.emit('open')
+      return { sessions, orders, states, stop, socket }
+    }
+
+    const v2 = connect('agentsdock-session-summaries-v2')
+    v2.socket.emit('message', JSON.stringify({ type: 'folder_order', server_identity: 'server-expected', order: ['Lab', 'General'], revision: 101 }))
+    v2.socket.emit('message', JSON.stringify({ type: 'session_summary', server_identity: 'server-expected', session: row }))
+    v2.socket.emit('message', JSON.stringify({ type: 'folder_order', server_identity: 'server-expected', order: [], revision: 102 }))
+    expect(v2.orders).toEqual([[['Lab', 'General'], 101], [[], 102]])
+    expect(v2.sessions).toEqual([row])
+    expect(v2.socket.closed).toBe(false)
+    // A folder order that is not a list of names closes the stream.
+    v2.socket.emit('message', JSON.stringify({ type: 'folder_order', server_identity: 'server-expected', order: ['Lab', 7], revision: 103 }))
+    expect(v2.states.at(-1)).toEqual({ connected: false, error: 'Session summary stream sent an invalid update' })
+    expect(v2.socket.closed).toBe(true)
+    expect(v2.orders).toHaveLength(2)
+    v2.stop()
+
+    // An older server accepts v1 and sends chat rows only.
+    const v1 = connect('agentsdock-session-summaries-v1')
+    v1.socket.emit('message', JSON.stringify({ type: 'session_summary', server_identity: 'server-expected', session: row }))
+    expect(v1.sessions).toEqual([row])
+    expect(v1.socket.closed).toBe(false)
+    v1.stop()
+  })
+
+  it('reads and replaces the shared folder order, refusing a reply that is not one', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = []
+    const replies = [{ order: null, revision: 100 }, { order: ['Lab', 'General'], revision: 101 }, { order: 'Lab', revision: 102 }]
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
+      calls.push({ url: String(input), init })
+      return new Response(JSON.stringify(replies.shift()), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }))
+    const client = new AgentServerClient('http://example.test:7850', 'token')
+
+    await expect(client.folderOrder()).resolves.toEqual({ order: null, revision: 100 })
+    await expect(client.putFolderOrder(['Lab', 'General'])).resolves.toEqual({ order: ['Lab', 'General'], revision: 101 })
+    await expect(client.folderOrder()).rejects.toThrow('The server sent an invalid folder order.')
+    expect(calls.map(call => [call.init.method ?? 'GET', call.url])).toEqual([
+      ['GET', 'http://example.test:7850/api/folders/order'],
+      ['PUT', 'http://example.test:7850/api/folders/order'],
+      ['GET', 'http://example.test:7850/api/folders/order']
+    ])
+    expect(JSON.parse(String(calls[1].init.body))).toEqual({ order: ['Lab', 'General'] })
   })
 
   it('rejects packets from a replacement server before exposing any session state', () => {

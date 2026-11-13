@@ -411,6 +411,8 @@ except OSError:
 SESSIONS_FILE = STATE_DIR / "sessions.json"
 SESSIONS_BACKUP_DIR = STATE_DIR / "sessions-backups"
 SURFACES_FILE = STATE_DIR / "surfaces.json"
+FOLDER_ORDER_FILE = STATE_DIR / "folder-order.json"
+FOLDER_ORDER_LIMIT = 1000
 JOBS_FILE = STATE_DIR / "jobs.json"
 HANDOFF_DIGEST_JOBS_FILE = STATE_DIR / "handoff_digest_jobs.json"
 CROSS_CHAT_DB_FILE = STATE_DIR / "cross_chat.sqlite3"
@@ -844,6 +846,8 @@ EMERGENCY_REQUESTS_PER_RUN = 3
 EMERGENCY_ACTIVE_ALERT_LIMIT = 32
 EMERGENCY_WEBSOCKET_PROTOCOL = "agentsdock-emergency-v1"
 SESSION_SUMMARY_WEBSOCKET_PROTOCOL = "agentsdock-session-summaries-v1"
+# v1 plus the shared folder order (folder_order packets); a v1 client closes on a packet type it does not know.
+SESSION_SUMMARY_WEBSOCKET_PROTOCOL_V2 = "agentsdock-session-summaries-v2"
 EVENTS_WEBSOCKET_PROTOCOL = "agentsdock-events-v1"
 TERMINAL_WEBSOCKET_PROTOCOL = "agentsdock-terminal-v1"
 EMERGENCY_AUTHORITY_DENIED_PURPOSES = {
@@ -7531,6 +7535,11 @@ class SurfacePatchRequest(BaseModel):
     folder: str | None = None
     url: str | None = None
     page_title: str | None = None
+
+
+class FolderOrderRequest(BaseModel):
+    """The chat list's folders in their new order. A name has no length limit, as a chat's folder has none."""
+    order: list[str] = Field(max_length=FOLDER_ORDER_LIMIT)
 
 
 class SurfaceOrderRequest(BaseModel):
@@ -14434,6 +14443,7 @@ async def close_event_websocket_after_delivery_failure(ws: WebSocket) -> bool:
 HUB = SubscriberHub()
 EMERGENCY_HUB_KEY = "__agentsdock_emergency_alerts__"
 SESSION_SUMMARY_HUB_KEY = "__agentsdock_session_summaries__"
+SESSION_SUMMARY_V2_HUB_KEY = "__agentsdock_session_summaries_v2__"
 
 
 async def close_port_tunnel_websocket(
@@ -14652,11 +14662,13 @@ async def broadcast_session_summary(sess: dict[str, Any]) -> None:
     """
     if sess.get("_fork_initializing"):
         return
-    await HUB.broadcast(SESSION_SUMMARY_HUB_KEY, {
+    packet = {
         "type": "session_summary",
         "server_identity": server_identity(),
         "session": public_session(sess, summary=True),
-    })
+    }
+    for key in (SESSION_SUMMARY_HUB_KEY, SESSION_SUMMARY_V2_HUB_KEY):
+        await HUB.broadcast(key, packet)
 
 
 async def project_committed_emergency_event(
@@ -29035,6 +29047,67 @@ def save_surfaces() -> None:
     scratch.parent.mkdir(parents=True, exist_ok=True)
     scratch.write_text(json.dumps(list(SURFACES.values()), ensure_ascii=False, indent=2))
     os.replace(scratch, SURFACES_FILE)
+
+
+# The chat list's folder order, one per server so every client shows the same: None until a client
+# first sends its own, which then becomes the shared one.
+def normalized_folder_order(values: Iterable[Any]) -> list[str]:
+    # Folders are the trimmed names chats are filed under, each listed once.
+    return list(dict.fromkeys(name for value in values if isinstance(value, str) and (name := value.strip())))[:FOLDER_ORDER_LIMIT]
+
+
+def load_folder_order() -> tuple[list[str] | None, int]:
+    try:
+        loaded = json.loads(FOLDER_ORDER_FILE.read_text())
+    except (OSError, ValueError):
+        loaded = None
+    order = loaded.get("order") if isinstance(loaded, dict) else None
+    saved = loaded.get("revision") if isinstance(loaded, dict) else None
+    # Above the saved revision and the clock: clients adopt only a newer revision, so a restarted
+    # server must never go back to one they already saw.
+    revision = max(int(time.time()), saved + 1 if type(saved) is int else 0)
+    return (normalized_folder_order(order) if isinstance(order, list) else None), revision
+
+
+FOLDER_ORDER, FOLDER_ORDER_REVISION = load_folder_order()
+# A change reads FOLDER_ORDER and saves the next one across an await (the file write).
+FOLDER_ORDER_LOCK = asyncio.Lock()
+
+
+def folder_order_packet() -> dict[str, Any]:
+    return {"type": "folder_order", "server_identity": server_identity(),
+            "order": FOLDER_ORDER, "revision": FOLDER_ORDER_REVISION}
+
+
+async def save_folder_order(order: list[str]) -> None:
+    """Persist the order, then push it on session summary stream v2. The caller holds FOLDER_ORDER_LOCK."""
+    global FOLDER_ORDER, FOLDER_ORDER_REVISION
+    revision = FOLDER_ORDER_REVISION + 1
+
+    def write() -> None:
+        scratch = FOLDER_ORDER_FILE.with_suffix(".json.tmp")
+        scratch.parent.mkdir(parents=True, exist_ok=True)
+        scratch.write_text(json.dumps({"order": order, "revision": revision}, ensure_ascii=False))
+        os.replace(scratch, FOLDER_ORDER_FILE)
+
+    # A chat move waits for this write; on a stalled network filesystem the other requests do not.
+    await asyncio.to_thread(write)
+    FOLDER_ORDER, FOLDER_ORDER_REVISION = order, revision
+    await HUB.broadcast(SESSION_SUMMARY_V2_HUB_KEY, folder_order_packet())
+
+
+async def remember_folder(folder: Any) -> None:
+    """A folder a chat is filed under joins the shared order at its end. Only an order sent
+    without it removes it, as Delete folder sends once its chats have moved out."""
+    name = str(folder or "").strip() or "General"
+    async with FOLDER_ORDER_LOCK:
+        if FOLDER_ORDER is None or name in FOLDER_ORDER or len(FOLDER_ORDER) >= FOLDER_ORDER_LIMIT:
+            return
+        try:
+            await save_folder_order([*FOLDER_ORDER, name])
+        except OSError as exc:
+            # The chat is already saved; its folder still shows, after the ordered ones.
+            logger.warning("could not add folder to the shared order: %s", concise_error_message(exc))
 
 
 class TerminalModes:
@@ -85024,6 +85097,7 @@ async def health() -> dict[str, Any]:
         "server_name": AGENTSDOCK_SERVER_DISPLAY_NAME,
         "server_update": server_update_health_projection(),
         "surfaces_revision": SURFACES_REVISION,
+        "folder_order_revision": FOLDER_ORDER_REVISION,
         "state_dir": str(STATE_DIR),
         "default_backend": DEFAULT_BACKEND,
         "default_cwd": existing_cwd(DEFAULT_CWD),
@@ -85058,6 +85132,11 @@ async def health() -> dict[str, Any]:
                 "version": 1,
                 "protocol": SESSION_SUMMARY_WEBSOCKET_PROTOCOL,
                 "stream_path": "/api/session-summaries/events",
+            },
+            # One folder order per server (GET/PUT path), pushed on summary stream v2.
+            "folder_order_v1": {
+                "available": True, "version": 1, "path": "/api/folders/order",
+                "stream_protocol": SESSION_SUMMARY_WEBSOCKET_PROTOCOL_V2,
             },
             "team_hub_v1": team_hub_capability,
             "team_hub_host_control_v1": team_hub_host_control_capability(),
@@ -90005,6 +90084,20 @@ async def update_surface(surface_id: str, req: SurfacePatchRequest) -> dict[str,
     return {"surface": surface}
 
 
+@app.get("/api/folders/order")
+async def get_folder_order() -> dict[str, Any]:
+    return {"order": FOLDER_ORDER, "revision": FOLDER_ORDER_REVISION}
+
+
+@app.put("/api/folders/order")
+async def put_folder_order(req: FolderOrderRequest) -> dict[str, Any]:
+    order = normalized_folder_order(req.order)
+    async with FOLDER_ORDER_LOCK:
+        if order != FOLDER_ORDER:
+            await save_folder_order(order)
+        return {"order": FOLDER_ORDER, "revision": FOLDER_ORDER_REVISION}
+
+
 @app.put("/api/surfaces/order")
 async def reorder_surfaces(req: SurfaceOrderRequest) -> dict[str, Any]:
     if len(set(req.ids)) != len(req.ids):
@@ -90170,6 +90263,8 @@ async def create_session_with_history(req: CreateSessionRequest) -> dict[str, An
             model, effort = await asyncio.to_thread(resumed_chat_runtime, backend, provider_id)
             req = req.model_copy(update={"model": model, "effort": effort})
     sess = await STORE.create(req)
+    # A chat a person or an agent creates (not a fork or a job's run chat) can bring a new folder.
+    await remember_folder(sess.get("folder"))
     provider_id = session_provider_id(sess)
     should_import = bool(provider_id) if req.import_history is None else req.import_history
     if should_import:
@@ -91372,6 +91467,10 @@ async def update_session(session_id: str, req: UpdateSessionRequest) -> dict[str
     live_shares = globals().get("INTERACTIVE_CHAT_LIVE")
     if live_shares is not None:
         live_shares.notify(session_id, {"type": "session_updated"})
+    if {"folder", "pinned", "archived"}.intersection(patch):
+        await remember_folder(sess.get("folder"))
+        # Other devices' chat lists show a chat's new place now instead of at their next list poll.
+        await broadcast_session_summary(sess)
     return {"session": public_session(sess)}
 
 
@@ -94098,6 +94197,13 @@ async def reorder_session(session_id: str, req: ReorderSessionRequest) -> dict[s
         req.placement,
         req.target_folder,
     )
+    if (moved := STORE.sessions.get(session_id)) is not None:
+        # A drag renumbers the chats of the section it lands in; other devices show the move now
+        # instead of at their next list poll.
+        section = session_section_key(moved)
+        for sess in sessions:
+            if session_section_key(sess) == section:
+                await broadcast_session_summary(sess)
     return {
         "sessions": [
             public_session(sess)
@@ -101958,32 +102064,35 @@ async def session_summary_events(ws: WebSocket) -> None:
     each row as it merges a polled row, so background chats notify within a
     second instead of on the poll.
     """
-    selected_subprotocol = websocket_endpoint_subprotocol(
-        ws,
-        SESSION_SUMMARY_WEBSOCKET_PROTOCOL,
-    )
+    v2 = SESSION_SUMMARY_WEBSOCKET_PROTOCOL_V2 in websocket_requested_protocols(ws)
+    protocol = SESSION_SUMMARY_WEBSOCKET_PROTOCOL_V2 if v2 else SESSION_SUMMARY_WEBSOCKET_PROTOCOL
+    hub_key = SESSION_SUMMARY_V2_HUB_KEY if v2 else SESSION_SUMMARY_HUB_KEY
+    selected_subprotocol = websocket_endpoint_subprotocol(ws, protocol)
     if not websocket_authorized(ws):
         await ws.accept(subprotocol=selected_subprotocol)
         await ws.close(code=4401)
         return
-    if SESSION_SUMMARY_WEBSOCKET_PROTOCOL not in websocket_requested_protocols(ws):
+    if protocol not in websocket_requested_protocols(ws):
         await ws.accept(subprotocol=selected_subprotocol)
         await ws.close(code=4406)
         return
-    await ws.accept(subprotocol=SESSION_SUMMARY_WEBSOCKET_PROTOCOL)
+    await ws.accept(subprotocol=protocol)
     try:
-        if not await HUB.reserve(SESSION_SUMMARY_HUB_KEY, ws):
+        if not await HUB.reserve(hub_key, ws):
             await close_event_websocket_over_capacity(ws)
             return
-        if not await HUB.register_accepted(SESSION_SUMMARY_HUB_KEY, ws):
+        if not await HUB.register_accepted(hub_key, ws):
             await close_event_websocket_over_capacity(ws)
             return
+        if v2 and FOLDER_ORDER is not None:
+            # A client that reconnects takes the changes it missed while its socket was down.
+            await ws.send_json(folder_order_packet())
         while True:
             await ws.receive_text()
     except WebSocketDisconnect:
         pass
     finally:
-        await HUB.unsubscribe(SESSION_SUMMARY_HUB_KEY, ws)
+        await HUB.unsubscribe(hub_key, ws)
 
 
 @app.get("/api/sessions/{session_id}/diffs/{run_id}")

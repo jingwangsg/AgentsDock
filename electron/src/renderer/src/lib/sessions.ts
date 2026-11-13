@@ -1,6 +1,9 @@
 import { fuzzyScore } from '@shared/fuzzy'
 import type { Session } from '@shared/types'
 
+// In shared/ because main sends this list to a server that has no shared folder order yet.
+export { sidebarFolders } from '@shared/folders'
+
 /**
  * Cheap preflight for a possible direct-create placeholder. Callers must also
  * prove its direct-create marker and one-event timeline before removing it.
@@ -107,13 +110,6 @@ export function rankMentionRows<T>(
     else if (otherMatch(row)) ranked.push({ row, index, tier: 2, score: 0 })
   })
   return ranked.sort((a, b) => a.tier - b.tier || b.score - a.score || a.index - b.index).map(entry => entry.row)
-}
-
-/** Folders the sidebar lists, in display order: `folderOrder` first, then folders only live chats know about. */
-export function sidebarFolders(sessions: readonly Session[], folderOrder: readonly string[]): string[] {
-  const order = new Map(folderOrder.map((folder, index) => [folder, index]))
-  const folders = new Set([...folderOrder, ...sessions.filter(session => !session.archived && !session.pinned).map(session => session.folder?.trim() || 'General')])
-  return [...folders].sort((a, b) => (order.get(a) ?? Number.MAX_SAFE_INTEGER) - (order.get(b) ?? Number.MAX_SAFE_INTEGER) || a.localeCompare(b))
 }
 
 export function orderedActiveSessions(sessions: Session[], folderOrder: string[]): Session[] {

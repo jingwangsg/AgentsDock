@@ -1,5 +1,39 @@
 # Public development log
 
+## 2026-11-13 — The chat list's folder order is the same on every device and follows changes at once (server, desktop and Android source)
+
+- Each app kept its own folder order, so one server's folders appeared in a
+  different order on the Mac and on the phone, and folders the order did not
+  list were sorted alphabetically on the desktop but by first appearance on
+  Android.
+- The server now keeps one order per server (`GET`/`PUT /api/folders/order`,
+  health `folder_order_revision`, capability `folder_order_v1`). The first
+  device that connects after the update sends its own order; every device
+  then shows the server's. Reordering, creating, renaming and deleting a
+  folder on one device changes it everywhere. A folder a chat is moved or
+  created into joins the end of the order; folders holding only terminal or
+  browser tabs stay out of it, and both apps list them after the chat folders.
+  The order and its revision are saved together, so a restarted server
+  continues where it left off.
+- Changes reach the other devices on version 2 of the session summary
+  stream (`agentsdock-session-summaries-v2`), which adds `folder_order`
+  packets; version 1 clients, such as desktop 143, keep receiving chat rows
+  only. Moving a chat (from its menu or by dragging it), pinning or
+  archiving it now also pushes the rows that changed, so its new place shows
+  on other devices at once instead of at the next list refresh.
+- Against an older server, each app keeps its own order as before. The iOS
+  app is built from the same mobile source and gets the same behavior.
+
+```text
+Change and expected user behavior: the chat list shows one server's folders in the same order on the desktop and on Android, and a folder change or a chat moved between folders on one shows on the other within about a second.
+Source commit / app build / server version: branch feat/shared-folder-order; desktop built from this tree (a copy with its default server address rewritten); Android: the JavaScript bundle of this tree in a re-signed copy of Android 86; server from this tree (1.0.7-beta.11 plus the branch).
+Test surface: an isolated server with an access token on loopback; the desktop app with its own user data, driven over CDP; the Android app on an emulator (agentsdock_fold) reaching the server through adb reverse, driven with adb.
+Actions exercised and observed outcomes: (1) First sync, twice: with the phone first, the server took its order (including folders without chats) and the desktop then showed the same nine folders; on a fresh server with the desktop first, the phone replaced its cached order with the server's. (2) Desktop Move Folder Up/Down: the phone showed the new order in its first read (one UI dump, about 2 s); phone Move Folder Up: the desktop showed it in its first read after the request. (3) Create (desktop and phone), Rename (desktop, a folder holding two chats: the order request came first, then the two chat moves, and the phone showed the new name in place with both chats), Delete (desktop and phone): each appeared on the other device in its first read. (4) Moving a chat: from the desktop's Move to folder menu, and by dragging on the phone (POST /order); the other device showed the chat in its new folder within half a second after the drag fix. (5) Server restart: the revision went up from the saved one, both apps' summary streams reconnected, and both showed the same order. (6) A terminal tab in a new folder: the order did not change, and both apps listed the folder after the chat folders.
+Real boundaries exercised; any mocked/stubbed boundaries: desktop and Android apps to the server over HTTP and both WebSocket stream versions; the Android app over adb reverse. Not exercised in the apps: an older server (covered by unit tests on both clients), iOS (same JavaScript as Android), a hub-proxied remote, mirror mode.
+Focused regression / typecheck / production build: server tests for the order, its stream and the drag push; desktop typecheck and full vitest suite (288 files); mobile typecheck and all suites; all 8 server shards; desktop production build.
+Remaining limitations or blocked acceptance: a folder named "Pinned" or "Archived" is merged into those sections on Android (as before), so Android leaves it out of the orders it sends. Two devices that both send an order while the server has none keep the later one.
+Availability: source only until the hub restarts, the remotes are redeployed, and desktop 144 and Android 87 are installed.
+
 ## 2026-11-13 — Claude chats: another model or effort no longer needs a new process (server)
 
 - In a Claude chat, a message sent after picking another model or reasoning

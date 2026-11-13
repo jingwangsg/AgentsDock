@@ -6,7 +6,7 @@ import { setLocale, t } from '@shared/i18n'
 import type { AppUpdateStatus, AppUpdateTrack, ChatReference, CrossChatHandoffsCapability, Health, ProfileBootstrapPayload, PublicServerProfile, RuntimeCatalog, Session, TeamReference, TimelineSearchResult } from '@shared/types'
 import { clearSessionHistorySearchCache } from '../lib/session-history-search'
 import { useAppStore } from '../store/app-store'
-import { AppSettingsDialog, DigestDialog, JobDialog, RenameChatDialog, RenameFolderDialog, SearchDialog, ServerOnboardingDialog, SessionDialog } from './Dialogs'
+import { AppSettingsDialog, DigestDialog, FolderDialog, JobDialog, RenameChatDialog, RenameFolderDialog, SearchDialog, ServerOnboardingDialog, SessionDialog } from './Dialogs'
 
 // The flag is a module constant; this getter lets one test turn it off, as a build without VITE_AGENTSDOCK_TEAM_NETWORK_UI=1 does.
 const teamNetworkUi = vi.hoisted(() => ({ enabled: true }))
@@ -92,6 +92,46 @@ describe('RenameFolderDialog', () => {
     await waitFor(() => expect(update).toHaveBeenCalledWith('chat-1', { folder: 'Papers' }))
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Rename folder' })).not.toBeInTheDocument())
     expect(useAppStore.getState().folderOrder).toEqual(['Papers', 'General'])
+  })
+})
+
+describe('FolderDialog', () => {
+  const profile: PublicServerProfile = {
+    id: 'profile-a', name: 'Alpha', serverUrl: 'https://alpha.example:7850', serverIdentity: 'server-a',
+    hasAccessToken: true, serverSetupComplete: true, connectionState: 'online', cachedUnreadCount: 0
+  }
+  const scope = { profileId: 'profile-a', profileGeneration: 1, serverIdentity: 'server-a' }
+  afterEach(() => {
+    cleanup()
+    useAppStore.setState({ profiles: [], activeProfileId: null, profileGeneration: 0, sharedFolderOrder: false, modals: { ...useAppStore.getState().modals, folder: false } })
+  })
+
+  it.each([
+    // The shared folder order gets the sidebar's folder list, General included.
+    [true, ['Research', 'General', 'Ideas']],
+    // This device's own order appends to the stored list, as it always did.
+    [false, ['Research', 'Ideas']]
+  ])('adds a new folder after the others (shared folder order: %s)', async (shared, saved) => {
+    const setOrder = vi.fn().mockResolvedValue(undefined)
+    const setScoped = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(window, 'agentsDock', { configurable: true, value: { folders: { setOrder }, preferences: { setScoped } } as unknown as AgentsDockAPI })
+    useAppStore.setState({
+      profiles: [profile], activeProfileId: profile.id, profileGeneration: 1, switchingProfileId: null,
+      sessions: [{ id: 'chat-1', title: 'Paper', backend: 'codex', folder: 'Research' }, { id: 'chat-2', title: 'Loose', backend: 'codex', folder: null }],
+      folderOrder: ['Research'],
+      sharedFolderOrder: shared,
+      modals: { ...useAppStore.getState().modals, folder: true },
+      error: null
+    })
+    const user = userEvent.setup()
+    render(<FolderDialog />)
+
+    await user.type(screen.getByRole('textbox', { name: 'Folder name' }), 'Ideas{Enter}')
+
+    expect(useAppStore.getState().folderOrder).toEqual(saved)
+    expect(setOrder.mock.calls).toEqual(shared ? [[scope, saved]] : [])
+    expect(setScoped.mock.calls).toEqual(shared ? [] : [[scope, 'folderOrder', saved]])
+    expect(useAppStore.getState().modals.folder).toBe(false)
   })
 })
 

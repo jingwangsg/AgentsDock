@@ -457,6 +457,12 @@ export interface AgentsDockAPI {
     update(surfaceId: string, patch: UpdateSurfaceInput): Promise<Surface>
     remove(surfaceId: string): Promise<void>
   }
+  /** The shared folder order, on a server that keeps one (folder_order_v1). */
+  folders: {
+    /** Sends the sidebar's folder list, without tab-only folders the order does not list; the shared folder order
+     *  the server then keeps arrives as `server:folder-order`. */
+    setOrder(scope: WorkspaceProfileScope, order: string[]): Promise<void>
+  }
   providerCommands: {
     list(sessionId: string, refresh?: boolean): Promise<ProviderCommandsSnapshot>
   }

@@ -1638,6 +1638,8 @@ export interface HealthCapabilities {
   connect_proof_v1?: { available: boolean; version: number }
   /** GET /api/sessions/{id} takes prefetch=true: a background read that starts nothing an open would. */
   session_prefetch_v1?: { available: boolean; version: number }
+  /** The shared folder order (GET/PUT `path`), pushed as folder_order packets on summary stream v2. */
+  folder_order_v1?: { available: boolean; version: number; path: string; stream_protocol: string }
   [key: string]: JsonValue | InteractiveProviderCapability | CursorBackendCapability | ScheduledJobsCapability | AgentEmergencyAlertsCapability | ProviderJobsAccessControlCapability | AgentTeamMailCapability | CrossChatHandoffsCapability | TeamHubV1Capability | ServerUpdatesCapability | WorkingDirectoryCompletionCapability | RemoteServersCapability | SessionRewindCapability | LocalProviderCommandsCapability | undefined
 }
 
@@ -1669,6 +1671,12 @@ export interface CreateSurfaceInput {
 
 export type UpdateSurfaceInput = Partial<Pick<Surface, 'name' | 'folder' | 'url' | 'page_title'>>
 
+/** The shared folder order (folder_order_v1) and its revision: a PUT's answer, or a pushed packet's. */
+export interface FolderOrder {
+  order: string[]
+  revision: number
+}
+
 export interface Health {
   ok: boolean
   state_dir?: string
@@ -1676,6 +1684,8 @@ export interface Health {
   server_instance_id?: string
   /** Moves whenever any device creates, changes, or closes a tab; the chat-list refresh re-reads tabs only then. */
   surfaces_revision?: number
+  /** Moves with every change to the shared folder order (folder_order_v1). */
+  folder_order_revision?: number
   api_contract_version?: number
   active?: string[]
   active_sessions?: string[]
