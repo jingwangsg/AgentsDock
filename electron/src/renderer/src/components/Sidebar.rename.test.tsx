@@ -50,6 +50,7 @@ describe('sidebar chat rename', () => {
       sessions: [session],
       selectedSessionId: session.id,
       folderOrder: ['General'],
+      sharedFolderOrder: false,
       collapsedFolders: new Set(),
       archivedCollapsed: false,
       activeSessionIds: new Set(),
@@ -243,6 +244,21 @@ describe('sidebar chat rename', () => {
     expect(screen.queryByRole('menuitem', { name: 'Move Folder Down' })).not.toBeInTheDocument()
     await user.click(screen.getByRole('menuitem', { name: 'Move Folder Up' }))
     expect(useAppStore.getState().folderOrder).toEqual(['Beta', 'Zeta', 'Alpha'])
+  })
+
+  it('sends a moved folder to a server that keeps the order, as every folder the sidebar shows', async () => {
+    const setOrder = vi.fn().mockResolvedValue(undefined)
+    const preferences = { get: vi.fn().mockResolvedValue(0), set: vi.fn().mockResolvedValue(undefined), setScoped: vi.fn().mockResolvedValue(undefined) }
+    Object.defineProperty(window, 'agentsDock', { configurable: true, value: { preferences, folders: { setOrder } } as unknown as AgentsDockAPI })
+    useAppStore.setState({ sessions: [{ ...session, folder: 'Zeta' }], folderOrder: ['Alpha', 'Beta'], sharedFolderOrder: true })
+    const user = userEvent.setup()
+    render(<Sidebar />)
+
+    fireEvent.contextMenu(screen.getByText('Alpha').closest('.section-header')!)
+    await user.click(await screen.findByRole('menuitem', { name: 'Move Folder Down' }))
+
+    expect(setOrder).toHaveBeenCalledExactlyOnceWith({ profileId: profile.id, profileGeneration: 1, serverIdentity: 'server-a' }, ['Beta', 'Alpha', 'Zeta'])
+    expect(preferences.setScoped.mock.calls.some(([, key]) => key === 'folderOrder')).toBe(false)
   })
 
   it('turns the entire chat row amber when an active agent needs user action', () => {

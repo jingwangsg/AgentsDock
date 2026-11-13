@@ -1488,6 +1488,119 @@ describe('folder rename', () => {
   })
 })
 
+describe('folder order a server keeps for every client', () => {
+  const profile: PublicServerProfile = {
+    id: 'profile-a', name: 'Alpha', serverUrl: 'https://alpha.example:7850', serverIdentity: 'server-a',
+    hasAccessToken: true, serverSetupComplete: true, connectionState: 'online', cachedUnreadCount: 0
+  }
+  const scope = { profileId: 'profile-a', profileGeneration: 2, serverIdentity: 'server-a' }
+  // Server writes in the order they were sent: `order:` the folder order, `chat:` a chat filed under a folder.
+  let writes: string[]
+  let api: { setOrder: ReturnType<typeof vi.fn>; setScoped: ReturnType<typeof vi.fn>; set: ReturnType<typeof vi.fn> }
+
+  beforeEach(() => {
+    writes = []
+    api = {
+      setOrder: vi.fn(async (_scope: unknown, order: string[]) => { writes.push(`order:${order.join(',')}`) }),
+      setScoped: vi.fn().mockResolvedValue(undefined),
+      set: vi.fn().mockResolvedValue(undefined)
+    }
+    const update = vi.fn(async (sessionId: string, patch: Partial<Session>) => {
+      writes.push(`chat:${sessionId}:${patch.folder}`)
+      return { ...sessionFor(sessionId), ...patch }
+    })
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        folders: { setOrder: api.setOrder },
+        sessions: { update, list: vi.fn().mockResolvedValue([]) },
+        preferences: { set: api.set, setScoped: api.setScoped }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      profiles: [profile], activeProfileId: profile.id, profileGeneration: 2, switchingProfileId: null,
+      sessions: [{ ...sessionFor('research'), folder: 'Research' }, { ...sessionFor('loose'), folder: null }],
+      snapshots: {}, folderOrder: ['Research', 'Ideas'], sharedFolderOrder: true, collapsedFolders: new Set(), error: null
+    })
+  })
+  afterEach(() => useAppStore.setState({ profiles: [], activeProfileId: null, profileGeneration: 0, sharedFolderOrder: false }))
+
+  it('sends a reorder to the server instead of this device\'s preferences, and reports a refusal', async () => {
+    useAppStore.getState().setFolderOrder(['Ideas', 'Research', 'General'])
+
+    expect(useAppStore.getState().folderOrder).toEqual(['Ideas', 'Research', 'General'])
+    expect(api.setOrder).toHaveBeenCalledExactlyOnceWith(scope, ['Ideas', 'Research', 'General'])
+    expect(api.setScoped).not.toHaveBeenCalled()
+    expect(api.set).not.toHaveBeenCalled()
+
+    api.setOrder.mockRejectedValueOnce(new Error('Server unavailable'))
+    useAppStore.getState().setFolderOrder(['Research', 'Ideas', 'General'])
+    await vi.waitFor(() => expect(useAppStore.getState().error).toBe('Server unavailable'))
+  })
+
+  it('renames by sending the new name in the old one\'s place before filing any chat under it', async () => {
+    await expect(useAppStore.getState().renameFolder('Research', 'Papers')).resolves.toBe(true)
+
+    // General, the folder of the chat without one, is listed after the ordered folders, as the sidebar shows it.
+    expect(writes).toEqual(['order:Papers,Ideas,General', 'chat:research:Papers'])
+    expect(api.setOrder).toHaveBeenCalledWith(scope, ['Papers', 'Ideas', 'General'])
+    expect(api.setScoped.mock.calls.map(([, key]) => key)).toEqual(['collapsedFolders'])
+    expect(useAppStore.getState().folderOrder).toEqual(['Papers', 'Ideas'])
+    expect(useAppStore.getState().sessions[0].folder).toBe('Papers')
+  })
+
+  it('deletes by moving the chats out first, then sending every folder the sidebar still shows', async () => {
+    await useAppStore.getState().deleteFolder('Research')
+
+    expect(writes).toEqual(['chat:research:General', 'order:Ideas,General'])
+    expect(api.setScoped.mock.calls.map(([, key]) => key)).toEqual(['collapsedFolders'])
+    expect(useAppStore.getState().folderOrder).toEqual(['Ideas', 'General'])
+    expect(useAppStore.getState().error).toBeNull()
+  })
+
+  it('keeps saving this device\'s own order on a server that does not keep one', async () => {
+    useAppStore.setState({ sharedFolderOrder: false })
+
+    useAppStore.getState().setFolderOrder(['Ideas', 'Research'])
+    await expect(useAppStore.getState().renameFolder('Research', 'Papers')).resolves.toBe(true)
+
+    expect(api.setOrder).not.toHaveBeenCalled()
+    expect(writes).toEqual(['chat:research:Papers'])
+    expect(api.setScoped.mock.calls.filter(([, key]) => key === 'folderOrder')).toEqual([
+      [scope, 'folderOrder', ['Ideas', 'Research']],
+      [scope, 'folderOrder', ['Ideas', 'Papers']]
+    ])
+  })
+
+  it('shows the order main sends, from the bootstrap and from each push for the active profile', async () => {
+    const handlers = new Map<string, (payload: unknown) => void>()
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        bootstrap: vi.fn().mockResolvedValue({
+          settings: { serverUrl: 'http://example.test', hasAccessToken: false, serverSetupComplete: true },
+          health: null, sessions: [], jobs: [], runtimeCatalog: null,
+          folderOrder: ['Lab'], sharedFolderOrder: true, collapsedFolders: [], archivedCollapsed: false
+        }),
+        native: { log: vi.fn().mockResolvedValue(undefined), setBadge: vi.fn().mockResolvedValue(undefined) },
+        preferences: { get: vi.fn().mockResolvedValue(undefined) },
+        events: { on: vi.fn((channel: string, handler: (payload: unknown) => void) => { handlers.set(channel, handler); return () => {} }) }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({ initialized: false, profiles: [], activeProfileId: null, profileGeneration: 0, sharedFolderOrder: false })
+    await useAppStore.getState().initialize()
+    expect(useAppStore.getState()).toMatchObject({ folderOrder: ['Lab'], sharedFolderOrder: true })
+
+    handlers.get('server:folder-order')?.({ profileId: 'other', profileGeneration: 0, folderOrder: ['Other'], sharedFolderOrder: true })
+    expect(useAppStore.getState().folderOrder).toEqual(['Lab'])
+    handlers.get('server:folder-order')?.({ profileId: null, profileGeneration: 0, folderOrder: ['Notes', 'Lab'], sharedFolderOrder: true })
+    expect(useAppStore.getState()).toMatchObject({ folderOrder: ['Notes', 'Lab'], sharedFolderOrder: true })
+    // The server no longer keeps one: this device's order again.
+    handlers.get('server:folder-order')?.({ profileId: null, profileGeneration: 0, folderOrder: ['Lab', 'Notes'], sharedFolderOrder: false })
+    expect(useAppStore.getState()).toMatchObject({ folderOrder: ['Lab', 'Notes'], sharedFolderOrder: false })
+  })
+})
+
 describe('live queue state', () => {
   it('applies only the latest queue request per session', () => {
     const a = snapshot('chat-a', [])

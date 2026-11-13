@@ -1459,6 +1459,12 @@ export interface CreateSurfaceInput {
 
 export type UpdateSurfaceInput = Partial<Pick<Surface, 'name' | 'folder' | 'url' | 'page_title'>>
 
+/** The chat list's folder order a server keeps for every client (folder_order_v1); `order` is null until a client sends one. */
+export interface FolderOrder {
+  order: string[] | null
+  revision: number
+}
+
 export type TerminalConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'disconnected' | 'error'
 
 export interface TerminalConnectOptions {
@@ -1992,6 +1998,8 @@ export interface HealthCapabilities {
   cross_server_mail_v1?: ServerCapability
   /** GET /api/sessions/{id} takes prefetch=true: a background read that starts nothing an open would. */
   session_prefetch_v1?: { available: boolean; version: number }
+  /** One chat-list folder order for every client (GET/PUT `path`), pushed on the summary stream's `stream_protocol`. */
+  folder_order_v1?: { available: boolean; version: number; path: string; stream_protocol: string }
   [key: string]: SideQuestionsCapability | ServerCapability | ServerRestartCapability | TeamHubV1Capability | TeamHubHostControlCapability | LocalSessionImportCapability | SessionForkCompletedPrefixCapability | SessionRewindCapability | AgentEmergencyAlertsCapability | TeamMailHintsCapability | TeamActivityHintsCapability | AgentTeamMailCapability | AgentTeamMessagesCapability | TeamBulletinAliasCapability | TeamAllServersAliasCapability | PinnedItemsCapability | RemoteServersCapability | JsonValue | undefined
 }
 
@@ -2022,6 +2030,8 @@ export interface Health {
   server_instance_id?: string
   /** Changes whenever a terminal or browser tab is created, renamed, or closed on this server. */
   surfaces_revision?: number
+  /** Changes whenever the chat-list folder order changes (folder_order_v1). */
+  folder_order_revision?: number
   server_version?: string
   /** Separate component versions; server_version still describes execution. */
   gateway?: GatewayHealth
@@ -2144,6 +2154,7 @@ export interface ProfileReasoningStreamEvent extends ProfileEventContext {
 }
 export interface ProfileJobsEvent extends ProfileEventContext { jobs: Job[] }
 export interface ProfileRuntimeEvent extends ProfileEventContext { runtimeCatalog: RuntimeCatalog }
+export interface ProfileFolderOrderEvent extends ProfileEventContext { folderOrder: string[]; sharedFolderOrder: boolean }
 export interface ProfileFilesEvent extends ProfileEventContext { sessionId: string; files: AgentFile[]; total: number }
 export interface ProfilePinsEvent extends ProfileEventContext { sessionId: string; pins: PinnedItem[]; revision: number }
 export interface ProfileTimelineEvent extends ProfileEventContext {
@@ -2686,6 +2697,8 @@ export interface BootstrapPayload {
   runtimeCatalog?: RuntimeCatalog | null
   selectedSessionId?: string | null
   folderOrder: string[]
+  /** The server keeps `folderOrder` for every client (folder_order_v1); otherwise it is this device's own. */
+  sharedFolderOrder?: boolean
   collapsedFolders: string[]
   archivedCollapsed: boolean
   /** Present for profile-aware bootstraps; omitted by the legacy single-server path. */
@@ -2856,6 +2869,7 @@ export interface AppEventMap {
   'server:reasoning-stream': ProfileReasoningStreamEvent
   'server:jobs': ProfileJobsEvent
   'server:runtime': ProfileRuntimeEvent
+  'server:folder-order': ProfileFolderOrderEvent
   'server:pins': ProfilePinsEvent
   'server:setup-progress': ServerSetupProgress
   'remote-servers:redeploy-progress': ServerSetupProgress

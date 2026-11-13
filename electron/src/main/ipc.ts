@@ -330,6 +330,7 @@ export function registerIpc(
   handle('surfaces:update', (surfaceId, patch) => service.updateSurface(surfaceId, patch))
   handle('surfaces:remove', surfaceId => service.removeSurface(surfaceId))
   handle('surfaces:browser:prepare', surfaceId => service.prepareBrowser(surfaceId))
+  handle('folders:set-order', (scope, order) => service.setFolderOrder(scope, order))
   handle('provider-commands:list', (sessionId, refresh) => service.providerCommands(sessionId, Boolean(refresh)))
 
   handle('timeline:cached', sessionId => service.cachedTimeline(sessionId))

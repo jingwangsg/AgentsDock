@@ -227,6 +227,8 @@ interface AppState {
   agentRouteErrorsBySession: Record<string, string | null>
   revokingAgentRouteIds: Set<string>
   folderOrder: string[]
+  /** The server keeps folderOrder for every client (folder_order_v1): a change goes to it, not to this device's preferences. */
+  sharedFolderOrder: boolean
   collapsedFolders: Set<string>
   archivedCollapsed: boolean
   /** The server's terminal and browser tabs for the active profile, and the health revision they were loaded for. */
@@ -389,6 +391,12 @@ function sessionNewChatDefaults(session: Session, defaultCwd: string): NewChatDe
     model: session.model,
     effort: session.effort
   })
+}
+
+/** Saves a folder change where the order lives: on a server that keeps it for every client (main sends it and
+ *  pushes back the server's order), otherwise in this device's preferences. */
+function saveFolderOrder(scope: WorkspaceProfileScope | null, order: string[], shared: boolean): Promise<void> {
+  return shared && scope ? window.agentsDock.folders.setOrder(scope, order) : setWorkspacePreference(scope, 'folderOrder', order)
 }
 
 export function saveNewChatDefaults(scope: WorkspaceProfileScope | null, input: Pick<CreateSessionInput, 'folder' | 'cwd' | 'backend' | 'codex_provider' | 'model' | 'effort'>): Promise<void> {
@@ -577,6 +585,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   agentRouteErrorsBySession: {},
   revokingAgentRouteIds: new Set(),
   folderOrder: [],
+  sharedFolderOrder: false,
   collapsedFolders: new Set(),
   surfaces: [],
   surfacesRevision: undefined,
@@ -922,6 +931,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       }),
       window.agentsDock.events.on('server:runtime', payload => {
         if (profileEventMatches(payload, get())) set({ runtimeCatalog: payload.runtimeCatalog })
+      }),
+      window.agentsDock.events.on('server:folder-order', payload => {
+        if (profileEventMatches(payload, get())) set({ folderOrder: payload.folderOrder, sharedFolderOrder: payload.sharedFolderOrder })
       }),
       window.agentsDock.events.on('ports:changed', payload => {
         const current = get()
@@ -2299,10 +2311,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       })))
       if (!profileScopeMatches(scope, get())) return
       const movedById = new Map(movedSessions.map(session => [session.id, session]))
-      const folderOrder = get().folderOrder.filter(candidate => candidate !== source)
+      const shared = get().sharedFolderOrder
+      // A server that keeps the order for every client gets every folder the sidebar now shows.
+      const folderOrder = (shared ? sidebarFolders(get().sessions.map(session => movedById.get(session.id) ?? session), get().folderOrder) : get().folderOrder)
+        .filter(candidate => candidate !== source)
       const collapsedFolders = new Set([...get().collapsedFolders].filter(candidate => candidate !== source))
       await Promise.all([
-        setWorkspacePreference(preferenceScope, 'folderOrder', folderOrder),
+        saveFolderOrder(preferenceScope, folderOrder, shared),
         setWorkspacePreference(preferenceScope, 'collapsedFolders', [...collapsedFolders])
       ])
       if (!profileScopeMatches(scope, get())) return
@@ -2340,7 +2355,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       return false
     }
     const sessionsToMove = get().sessions.filter(session => (session.folder?.trim() || 'General') === from)
+    const shared = get().sharedFolderOrder
     try {
+      // A server that keeps the order for every client takes the new name in the old one's place first: a chat
+      // filed under a name it does not know would add that name at the end, and other clients would see it jump.
+      if (shared) {
+        await saveFolderOrder(preferenceScope, sidebarFolders(get().sessions, get().folderOrder).map(candidate => candidate === from ? to : candidate), shared)
+        if (!profileScopeMatches(scope, get())) return false
+      }
       const movedSessions = await Promise.all(sessionsToMove.map(async session => ({
         ...(await window.agentsDock.sessions.update(session.id, { folder: to })),
         folder: to
@@ -2350,7 +2372,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const folderOrder = get().folderOrder.map(candidate => candidate === from ? to : candidate)
       const collapsedFolders = new Set([...get().collapsedFolders].map(candidate => candidate === from ? to : candidate))
       await Promise.all([
-        setWorkspacePreference(preferenceScope, 'folderOrder', folderOrder),
+        shared ? undefined : setWorkspacePreference(preferenceScope, 'folderOrder', folderOrder),
         setWorkspacePreference(preferenceScope, 'collapsedFolders', [...collapsedFolders])
       ])
       if (!profileScopeMatches(scope, get())) return false
@@ -2771,7 +2793,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     const scope = captureWorkspaceScope(get())
     set({ collapsedFolders: next }); void setWorkspacePreference(scope, 'collapsedFolders', [...next]).catch(() => undefined)
   },
-  setFolderOrder(order) { const scope = captureWorkspaceScope(get()); set({ folderOrder: order }); void setWorkspacePreference(scope, 'folderOrder', order).catch(() => undefined) },
+  setFolderOrder(order) {
+    const scope = captureWorkspaceScope(get())
+    const shared = get().sharedFolderOrder
+    set({ folderOrder: order })
+    void saveFolderOrder(scope, order, shared).catch(error => {
+      // This device's own order fails quietly, as it always has; a refused shared order is reported, and main
+      // has already put the server's order back.
+      if (shared && scope && workspaceScopeMatches(scope, get())) set({ error: errorMessage(error) })
+    })
+  },
   async refreshSurfaces() {
     const scope = captureProfileScope(get())
     try {
@@ -3331,6 +3362,7 @@ function workspaceStateFromBootstrap(
     agentRouteErrorsBySession: {},
     revokingAgentRouteIds: new Set(),
     folderOrder: payload.folderOrder,
+    sharedFolderOrder: Boolean(payload.sharedFolderOrder),
     // Tabs belong to the server; the first health report for this profile loads them.
     surfaces: [],
     surfacesRevision: undefined,
@@ -3504,6 +3536,7 @@ async function runProfileRefresh(
       ...focusedPaneAliases(current, layout),
       snapshots: syncSnapshotSessions(current.snapshots, payload.sessions),
       folderOrder: payload.folderOrder,
+      sharedFolderOrder: Boolean(payload.sharedFolderOrder),
       collapsedFolders: new Set(payload.collapsedFolders),
       archivedCollapsed: payload.archivedCollapsed
     })
