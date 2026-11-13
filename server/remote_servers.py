@@ -39,6 +39,7 @@ import httpx
 import websockets
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field, field_validator
 from starlette.background import BackgroundTask
 from starlette.requests import ClientDisconnect
@@ -2397,11 +2398,16 @@ def register_remote_server_routes(
     hub_running_chat_count: Callable[[], int],
     hub_update_cli: Callable[[str], Awaitable[tuple[str, bool]]],
     hub_restart: Callable[[], Awaitable[str | None]],
+    # agent_server imports this module, so its GzipWhenAcceptedRoute is passed in for the two reads clients
+    # repeat; the default leaves them plain (tests).
+    gzip_route: type[APIRoute] = APIRoute,
 ) -> None:
-    @app.get(ADMIN_PATH)
     async def remote_servers_list(request: Request) -> dict[str, Any]:
         authorize_admin(request)
         return {"servers": manager.list()}
+
+    # 377 requests in a day on a running hub, 2.5 KB of JSON each with seven servers, 0.7 KB gzipped (2026-11-13).
+    app.router.add_api_route(ADMIN_PATH, remote_servers_list, methods=["GET"], route_class_override=gzip_route)
 
     @app.post(ADMIN_PATH, status_code=201)
     async def remote_servers_add(request: Request, body: RemoteServerCreate) -> dict[str, Any]:
@@ -2427,13 +2433,17 @@ def register_remote_server_routes(
         authorize_admin(request)
         raise HTTPException(status_code=410, detail="Attaching an existing server was removed. Deploy the server from this hub instead.")
 
-    @app.get(f"{ADMIN_PATH}/deploy/{{job_id}}")
     async def remote_servers_deploy_status(request: Request, job_id: str) -> dict[str, Any]:
         authorize_admin(request)
         job = manager.job(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Unknown deployment job.")
         return job.view(manager.tunnel_status(job.server.id) if job.server else None)
+
+    # 598 requests in a day on a running hub: a client repeats it while a deploy runs, and each answer carries the
+    # whole log, 12.6 KB of JSON for a finished deploy, 1.6 KB gzipped (2026-11-13).
+    app.router.add_api_route(f"{ADMIN_PATH}/deploy/{{job_id}}", remote_servers_deploy_status, methods=["GET"],
+                             route_class_override=gzip_route)
 
     @app.post(f"{ADMIN_PATH}/deploy/{{job_id}}/cancel")
     async def remote_servers_deploy_cancel(request: Request, job_id: str) -> dict[str, Any]:

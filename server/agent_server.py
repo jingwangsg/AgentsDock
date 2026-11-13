@@ -85026,8 +85026,13 @@ async def codex_provider_mcp(request: Request) -> Response:
     })
 
 
+# Its own thread: the default pool fills up when a filesystem stalls, and a read that needs no thread
+# of its own (the jobs list, the remote-server list) would then wait for one only to be compressed.
+GZIP_EXECUTOR = ThreadPoolExecutor(1, thread_name_prefix="gzip")
+
+
 class GzipWhenAcceptedRoute(APIRoute):
-    """Gzip the body FastAPI built for a client that accepts it; decoded, it is the same bytes."""
+    """Gzip the body FastAPI built for a client that accepts gzip, unless that would not make it smaller; decoded, it is the same bytes."""
 
     # True in RevalidatedGzipRoute: the body's hash is its ETag, and a client whose If-None-Match names it gets an empty 304.
     revalidated = False
@@ -85047,9 +85052,13 @@ class GzipWhenAcceptedRoute(APIRoute):
                     return Response(status_code=304, headers=validators)
                 response.headers.update(validators)
             if "gzip" in request.headers.get("accept-encoding", ""):
-                response.body = await asyncio.to_thread(gzip.compress, response.body, compresslevel=6)
-                response.headers["Content-Encoding"] = "gzip"
-                response.headers["Content-Length"] = str(len(response.body))
+                packed = await asyncio.get_running_loop().run_in_executor(
+                    GZIP_EXECUTOR, functools.partial(gzip.compress, response.body, compresslevel=6))
+                # gzip's header and trailer add 20 bytes: a short body (an 11-byte empty list) would grow, so it stays plain.
+                if len(packed) < len(response.body):
+                    response.body = packed
+                    response.headers["Content-Encoding"] = "gzip"
+                    response.headers["Content-Length"] = str(len(response.body))
             return response
 
         return respond
@@ -89966,7 +89975,6 @@ async def host_diagnostics(limit: int = 40) -> dict[str, Any]:
     }
 
 
-@app.get("/api/runtime/catalog")
 async def runtime_catalog(refresh: bool = False, handoff: bool = False) -> dict[str, Any]:
     if refresh:
         await refresh_codex_app_server_binary(force=True)
@@ -89978,6 +89986,10 @@ async def runtime_catalog(refresh: bool = False, handoff: bool = False) -> dict[
     if refresh:
         await refresh_claude_native_models(explicit=handoff)
     return await asyncio.to_thread(discover_runtime_catalog, force_runtime_probe=refresh)
+
+
+# 399 requests in a day on a running hub, 11 KB of JSON each, 1.6 KB gzipped (2026-11-13).
+app.router.add_api_route("/api/runtime/catalog", runtime_catalog, methods=["GET"], route_class_override=GzipWhenAcceptedRoute)
 
 
 @app.get("/api/runtime/usage")
@@ -90212,12 +90224,16 @@ async def search_all_session_timelines(
     )
 
 
-@app.get("/api/working-directories/complete")
 async def complete_working_directory(
     path: str = Query(default="", max_length=MAX_WORKSPACE_PATH_CHARS),
     limit: int = Query(default=24, ge=1, le=MAX_WORKING_DIRECTORY_COMPLETIONS),
 ) -> dict[str, Any]:
     return await asyncio.to_thread(complete_working_directory_sync, path, limit)
+
+
+# 57 requests in a day on a running hub; the default directory's entries are 2 KB of JSON, 0.5 KB gzipped (2026-11-13).
+app.router.add_api_route("/api/working-directories/complete", complete_working_directory, methods=["GET"],
+                         route_class_override=GzipWhenAcceptedRoute)
 
 
 @app.post("/api/sessions")
@@ -90604,11 +90620,15 @@ async def bulk_import_sessions_guarded(
         return {"results": results}
 
 
-@app.get("/api/sessions/{session_id}/timeline-index")
 async def get_timeline_index(session_id: str) -> dict[str, Any]:
     if session_id not in STORE.sessions:
         raise HTTPException(status_code=404, detail="session not found")
     return await scan_transcript(build_timeline_index, session_id)
+
+
+# 123 requests in a day on a running hub; a long chat's index is 91 KB of JSON, 34 KB gzipped (2026-11-13).
+app.router.add_api_route("/api/sessions/{session_id}/timeline-index", get_timeline_index, methods=["GET"],
+                         route_class_override=GzipWhenAcceptedRoute)
 
 
 async def get_session_subagents(
@@ -91944,9 +91964,13 @@ async def get_session_provider_commands(
     return snapshot
 
 
-@app.get("/api/sessions/{session_id}/codex/runtime")
 async def get_codex_runtime(session_id: str) -> dict[str, Any]:
     return await codex_runtime_snapshot(session_id)
+
+
+# 71 requests in a day on a running hub, 4.6 KB of JSON each, 0.9 KB gzipped (2026-11-13).
+app.router.add_api_route("/api/sessions/{session_id}/codex/runtime", get_codex_runtime, methods=["GET"],
+                         route_class_override=GzipWhenAcceptedRoute)
 
 
 @app.post("/api/sessions/{session_id}/codex/load")
@@ -93133,9 +93157,13 @@ async def claude_runtime_snapshot(session_id: str) -> dict[str, Any]:
     }
 
 
-@app.get("/api/sessions/{session_id}/claude/runtime")
 async def get_claude_runtime(session_id: str) -> dict[str, Any]:
     return await claude_runtime_snapshot(session_id)
+
+
+# 486 requests in a day on a running hub, 1.8 KB of JSON each, 0.6 KB gzipped (2026-11-13).
+app.router.add_api_route("/api/sessions/{session_id}/claude/runtime", get_claude_runtime, methods=["GET"],
+                         route_class_override=GzipWhenAcceptedRoute)
 
 
 @app.get("/api/sessions/{session_id}/claude/mcp")
@@ -101137,7 +101165,6 @@ async def stop_turn(
     }
 
 
-@app.get("/api/jobs")
 async def list_jobs(session_id: str | None = None) -> dict[str, Any]:
     jobs = sorted(
         (
@@ -101149,6 +101176,10 @@ async def list_jobs(session_id: str | None = None) -> dict[str, Any]:
         reverse=True,
     )
     return {"jobs": jobs}
+
+
+# 2,282 requests in a day on a running hub, 22 KB of JSON each with its scheduled jobs, 10 KB gzipped (2026-11-13).
+app.router.add_api_route("/api/jobs", list_jobs, methods=["GET"], route_class_override=GzipWhenAcceptedRoute)
 
 
 @app.get("/api/sessions/{session_id}/jobs")
@@ -102325,6 +102356,7 @@ remote_servers.register_remote_server_routes(
     app, manager=REMOTE_SERVERS, authorize_admin=require_native_admin_control, websocket_authorized=websocket_authorized,
     # Update & redeploy all: the hub's own running chats (as /api/health lists them), CLI updates and restart.
     hub_running_chat_count=lambda: len(BUSY_SESSIONS), hub_update_cli=update_hub_cli, hub_restart=restart_hub_process,
+    gzip_route=GzipWhenAcceptedRoute,
 )
 
 
