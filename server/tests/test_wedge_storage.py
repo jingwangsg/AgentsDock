@@ -1069,8 +1069,9 @@ class ConfigureServerLoggingTests(unittest.TestCase):
             patch.object(agent_server.sys, "argv", ["agent_server.py"]),
         ):
             agent_server.main()
-        # The hub reuses a proxied connection for 2 s after it receives a response; a slow
-        # ssh forward delivers that response seconds after the remote sent it.
+        # The hub reuses a proxied connection for up to 30 s after it receives a response
+        # (remote_servers.READ_KEEPALIVE_SECONDS); a slow ssh forward delivers that response
+        # seconds after the remote sent it.
         self.assertGreaterEqual(captured["timeout_keep_alive"], 60)
 
 
