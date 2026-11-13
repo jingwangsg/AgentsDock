@@ -67,14 +67,18 @@ if password == "keys-only":  # the host takes no passwords at all
     print(argv[-2] + ": Permission denied (publickey).")
     sys.exit(255)
 host = json.load(open(os.path.join(state, "host.json")))
-if tail is not None and len(tail) <= 2:  # probe: bash -s -- <install_dir> [<fallback dir>]
-    # Optional "installs" (directory -> port): only these hold an install, and as in remote_probe.sh
-    # the fallback is taken only when the first directory has none. Without it every directory has existing_port.
+if tail is not None and b"AGENTSDOCK_TUNNEL_PROBE" in stdin:  # probe: bash -s -- <candidate install dirs>
+    # Optional "installs" (directory -> port): only these hold an install. As in remote_probe.sh the install is
+    # the first candidate holding one, else the first whose home the host has ("unmounted" lists the homes it
+    # lacks). Without "installs" every directory has existing_port.
     installs = host.get("installs")
-    install_dir = tail[-1] if installs is not None and tail[0] not in installs and tail[-1] in installs else tail[0]
-    port = host["existing_port"] if installs is None else installs.get(install_dir)
+    held = [d for d in tail if installs is not None and d in installs]
+    mounted = [d for d in tail if d.rpartition("/")[0] not in host.get("unmounted", [])]
+    choice = (held or mounted or tail)[0]
+    port = host["existing_port"] if installs is None else installs.get(choice)
     print("AGENTSDOCK_TUNNEL_PROBE=" + json.dumps(dict(os="Linux", arch="x86_64", uid=1000, home="/h", tmux=True, free_port=7850, existing_port=port,
-                                                      install_dir=install_dir)))
+                                                      install_dir="/h" + choice[1:] if choice.startswith("~") else choice,
+                                                      candidate=tail.index(choice))))
 elif tail is not None:  # bootstrap: bash -s -- <install_dir> <port> <home> [restart]
     if host.get("bootstrap_failure"):  # the host's script prints these lines and fails
         print("\n".join(host["bootstrap_failure"]))
@@ -873,12 +877,13 @@ time.sleep(30)
 
     # --- deploy jobs against a scripted host ----------------------------------
 
-    def fake_host(self, existing_port: int | None, bootstrap_failure: list[str] | None = None, installs: dict[str, int] | None = None) -> Path:
+    def fake_host(self, existing_port: int | None, bootstrap_failure: list[str] | None = None, installs: dict[str, int] | None = None,
+                  unmounted: list[str] | None = None) -> Path:
         """Point ssh at a script playing the host; returns the argv log it appends to."""
         state = self.tmp_path / "host"
         state.mkdir(exist_ok=True)  # a test may script the host again with another failure shape
         (state / "host.json").write_text(json.dumps({"token": REMOTE_TOKEN, "existing_port": existing_port, "bootstrap_failure": bootstrap_failure,
-                                                     "installs": installs}))
+                                                     "installs": installs, "unmounted": unmounted or []}))
         script = self.tmp_path / "ssh"
         script.write_text(FAKE_SSH.format(python=sys.executable, state=str(state)))
         script.chmod(0o700)
@@ -994,6 +999,53 @@ time.sleep(30)
         assert "existing_token" not in found
         missing = probe(self.tmp_path / "missing")
         assert missing["existing_port"] is None
+
+    def test_the_probe_takes_the_first_candidate_holding_an_install_else_the_first_whose_home_exists(self) -> None:
+        home = self.tmp_path / "home"
+        home.mkdir()
+
+        def probe(*dirs: str) -> dict:
+            proc = subprocess.run(["bash", "-s", "--", *dirs], input=rs.PROBE_SCRIPT.read_bytes(), capture_output=True, timeout=30,
+                                  env={**os.environ, "HOME": str(home)})
+            assert proc.returncode == 0, proc.stderr.decode()
+            return rs.parse_probe(proc.stdout.decode().splitlines())
+
+        # A GCP cluster has no OCI Lustre: the next home the host has, then its own ~ (expanded for the hub).
+        lustre, nfs = self.tmp_path / "lustre", self.tmp_path / "nfs"
+        candidates = (f"{lustre}/.agentsdock-server-c", f"{nfs}/.agentsdock-server-c", "~/.agentsdock-server-c")
+        found = probe(*candidates)
+        assert (found["install_dir"], found["candidate"], found["home"]) == (f"{home}/.agentsdock-server-c", 2, str(home))
+        nfs.mkdir()
+        found = probe(*candidates)
+        assert (found["install_dir"], found["candidate"], found["existing_port"]) == (f"{nfs}/.agentsdock-server-c", 1, None)
+        # An install anywhere among the candidates wins, so a deploy keeps its chats.
+        (home / ".agentsdock-server-c").mkdir()
+        (home / ".agentsdock-server-c" / "env").write_text("export AGENTSDOCK_AGENT_PORT=7999\n")
+        found = probe(*candidates)
+        assert (found["install_dir"], found["candidate"], found["existing_port"]) == (f"{home}/.agentsdock-server-c", 2, 7999)
+        # When no candidate's home exists, the first: its mkdir then names the missing directory.
+        assert probe(f"{lustre}/a", f"{lustre}/b")["install_dir"] == f"{lustre}/a"
+
+    def test_a_cluster_without_the_first_configured_home_installs_in_the_next_one_it_has(self) -> None:
+        # 2026-11-13: an oci@ target on GCP, which has no OCI Lustre, failed with "mkdir: cannot create directory
+        # '/mnt/oci-lustre': Permission denied".
+        self.enterContext(mock.patch.object(rs, "isolated_proxy_args", mock.AsyncMock(return_value=["-o", "ProxyCommand=x"])))
+        self.enterContext(mock.patch.dict(os.environ, {"AGENTSDOCK_OCI_HOME": "/mnt/oci/u /mnt/nfs/u/"}))
+        for unmounted, install_dir, home, note in (
+            (["/mnt/oci/u"], "/mnt/nfs/u/.agentsdock-server-gcp", "/mnt/nfs/u", "."),
+            # Neither home: the container's own ~, as the probe offered it, with HOME there too.
+            (["/mnt/oci/u", "/mnt/nfs/u"], "/h/.agentsdock-server-gcp", "/h", ", which goes away with the container."),
+        ):
+            with self.subTest(unmounted=unmounted):
+                calls = self.fake_host(existing_port=None, installs={}, unmounted=unmounted)
+                manager, job = self.run_job(rs.RemoteDeployRequest(ssh_host="oci@gcp"))
+                assert job.done and job.error is None, job.log
+                assert rs.load_registry(manager.path)[0].install_dir == install_dir
+                probe, *_, bootstrap = [json.loads(line)["tail"] for line in calls.read_text().splitlines()]
+                assert probe == ["/mnt/oci/u/.agentsdock-server-gcp", "/mnt/nfs/u/.agentsdock-server-gcp", "~/.agentsdock-server-gcp"]
+                assert bootstrap[:3] == [install_dir, "7850", home]
+                assert f"/mnt/oci/u is not on oci@gcp; installing in {install_dir}{note}" in [entry["message"] for entry in job.log]
+                calls.unlink()
 
     def test_a_deploy_naming_a_registered_install_updates_that_entry_and_keeps_its_id(self) -> None:
         self.fake_host(existing_port=7860)
@@ -1665,7 +1717,7 @@ if sys.argv[-1] == "k8s-cluster":
             # The bootstrap runs the server with that home as HOME.
             assert json.loads(calls.read_text().splitlines()[-1])["tail"][2] == home
         # Pools are OSMO's: an oci@ cluster of the same name keeps its own home.
-        assert rs.cluster_home("oci@wf-running") == "/mnt/oci/u"
+        assert rs.cluster_homes("oci@wf-running") == ["/mnt/oci/u"]
 
         # Before a hub's first query of the workflow, a deploy of a registered install updates that entry.
         manager = rs.RemoteServerManager(self.tmp_path / "again", source_dir=self.tmp_path, manage_tunnels=False)
@@ -1774,12 +1826,13 @@ if sys.argv[-1] == "k8s-cluster":
         assert manager.servers["abcdef123456"].install_dir == pool_dir
         assert json.loads(calls.read_text().splitlines()[-1])["tail"][0] == pool_dir
 
-        # Without AGENTSDOCK_OSMO_HOME the earlier directory would be the shared default, which names no workflow.
+        # Without AGENTSDOCK_OSMO_HOME the earlier directory would be the shared default, which names no workflow;
+        # the container's own fallback is named for the workflow too.
         del os.environ["AGENTSDOCK_OSMO_HOME"]
         manager = rs.RemoteServerManager(self.tmp_path / "unset", source_dir=self.tmp_path, manage_tunnels=False)
         deploy(manager, lambda: manager.start_deploy(rs.RemoteDeployRequest(ssh_host="osmo@wf-running")))
         [probe, *_] = [json.loads(line)["tail"] for line in calls.read_text().splitlines()[-3:]]
-        assert probe == [pool_dir]
+        assert probe == [pool_dir, "~/.agentsdock-server-wf-running"]
         assert json.loads(calls.read_text().splitlines()[-1])["tail"][0] == pool_dir
 
     def test_a_redeploy_finishes_a_move_whose_deploy_failed(self) -> None:
@@ -1805,10 +1858,10 @@ if sys.argv[-1] == "k8s-cluster":
         calls = self.fake_host(existing_port=None)
         job = asyncio.run(main(lambda: manager.start_deploy(None, redeploy_id="abcdef123456")))
         assert job.error is None, job.log
-        # As the move would have: the pool home, the workflow's earlier install as the fallback, a port of
-        # its own instead of the previous workflow's, and the pool home as HOME.
+        # As the move would have: the pool home, the workflow's earlier install as the fallback (then the
+        # container's own ~), a port of its own instead of the previous workflow's, and the pool home as HOME.
         probe, _upload, bootstrap = [json.loads(line)["tail"] for line in calls.read_text().splitlines()[-3:]]
-        assert probe == [pool_dir, earlier_dir], probe
+        assert probe == [pool_dir, earlier_dir, "~/.agentsdock-server-wf-running"], probe
         assert bootstrap == [pool_dir, "7850", "/mnt/a/u", "restart"], bootstrap
         assert rs.load_registry(manager.path)[0].install_dir == pool_dir
 

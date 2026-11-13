@@ -1,6 +1,4 @@
 set -u
-INSTALL_DIR="${1:-}"
-case "$INSTALL_DIR" in "~"*) INSTALL_DIR="$HOME${INSTALL_DIR#\~}" ;; esac
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 if ! command -v python3 >/dev/null 2>&1; then
   printf 'python3 is required on the host.\n' >&2
@@ -11,11 +9,23 @@ if ! command -v curl >/dev/null 2>&1; then
   printf 'curl is required on the host.\n' >&2
   exit 78
 fi
-# $2 is a fallback directory: the target's earlier install for a deploy into an OSMO pool home.
-# It becomes the install only when $1 has no env.
-FALLBACK_DIR="${2:-}"
-case "$FALLBACK_DIR" in "~"*) FALLBACK_DIR="$HOME${FALLBACK_DIR#\~}" ;; esac
-if [ -n "$FALLBACK_DIR" ] && [ ! -r "$INSTALL_DIR/env" ] && [ -r "$FALLBACK_DIR/env" ]; then INSTALL_DIR="$FALLBACK_DIR"; fi
+# The arguments are candidate install directories, in order: the hub's choice, then the target's
+# earlier install (a deploy into an OSMO pool home), then the next configured cluster homes and the
+# container's own ~. The install is the first that holds one (its env: an earlier install keeps its
+# chats), else the first whose parent exists (not every cluster mounts a configured home), else $1.
+expand() { case "$1" in "~"*) printf '%s\n' "$HOME${1#\~}" ;; *) printf '%s\n' "$1" ;; esac; }
+CANDIDATE="" index=0
+for dir in "$@"; do
+  if [ -z "$CANDIDATE" ] && [ -r "$(expand "$dir")/env" ]; then CANDIDATE=$index; fi
+  index=$((index + 1))
+done
+index=0
+for dir in "$@"; do
+  if [ -z "$CANDIDATE" ] && [ -d "$(dirname "$(expand "$dir")")" ]; then CANDIDATE=$index; fi
+  index=$((index + 1))
+done
+CANDIDATE="${CANDIDATE:-0}" INSTALL_DIR=""
+if [ "$#" -gt 0 ]; then shift "$CANDIDATE"; INSTALL_DIR="$(expand "$1")"; fi
 # The server's HOME decides where claude/codex look for their logins. Prefer the
 # install directory's parent when it already holds those logins (a persistent
 # home on a network filesystem, chosen by the user), otherwise the shell HOME.
@@ -26,9 +36,9 @@ PARENT_DIR="$(dirname "$INSTALL_DIR")"
 if [ -d "$PARENT_DIR/.claude" ] || [ -d "$PARENT_DIR/.codex" ]; then HOME_DIR="$PARENT_DIR"; fi
 ENV_FILE=""
 if [ -n "$INSTALL_DIR" ] && [ -r "$INSTALL_DIR/env" ]; then ENV_FILE="$INSTALL_DIR/env"; fi
-python3 - "$HOME_DIR" "$ENV_FILE" "$INSTALL_DIR" <<'PY'
+python3 - "$HOME_DIR" "$ENV_FILE" "$INSTALL_DIR" "$CANDIDATE" <<'PY'
 import json, os, platform, shutil, socket, sys
-home, env_file, install_dir = sys.argv[1:4]
+home, env_file, install_dir, candidate = sys.argv[1:5]
 # A hub-deployed env writes `export NAME=value`, install.sh `NAME=value`; the last line wins.
 values = {}
 if env_file:
@@ -56,5 +66,6 @@ print("AGENTSDOCK_TUNNEL_PROBE=" + json.dumps({
     "tmux": shutil.which("tmux") is not None, "uv": shutil.which("uv") is not None,
     "node": shutil.which("node") is not None,
     "free_port": port, "existing_port": int(existing) if existing.isdigit() else None, "install_dir": install_dir,
+    "candidate": int(candidate),
 }))
 PY
