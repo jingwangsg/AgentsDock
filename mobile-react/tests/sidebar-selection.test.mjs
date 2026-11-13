@@ -61,16 +61,17 @@ test('every folder, General included, shows the same menu on both platforms', ()
   assert.match(source, /const hasMenu = !\['Pinned', 'Archived'\]\.includes\(item\.folder\)/)
   assert.doesNotMatch(source, /movable|'General', 'Archived'\]/)
   // Move Folder acts on the rendered folder list and hides at the edges instead of disabling.
-  assert.match(source, /const folders = useMemo\(\(\) => orderedSessionSections\(sessions, folderOrder, false, true\)\.map\(section => section\.id\)\.filter\(folder => folder !== 'Pinned'\), \[folderOrder, sessions\]\)/)
+  assert.match(source, /const folders = useMemo\(\(\) => sidebarFolderOrder\(sessions, folderOrder, surfaces\), \[folderOrder, sessions, surfaces\]\)/)
   assert.match(source, /canMoveUp=\{folders\.indexOf\(item\.folder\) > 0\}\s*canMoveDown=\{folders\.indexOf\(item\.folder\) >= 0 && folders\.indexOf\(item\.folder\) < folders\.length - 1\}/)
   assert.doesNotMatch(source, /Move Folder (Up|Down)', image: '[^']*', attributes: \{ disabled/)
 })
 
-test('renaming a folder moves its chats, then renames the order and collapsed entries', () => {
+test('renaming a folder moves its chats and renames the order and collapsed entries; a server keeping the order gets the order first', () => {
   assert.match(source, /else if \(id === 'rename'\) onRename\(\)/)
   assert.match(source, /onRename=\{\(\) => renameFolder\(item\.folder\)\}/)
   // Refuses empty/unchanged names and case-insensitive duplicates of another folder; matches chats by effective folder so General's empty-field chats move too.
-  assert.match(source, /const renameFolder = \(folder: string\) => \{[\s\S]*?promptText\(\{[\s\S]*?title: 'Rename folder',[\s\S]*?initialValue: folder,[\s\S]*?confirmLabel: 'Rename',[\s\S]*?\}\)\.then\(async value => \{[\s\S]*?if \(!profileScopeIsCurrent\(scope\)\) return[\s\S]*?if \(!name \|\| name === folder \|\| folders\.some\(entry => entry !== folder && entry\.toLowerCase\(\) === name\.toLowerCase\(\)\)\) return[\s\S]*?await Promise\.all\(sessions[\s\S]*?\(session\.folder\?\.trim\(\) \|\| 'General'\) === folder\)[\s\S]*?updateSession\(session\.id, \{ folder: name \}, scope\.profileGeneration\)[\s\S]*?if \(!profileScopeIsCurrent\(scope\)\) return[\s\S]*?setFolderOrder\(folders\.map\(entry => entry === folder \? name : entry\), scope\.profileGeneration\)[\s\S]*?setCollapsedFolders\(collapsedFolders\.map\(entry => entry === folder \? name : entry\), scope\.profileGeneration\)/)
+  // The order of the steps is exercised in tests/sidebar-folder-order.test.tsx.
+  assert.match(source, /const renameFolder = \(folder: string\) => \{[\s\S]*?promptText\(\{[\s\S]*?title: 'Rename folder',[\s\S]*?initialValue: folder,[\s\S]*?confirmLabel: 'Rename',[\s\S]*?\}\)\.then\(async value => \{[\s\S]*?if \(!profileScopeIsCurrent\(scope\)\) return[\s\S]*?if \(!name \|\| name === folder \|\| folders\.some\(entry => entry !== folder && entry\.toLowerCase\(\) === name\.toLowerCase\(\)\)\) return[\s\S]*?const renamed = folders\.map\(entry => entry === folder \? name : entry\)[\s\S]*?if \(shared && !await setFolderOrder\(renamed, scope\.profileGeneration\)\) return[\s\S]*?await Promise\.all\(sessions[\s\S]*?\(session\.folder\?\.trim\(\) \|\| 'General'\) === folder\)[\s\S]*?updateSession\(session\.id, \{ folder: name \}, scope\.profileGeneration\)[\s\S]*?if \(!profileScopeIsCurrent\(scope\)\) return[\s\S]*?if \(!shared\) void setFolderOrder\(renamed, scope\.profileGeneration\)[\s\S]*?setCollapsedFolders\(collapsedFolders\.map\(entry => entry === folder \? name : entry\), scope\.profileGeneration\)/)
 })
 
 test('deleting a folder sends its chats to General, else the first other folder, without a confirmation prompt', () => {
