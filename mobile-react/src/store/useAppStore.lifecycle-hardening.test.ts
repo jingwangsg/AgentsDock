@@ -140,6 +140,9 @@ const firstHealthStarted = deferred<void>()
 const firstHealthResponse = deferred<Response>()
 let delayFirstHealth = true
 let heldHealth: Promise<Response> | null = null
+// The server's copy of the chat and the events it returns after the app's cursor.
+let serverSession = session
+let serverNewEvents: Event[] = []
 
 try {
   await AsyncStorage.clear()
@@ -182,24 +185,27 @@ try {
         active_sessions: [],
       })
     }
-    if (url.pathname === '/api/sessions') return jsonResponse({ sessions: [session] })
+    if (url.pathname === '/api/sessions') return jsonResponse({ sessions: [serverSession] })
     if (url.pathname === '/api/runtime/catalog') return jsonResponse({ backends: {} })
     if (url.pathname === '/api/jobs') return jsonResponse({ jobs: [] })
     if (url.pathname === `/api/sessions/${session.id}`) {
       return jsonResponse({
-        session,
-        events: [],
+        session: serverSession,
+        events: serverNewEvents,
         queued_turns: [],
         events_omitted_before: 0,
         events_omitted_after: 0,
-        latest_seq: 5,
+        latest_seq: serverSession.latest_event_seq,
         event_count: 1,
       })
     }
     if (url.pathname === `/api/sessions/${session.id}/files`) {
       return jsonResponse({ files: [], total: 0, offset: 0, limit: 60, has_more: false })
     }
-    if (url.pathname === `/api/sessions/${session.id}/read`) return jsonResponse({ session })
+    if (url.pathname === `/api/sessions/${session.id}/read`) {
+      serverSession = { ...serverSession, last_read_agent_event_seq: serverSession.latest_agent_event_seq }
+      return jsonResponse({ session: serverSession })
+    }
     return new Response(JSON.stringify({ detail: `Unhandled test endpoint: ${url.pathname}` }), { status: 404 })
   }) as typeof fetch
 
@@ -317,30 +323,40 @@ try {
   assert.equal(runtimeNotifications.length, 1, 'a stopped stale stream must not publish runtime invalidations')
   unsubscribeRuntime()
 
-  // Returning with a chat open: its timeline catches up and its stream restarts while the server's health is
-  // still on its way. Through a hub each read of a remote is a round trip of its own, and the timeline waits
-  // for none of them.
-  const timelineRequests = () => requests.filter(request => request.pathname === `/api/sessions/${session.id}`).length
-  const chatListRequests = () => requests.filter(request => request.pathname === '/api/sessions').length
-  const chatListRequestsBeforeReturn = chatListRequests()
-  const returnHealth = deferred<Response>()
-  heldHealth = returnHealth.promise
+  // Returning with a chat open that moved on while the app was away: its timeline catches up and its stream
+  // restarts while the server's health is still on its way. Through a hub each read of a remote is a round trip
+  // of its own, and the timeline waits for none of them.
+  const requestCount = (pathname: string) => requests.filter(request => request.pathname === pathname).length
+  const timelinePath = `/api/sessions/${session.id}`
+  const readReceiptPath = `/api/sessions/${session.id}/read`
+  serverSession = { ...session, latest_event_seq: 8, latest_agent_event_seq: 8 }
+  serverNewEvents = [{ seq: 8, id: 'event-8', session_id: session.id, type: 'assistant_message', ts: timestamp, text: 'Written while away' }]
+  const timelineRequestsBeforeReturn = requestCount(timelinePath)
+  const chatListRequestsBeforeReturn = requestCount('/api/sessions')
+  const streamsBeforeReturn = FakeWebSocket.instances.length
+  const foregroundHealthResponse = deferred<Response>()
+  heldHealth = foregroundHealthResponse.promise
   appState.__emitAppState('active')
-  await waitFor(() => FakeWebSocket.instances.length === 2, 'the open chat must catch up before the server health arrives')
-  assert.equal(chatListRequests(), chatListRequestsBeforeReturn, 'the chat list still waits for the health')
-  const timelineRequestsAfterCatchUp = timelineRequests()
+  await waitFor(() => FakeWebSocket.instances.length === streamsBeforeReturn + 1, 'the open chat must catch up before the server health arrives')
+  assert.equal(useAppStore.getState().snapshots[session.id]?.events.at(-1)?.id, 'event-8')
+  assert.equal(requestCount(timelinePath), timelineRequestsBeforeReturn + 1, 'the catch-up is one read from the cached cursor')
+  assert.equal(requestCount('/api/sessions'), chatListRequestsBeforeReturn, 'the chat list still waits for the health')
+  // The chat list is computed without this receipt: sent first, the list would bring the old read marker back.
+  assert.equal(requestCount(readReceiptPath), 0, 'the read receipt must wait for the chat list')
   heldHealth = null
-  returnHealth.resolve(jsonResponse({
+  foregroundHealthResponse.resolve(jsonResponse({
     ok: true,
     server_identity: 'server-lifecycle',
     server_version: 'test-lifecycle',
     api_contract_version: 9,
     active_sessions: [],
   }))
-  await waitFor(() => chatListRequests() === chatListRequestsBeforeReturn + 1, 'the chat list must load after the health')
+  await waitFor(() => requestCount(readReceiptPath) === 1, 'the read receipt must follow the chat list')
   await nextTurn()
   await nextTurn()
-  assert.equal(timelineRequests(), timelineRequestsAfterCatchUp, 'the chat list arriving afterwards must not request the same catch-up again')
+  assert.equal(requestCount('/api/sessions'), chatListRequestsBeforeReturn + 1)
+  assert.equal(requestCount(timelinePath), timelineRequestsBeforeReturn + 1, 'the chat list arriving afterwards must not read the timeline again')
+  assert.equal(useAppStore.getState().sessions.find(value => value.id === session.id)?.last_read_agent_event_seq, 8, 'the open chat ends read')
 
   console.log('store lifecycle, runtime invalidation, passive trace, and read-receipt regressions passed')
 } finally {
