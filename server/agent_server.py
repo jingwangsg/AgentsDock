@@ -94186,6 +94186,13 @@ async def reorder_session(session_id: str, req: ReorderSessionRequest) -> dict[s
         req.placement,
         req.target_folder,
     )
+    if (moved := STORE.sessions.get(session_id)) is not None:
+        # A drag renumbers the chats of the section it lands in; other devices show the move now
+        # instead of at their next list poll.
+        section = session_section_key(moved)
+        for sess in sessions:
+            if session_section_key(sess) == section:
+                await broadcast_session_summary(sess)
     return {
         "sessions": [
             public_session(sess)

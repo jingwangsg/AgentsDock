@@ -103,6 +103,21 @@ class FolderOrderTests(unittest.IsolatedAsyncioTestCase):
         await agent_server.create_surface(agent_server.SurfaceCreateRequest(kind="terminal", folder="Ops"))
         self.assertEqual(agent_server.FOLDER_ORDER, ["General", "Projects", "Inbox"])
 
+    async def test_a_chat_dragged_into_another_folder_is_pushed_with_its_new_neighbours(self) -> None:
+        # 2026-11-13: an Android drag moved a chat to another folder through POST /order, which pushed nothing,
+        # so the desktop showed the move only at its next list poll.
+        await self.put("A", "B")
+        with fresh_store():
+            first, second, other = [(await agent_server.create_session(agent_server.CreateSessionRequest(
+                title=title, folder=folder, backend="claude")))["session"] for title, folder in
+                (("one", "B"), ("two", "B"), ("moved", "A"))]
+            with patch.object(agent_server, "broadcast_session_summary", AsyncMock()) as push:
+                await agent_server.reorder_session(other["id"], agent_server.ReorderSessionRequest(
+                    target_id=first["id"], placement="after", target_folder="B"))
+            # The moved chat and the chats whose places the drop renumbered, all in folder B.
+            pushed = {call.args[0]["id"]: call.args[0]["folder"] for call in push.await_args_list}
+            self.assertEqual(pushed, {first["id"]: "B", second["id"]: "B", other["id"]: "B"})
+
     async def test_an_order_that_cannot_be_saved_does_not_fail_the_chat_change(self) -> None:
         await self.put("General")
         with patch.object(agent_server, "save_folder_order", AsyncMock(side_effect=OSError("disk full"))), \
