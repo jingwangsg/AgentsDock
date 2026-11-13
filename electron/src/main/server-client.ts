@@ -1,7 +1,7 @@
 import { createReadStream, openAsBlob } from 'node:fs'
 import { parseProviderUsage, type ProviderUsageSnapshot, type UsageBackend } from '../shared/provider-usage'
 import { parseCodexAuthStatus } from '../shared/codex-auth'
-import type { BackgroundActivityItem, CanvasCommentAnchor, CanvasCommentInput, CanvasCommentThread, CanvasRecord, CanvasSummary, CodexKillWritersResult, CreateSurfaceInput, RuntimeCliUpdate, SessionExportFormat, Surface, UpdateSurfaceInput } from '../shared/types'
+import type { BackgroundActivityItem, CanvasCommentAnchor, CanvasCommentInput, CanvasCommentThread, CanvasRecord, CanvasSummary, CodexKillWritersResult, CreateSurfaceInput, FolderOrder, RuntimeCliUpdate, SessionExportFormat, Surface, UpdateSurfaceInput } from '../shared/types'
 import { parseCodexProviderConfiguration, parseCodexProviderModels, parseCodexProviderTestResult, validateCodexProviderInput, validateCodexProviderModelTestInput, validateCodexProviderSelection } from '../shared/codex-provider'
 import { randomUUID } from 'node:crypto'
 import { request as httpRequest, type IncomingMessage } from 'node:http'
@@ -211,6 +211,8 @@ const EMERGENCY_STREAM_MAX_PACKET_CHARS = 8 * 1024 * 1024
 const EMERGENCY_STREAM_MAX_SESSIONS = 10_000
 const EMERGENCY_STREAM_PROTOCOL = 'agentsdock-emergency-v1'
 const SESSION_SUMMARY_STREAM_PROTOCOL = 'agentsdock-session-summaries-v1'
+// v1 plus folder_order packets (folder_order_v1). An older server accepts only v1 and sends chat rows alone.
+const SESSION_SUMMARY_STREAM_PROTOCOL_V2 = 'agentsdock-session-summaries-v2'
 const SESSION_SUMMARY_STREAM_MAX_PACKET_CHARS = 256 * 1024
 const EVENTS_STREAM_PROTOCOL = 'agentsdock-events-v1'
 const TERMINAL_STREAM_PROTOCOL = 'agentsdock-terminal-v1'
@@ -1001,6 +1003,17 @@ export class AgentServerClient {
     return (await this.patch<{ surface: Surface }>(`/api/surfaces/${encodeURIComponent(surfaceId)}`, patch)).surface
   }
   async deleteSurface(surfaceId: string): Promise<void> { await this.delete(`/api/surfaces/${encodeURIComponent(surfaceId)}`) }
+  async folderOrder(): Promise<FolderOrder> {
+    const reply = await this.get<unknown>('/api/folders/order')
+    if (!isFolderOrder(reply)) throw new Error('The server sent an invalid folder order.')
+    return reply
+  }
+  /** Replaces the whole order; the server trims names and drops blank and repeated ones. */
+  async putFolderOrder(order: string[]): Promise<FolderOrder> {
+    const reply = await this.put<unknown>('/api/folders/order', { order })
+    if (!isFolderOrder(reply)) throw new Error('The server sent an invalid folder order.')
+    return reply
+  }
   async jobs(): Promise<Job[]> { return (await this.get<{ jobs: Job[] }>('/api/jobs')).jobs }
 
   async pinnedItems(sessionId: string): Promise<PinnedItemsSnapshot> {
@@ -2582,11 +2595,13 @@ export class AgentServerClient {
   }
 
   /** Live chat list rows for chats without an open timeline: a turn starting or
-   *  ending, a provider waiting for the user. The list poll stays as the fallback. */
+   *  ending, a provider waiting for the user. The list poll stays as the fallback.
+   *  A server that accepts v2 also pushes its folder order whenever it changes. */
   sessionSummaryStream(
     expectedServerIdentity: string,
     onSession: (session: Session) => void,
-    onState: (connected: boolean, error?: string) => void
+    onState: (connected: boolean, error?: string) => void,
+    onFolderOrder: (order: string[], revision: number) => void
   ): () => void {
     const expectedIdentity = expectedServerIdentity.trim()
     if (!expectedIdentity || expectedIdentity.length > 240) {
@@ -2600,6 +2615,7 @@ export class AgentServerClient {
       timedOutError: 'Session summary stream timed out',
       interruptedError: 'Session summary stream disconnected',
       open: () => new WebSocket(endpoint, [
+        SESSION_SUMMARY_STREAM_PROTOCOL_V2,
         SESSION_SUMMARY_STREAM_PROTOCOL,
         ...agentTokenWebSocketProtocols(configuration.token)
       ]),
@@ -2625,7 +2641,9 @@ export class AgentServerClient {
             return
           }
           if (packet.type === 'session_summary' && isSessionSummaryPacket(packet.session)) onSession(packet.session)
-          else rejectPacket('Session summary stream sent an invalid update')
+          else if (packet.type === 'folder_order' && socket.protocol === SESSION_SUMMARY_STREAM_PROTOCOL_V2 && isFolderOrder(packet) && packet.order) {
+            onFolderOrder(packet.order, packet.revision)
+          } else rejectPacket('Session summary stream sent an invalid update')
         } catch {
           rejectPacket('Session summary stream sent malformed JSON')
         }
@@ -2952,6 +2970,12 @@ function isExactSecurePeerListQuery(query: URLSearchParams): boolean {
     && new Set(keys).size === 3
     && keys.every(key => ['expected_server_identity', 'expected_server_instance_id', 'team_id'].includes(key))
     && [...query.values()].every(value => Boolean(value) && value.length <= 240 && !/[\u0000-\u001f\u007f]/.test(value))
+}
+
+function isFolderOrder(value: unknown): value is FolderOrder {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const { order, revision } = value as Record<string, unknown>
+  return Number.isSafeInteger(revision) && (order === null || Array.isArray(order) && order.every(name => typeof name === 'string'))
 }
 
 function isSessionSummaryPacket(value: unknown): value is Session {

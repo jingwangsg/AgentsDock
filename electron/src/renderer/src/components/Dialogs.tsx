@@ -23,7 +23,7 @@ import { TEAM_NETWORK_UI_ENABLED } from '../lib/team-network-ui'
 import { useProfileSearch } from '../lib/profile-search'
 import { historyResultsBySession, openSessionHistoryResult, useSessionHistorySearch } from '../lib/session-history-search'
 import { effectiveScheduleKind, formatScheduleWallTime, jobLoopsForever, parseScheduleWallTime, supportedTimezones, validateJobSchedule } from '../lib/job-schedule'
-import { digestTargetSections, orderedActiveSessions, rankSessionsForSearch, sessionNameMatchRank } from '../lib/sessions'
+import { digestTargetSections, orderedActiveSessions, rankSessionsForSearch, sessionNameMatchRank, sidebarFolders } from '../lib/sessions'
 import { useTransientClose } from '../lib/transient-close'
 import { captureWorkspaceScope } from '../lib/workspace-preferences'
 import { saveNewChatDefaults, useAppStore, waitForWorkspaceReady } from '../store/app-store'
@@ -1075,11 +1075,12 @@ export function ServerOnboardingDialog() {
   </DialogShell>
 }
 
-function FolderDialog() {
+export function FolderDialog() {
   useLocale()
   const open = useAppStore(state => state.modals.folder)
   const sessions = useAppStore(state => state.sessions)
   const folderOrder = useAppStore(state => state.folderOrder)
+  const sharedFolderOrder = useAppStore(state => state.sharedFolderOrder)
   const [name, setName] = useState('')
   useEffect(() => { if (open) setName('') }, [open])
   const submit = (event: FormEvent) => {
@@ -1091,7 +1092,8 @@ function FolderDialog() {
       useAppStore.getState().setError(`Folder “${clean}” already exists.`)
       return
     }
-    useAppStore.getState().setFolderOrder([...folderOrder, clean])
+    // A server that keeps the order for every client gets every folder the sidebar shows, the new one last.
+    useAppStore.getState().setFolderOrder([...(sharedFolderOrder ? sidebarFolders(sessions, folderOrder) : folderOrder), clean])
     trackEvent('folder_created')
     useAppStore.getState().setModal('folder', false)
   }
