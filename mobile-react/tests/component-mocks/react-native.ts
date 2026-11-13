@@ -10,6 +10,7 @@ export const ScrollView = 'ScrollView'
 export const RefreshControl = 'RefreshControl'
 export const Switch = 'Switch'
 export const ActivityIndicator = 'ActivityIndicator'
+export const KeyboardAvoidingView = 'KeyboardAvoidingView'
 export const Image = 'Image'
 export const TouchableOpacity = 'TouchableOpacity'
 

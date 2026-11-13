@@ -1592,6 +1592,36 @@ try {
   negotiated.dispose()
   globalThis.fetch = fetchBeforeNegotiation
 
+  // The chat-row stream offers v2 first, which adds the server's folder order after each change; a server without it
+  // accepts v1 from the same offer.
+  globalThis.fetch = (() => Promise.resolve(new Response(JSON.stringify({
+    ok: true, server_identity: 'srv-summary', api_contract_version: 9,
+    capabilities: { websocket_auth_v1: { available: true }, session_summary_events_v1: { available: true } },
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } }))) as typeof fetch
+  FakeWebSocket.instances = []
+  const summaries = new AgentServerClient('https://summary.example', 'summary-token')
+  await summaries.health()
+  const pushedRows: string[] = []
+  const pushedOrders: unknown[] = []
+  summaries.sessionSummaryStream({ onSession: row => { pushedRows.push(row.id) }, onFolderOrder: packet => { pushedOrders.push(packet) }, onOpen: () => undefined })
+  const summarySocket = FakeWebSocket.instances[0]
+  assert(
+    JSON.stringify(summarySocket?.protocols) === JSON.stringify(['agentsdock-session-summaries-v2', 'agentsdock-session-summaries-v1', `agentsdock-token.${Buffer.from('summary-token').toString('base64url')}`]),
+    `The summary stream offers v2, then v1, then the token, got ${JSON.stringify(summarySocket?.protocols)}`,
+  )
+  summarySocket.emitOpen()
+  const folderOrder = { type: 'folder_order', server_identity: 'srv-summary', order: ['Lab', 'General'], revision: 101 }
+  for (const packet of [
+    folderOrder,
+    { ...folderOrder, order: ['Lab', 7], revision: 102 },
+    { ...folderOrder, revision: '103' },
+    { type: 'session_summary', server_identity: 'srv-summary', session: { id: 'chat-1' } },
+  ]) summarySocket.onmessage?.({ data: JSON.stringify(packet) })
+  assert(JSON.stringify(pushedOrders) === JSON.stringify([folderOrder]), `Only a well-formed folder_order packet reaches onFolderOrder, got ${JSON.stringify(pushedOrders)}`)
+  assert(pushedRows.join() === 'chat-1', 'Chat rows still reach onSession on v2')
+  summaries.dispose()
+  globalThis.fetch = fetchBeforeNegotiation
+
 } finally {
   globalThis.WebSocket = originalWebSocket
 }

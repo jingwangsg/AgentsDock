@@ -1,4 +1,4 @@
-import type { Session } from '../types'
+import type { Health, Session, Surface } from '../types'
 import { fuzzyScore } from './fuzzy'
 
 export interface SessionSection {
@@ -40,11 +40,16 @@ export function unreadCount(sessions: readonly Session[]): number {
   return sessions.filter(session => !session.archived && !isHiddenRunChat(session, null) && (session.manual_unread || (session.latest_agent_event_seq ?? 0) > (session.last_read_agent_event_seq ?? 0))).length
 }
 
+/**
+ * `tabFolders` are the folders terminal and browser tabs are filed under: one holding no chat is listed after the
+ * chat folders unless the order places it.
+ */
 export function orderedSessionSections(
   sessions: Session[],
   folderOrder: string[],
   includeArchived = true,
   includeEmptyFolders = false,
+  tabFolders: readonly string[] = [],
 ): SessionSection[] {
   const groups = new Map<string, Session[]>()
   for (const folder of folderOrder) groups.set(folder, [])
@@ -53,11 +58,13 @@ export function orderedSessionSections(
     const folder = sessionSection(session)
     groups.set(folder, [...(groups.get(folder) ?? []), session])
   }
-  // Map insertion order is folderOrder first, then session folders as first
-  // seen, so the unlisted tail is already in display order.
+  // As on the desktop, so both list a server's folders alike: folders the order does not list follow it
+  // alphabetically, then folders holding only tabs in the desktop's plain sort order.
   const remaining = [...groups.keys()]
     .filter(folder => !['Pinned', 'Archived'].includes(folder) && !folderOrder.includes(folder))
-  const orderedFolders = ['Pinned', ...folderOrder, ...remaining, ...(includeArchived ? ['Archived'] : [])]
+    .sort((a, b) => a.localeCompare(b))
+  const tabs = new Set(tabFolders)
+  const orderedFolders = ['Pinned', ...folderOrder, ...remaining, ...[...tabs].sort(), ...(includeArchived ? ['Archived'] : [])]
     .filter((folder, index, values) => values.indexOf(folder) === index && (
       (groups.get(folder)?.length ?? 0) > 0
       // A folder created in the mobile sidebar exists before any chat is
@@ -65,8 +72,23 @@ export function orderedSessionSections(
       // Keep every folderOrder entry visible so Create Folder never appears
       // to succeed and then lose the folder.
       || (includeEmptyFolders && !['Pinned', 'Archived'].includes(folder) && folderOrder.includes(folder))
+      || tabs.has(folder)
     ))
   return orderedFolders.map(folder => ({ id: folder, title: folder, sessions: [...(groups.get(folder) ?? [])].sort(compareSessions) }))
+}
+
+/**
+ * The folders the unfiltered sidebar lists, in display order, without Pinned: what Move Folder Up/Down, Create,
+ * Rename and Delete Folder act on, and what a server that keeps the order (folder_order_v1) is sent.
+ */
+export function sidebarFolderOrder(sessions: Session[], folderOrder: string[], surfaces: readonly Pick<Surface, 'folder'>[]): string[] {
+  return orderedSessionSections(sessions, folderOrder, false, true, surfaces.map(surface => surface.folder))
+    .map(section => section.id).filter(folder => folder !== 'Pinned')
+}
+
+/** The server keeps one chat-list folder order that every device shows; an older server leaves each app its own. */
+export function sharesFolderOrder(health: Health | null | undefined): boolean {
+  return health?.capabilities?.folder_order_v1?.available === true
 }
 
 export type SidebarDropRow = { kind: 'header'; folder: string } | { kind: 'session'; session: Session }
