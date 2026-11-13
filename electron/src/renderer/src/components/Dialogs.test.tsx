@@ -107,11 +107,11 @@ describe('FolderDialog', () => {
   })
 
   it.each([
-    // A server that keeps the order for every client gets every folder the sidebar shows, General included.
+    // The shared folder order gets the sidebar's folder list, General included.
     [true, ['Research', 'General', 'Ideas']],
     // This device's own order appends to the stored list, as it always did.
     [false, ['Research', 'Ideas']]
-  ])('adds a new folder after the others (server keeps the order: %s)', async (shared, saved) => {
+  ])('adds a new folder after the others (shared folder order: %s)', async (shared, saved) => {
     const setOrder = vi.fn().mockResolvedValue(undefined)
     const setScoped = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(window, 'agentsDock', { configurable: true, value: { folders: { setOrder }, preferences: { setScoped } } as unknown as AgentsDockAPI })

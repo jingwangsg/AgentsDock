@@ -1092,7 +1092,7 @@ export function FolderDialog() {
       useAppStore.getState().setError(`Folder “${clean}” already exists.`)
       return
     }
-    // A server that keeps the order for every client gets every folder the sidebar shows, the new one last.
+    // The shared folder order gets the sidebar's folder list (without tab-only folders it does not list), the new one last.
     useAppStore.getState().setFolderOrder([...(sharedFolderOrder ? sidebarFolders(sessions, folderOrder) : folderOrder), clean])
     trackEvent('folder_created')
     useAppStore.getState().setModal('folder', false)

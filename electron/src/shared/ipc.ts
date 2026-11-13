@@ -457,9 +457,10 @@ export interface AgentsDockAPI {
     update(surfaceId: string, patch: UpdateSurfaceInput): Promise<Surface>
     remove(surfaceId: string): Promise<void>
   }
-  /** The chat list's folder order on a server that keeps one for every client (folder_order_v1). */
+  /** The shared folder order, on a server that keeps one (folder_order_v1). */
   folders: {
-    /** Sends every folder the sidebar shows, in order; the order the server keeps arrives as `server:folder-order`. */
+    /** Sends the sidebar's folder list, without tab-only folders the order does not list; the shared folder order
+     *  the server then keeps arrives as `server:folder-order`. */
     setOrder(scope: WorkspaceProfileScope, order: string[]): Promise<void>
   }
   providerCommands: {

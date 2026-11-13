@@ -4368,7 +4368,7 @@ describe('AgentServerClient emergency contact bridge', () => {
     stopOther()
   })
 
-  it('takes folder order pushes on a v2 stream and keeps an older server\'s v1 stream to chat rows', () => {
+  it('takes shared folder order pushes on a v2 stream, and an older server\'s v1 stream still brings chat rows', () => {
     vi.stubGlobal('WebSocket', FakeWebSocket)
     const row: Session = { id: 'bg', title: 'Background', backend: 'claude' }
     const connect = (accepted: string) => {
@@ -4394,25 +4394,22 @@ describe('AgentServerClient emergency contact bridge', () => {
     expect(v2.orders).toEqual([[['Lab', 'General'], 101], [[], 102]])
     expect(v2.sessions).toEqual([row])
     expect(v2.socket.closed).toBe(false)
-    // A folder order from another server, or one that is not a list of names, still closes the stream.
+    // A folder order that is not a list of names closes the stream.
     v2.socket.emit('message', JSON.stringify({ type: 'folder_order', server_identity: 'server-expected', order: ['Lab', 7], revision: 103 }))
     expect(v2.states.at(-1)).toEqual({ connected: false, error: 'Session summary stream sent an invalid update' })
     expect(v2.socket.closed).toBe(true)
     expect(v2.orders).toHaveLength(2)
     v2.stop()
 
-    // An older server accepts v1 and sends chat rows only; a folder packet there is still an unknown update.
+    // An older server accepts v1 and sends chat rows only.
     const v1 = connect('agentsdock-session-summaries-v1')
     v1.socket.emit('message', JSON.stringify({ type: 'session_summary', server_identity: 'server-expected', session: row }))
     expect(v1.sessions).toEqual([row])
-    v1.socket.emit('message', JSON.stringify({ type: 'folder_order', server_identity: 'server-expected', order: ['Lab'], revision: 9 }))
-    expect(v1.orders).toEqual([])
-    expect(v1.states.at(-1)).toEqual({ connected: false, error: 'Session summary stream sent an invalid update' })
-    expect(v1.socket.closed).toBe(true)
+    expect(v1.socket.closed).toBe(false)
     v1.stop()
   })
 
-  it('reads and replaces the server folder order, refusing a reply that is not one', async () => {
+  it('reads and replaces the shared folder order, refusing a reply that is not one', async () => {
     const calls: Array<{ url: string; init: RequestInit }> = []
     const replies = [{ order: null, revision: 100 }, { order: ['Lab', 'General'], revision: 101 }, { order: 'Lab', revision: 102 }]
     vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {

@@ -211,7 +211,8 @@ const EMERGENCY_STREAM_MAX_PACKET_CHARS = 8 * 1024 * 1024
 const EMERGENCY_STREAM_MAX_SESSIONS = 10_000
 const EMERGENCY_STREAM_PROTOCOL = 'agentsdock-emergency-v1'
 const SESSION_SUMMARY_STREAM_PROTOCOL = 'agentsdock-session-summaries-v1'
-// v1 plus folder_order packets (folder_order_v1). An older server accepts only v1 and sends chat rows alone.
+// v1 plus folder_order packets carrying the shared folder order (folder_order_v1). An older server accepts only
+// v1 and sends chat rows alone.
 const SESSION_SUMMARY_STREAM_PROTOCOL_V2 = 'agentsdock-session-summaries-v2'
 const SESSION_SUMMARY_STREAM_MAX_PACKET_CHARS = 256 * 1024
 const EVENTS_STREAM_PROTOCOL = 'agentsdock-events-v1'
@@ -1008,7 +1009,7 @@ export class AgentServerClient {
     if (!isFolderOrder(reply)) throw new Error('The server sent an invalid folder order.')
     return reply
   }
-  /** Replaces the whole order; the server trims names and drops blank and repeated ones. */
+  /** Replaces the whole shared folder order; the server trims names and drops blank and repeated ones. */
   async putFolderOrder(order: string[]): Promise<FolderOrder> {
     const reply = await this.put<unknown>('/api/folders/order', { order })
     if (!isFolderOrder(reply)) throw new Error('The server sent an invalid folder order.')
@@ -2596,7 +2597,7 @@ export class AgentServerClient {
 
   /** Live chat list rows for chats without an open timeline: a turn starting or
    *  ending, a provider waiting for the user. The list poll stays as the fallback.
-   *  A server that accepts v2 also pushes its folder order whenever it changes. */
+   *  A server that accepts v2 also pushes the shared folder order. */
   sessionSummaryStream(
     expectedServerIdentity: string,
     onSession: (session: Session) => void,
@@ -2641,9 +2642,8 @@ export class AgentServerClient {
             return
           }
           if (packet.type === 'session_summary' && isSessionSummaryPacket(packet.session)) onSession(packet.session)
-          else if (packet.type === 'folder_order' && socket.protocol === SESSION_SUMMARY_STREAM_PROTOCOL_V2 && isFolderOrder(packet) && packet.order) {
-            onFolderOrder(packet.order, packet.revision)
-          } else rejectPacket('Session summary stream sent an invalid update')
+          else if (packet.type === 'folder_order' && isFolderOrder(packet) && packet.order) onFolderOrder(packet.order, packet.revision)
+          else rejectPacket('Session summary stream sent an invalid update')
         } catch {
           rejectPacket('Session summary stream sent malformed JSON')
         }

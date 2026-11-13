@@ -246,7 +246,7 @@ describe('sidebar chat rename', () => {
     expect(useAppStore.getState().folderOrder).toEqual(['Beta', 'Zeta', 'Alpha'])
   })
 
-  it('sends a moved folder to a server that keeps the order, as every folder the sidebar shows', async () => {
+  it('sends a moved folder to the shared folder order as the sidebar\'s folder list', async () => {
     const setOrder = vi.fn().mockResolvedValue(undefined)
     const preferences = { get: vi.fn().mockResolvedValue(0), set: vi.fn().mockResolvedValue(undefined), setScoped: vi.fn().mockResolvedValue(undefined) }
     Object.defineProperty(window, 'agentsDock', { configurable: true, value: { preferences, folders: { setOrder } } as unknown as AgentsDockAPI })
