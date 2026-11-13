@@ -1,6 +1,6 @@
 """The chat list, a chat's subagents and its files list: gzipped for a client that accepts it, and an empty 304 for
-a client whose cached copy is still current; health and the other JSON reads clients repeat are gzipped only.
-Decoded, every 200 is the same bytes as before."""
+a client whose cached copy is still current; health and eight more JSON reads are gzipped but never revalidated.
+A body gzip cannot make smaller stays plain. Decoded, every 200 is the same bytes as before."""
 
 import gzip
 import json
@@ -76,12 +76,12 @@ class ListRevalidationTests(unittest.TestCase):
         self.assertNotIn("content-encoding", headers)
         self.assertTrue(json.loads(plain)["ok"])
 
-    def test_the_other_repeated_json_reads_are_gzipped_and_a_body_gzip_cannot_shrink_stays_plain(self):
-        # 2026-11-13: these went out plain; the jobs list was 22 KB on every poll and a deploy's log 12.6 KB every few seconds.
+    def test_eight_more_json_reads_are_gzipped_but_never_revalidated(self):
+        # 2026-11-13: these went out plain; the jobs list was 22 KB on every read and a deploy's status 12.6 KB every few seconds.
         rows = [{"id": f"row-{index}", "name": f"entry {index}", "detail": "state " * 20} for index in range(30)]
-        job = Mock(server=None)
-        job.view.return_value = {"log": rows}
-        for name, value in (("public_job", lambda job: job), ("discover_runtime_catalog", lambda **_: {"backends": rows}),
+        deploy_job = Mock(server=None)
+        deploy_job.view.return_value = {"log": rows}
+        for name, value in (("public_job", lambda row: row), ("discover_runtime_catalog", lambda **_: {"backends": rows}),
                             ("build_timeline_index", lambda session_id: {"rows": rows}),
                             ("claude_runtime_snapshot", AsyncMock(return_value={"runtime": rows})),
                             ("codex_runtime_snapshot", AsyncMock(return_value={"runtime": rows})),
@@ -89,19 +89,19 @@ class ListRevalidationTests(unittest.TestCase):
             self.enterContext(patch.object(server, name, value))
         self.enterContext(patch.dict(server.JOBS.jobs, {row["id"]: row for row in rows}, clear=True))
         self.enterContext(patch.object(server.REMOTE_SERVERS, "list", lambda: rows))
-        self.enterContext(patch.object(server.REMOTE_SERVERS, "job", lambda job_id: job))
-        paths = [(path, AUTH) for path in ("/api/jobs", "/api/runtime/catalog", "/api/working-directories/complete?path=/w",
+        self.enterContext(patch.object(server.REMOTE_SERVERS, "job", lambda job_id: deploy_job))
+        reads = [(path, AUTH) for path in ("/api/jobs", "/api/runtime/catalog", "/api/working-directories/complete?path=/w",
                                            f"/api/sessions/{SESSION}/timeline-index", f"/api/sessions/{SESSION}/claude/runtime",
                                            f"/api/sessions/{SESSION}/codex/runtime")]
-        # The hub's admin routes take the native header, and no Authorization header beside it.
-        paths += [(path, {"X-AgentsDock-Token": "test-secret"})
+        reads += [(path, {"X-AgentsDock-Token": "test-secret"})
                   for path in ("/api/admin/remote-servers", "/api/admin/remote-servers/deploy/0123456789abcdef")]
 
+        # raw() always sends the bearer header, which the hub's admin routes refuse beside the native one.
         def fetch(path: str, auth: dict[str, str], encoding: str):
             with self.client.stream("GET", path, headers={**auth, "Accept-Encoding": encoding}) as response:
                 return response.status_code, response.headers, b"".join(response.iter_raw())
 
-        for path, auth in paths:
+        for path, auth in reads:
             with self.subTest(path=path):
                 status, headers, plain = fetch(path, auth, "identity")
                 self.assertEqual(status, 200)
@@ -117,12 +117,22 @@ class ListRevalidationTests(unittest.TestCase):
                 self.assertEqual(gzip.decompress(packed), plain)
                 self.assertLess(len(packed), len(plain) / 2)
 
-        # The gzip frame is about 20 bytes: a remote without scheduled jobs answers 11 bytes, which would grow to 31.
-        server.JOBS.jobs.clear()
+    def test_a_body_gzip_cannot_make_smaller_stays_plain(self):
+        # gzip's header and trailer are 20 bytes: a server without scheduled jobs answers 11 bytes, which would grow to 31.
+        self.enterContext(patch.dict(server.JOBS.jobs, {}, clear=True))
         status, headers, body = self.raw("/api/jobs", **{"Accept-Encoding": "gzip"})
         self.assertEqual((status, body), (200, b'{"jobs":[]}'))
         self.assertNotIn("content-encoding", headers)
         self.assertEqual(int(headers["content-length"]), len(body))
+
+    def test_compressing_does_not_wait_for_the_default_thread_pool(self):
+        # That pool fills up when a filesystem stalls. The jobs list needs no thread of its own, so with gzip on the
+        # default pool it would answer only when a thread came free.
+        self.enterContext(patch.dict(server.JOBS.jobs, {f"job-{index}": {"id": f"job-{index}", "name": "nightly " * 20} for index in range(30)}, clear=True))
+        self.enterContext(patch.object(server, "public_job", lambda row: row))
+        with patch.object(server.asyncio, "to_thread", side_effect=AssertionError("the default pool was used")):
+            status, headers, _ = self.raw("/api/jobs", **{"Accept-Encoding": "gzip"})
+        self.assertEqual((status, headers["content-encoding"]), (200, "gzip"))
 
     def test_a_change_moves_the_tag(self):
         path = f"/api/sessions/{SESSION}/subagents?limit=64"
