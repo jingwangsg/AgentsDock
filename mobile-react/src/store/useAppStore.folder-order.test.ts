@@ -5,9 +5,9 @@ import { loadWorkspacePreferences } from '../storage/cache'
 import type { Health, PublicServerProfile, Session, Surface } from '../types'
 import { client, useAppStore } from './useAppStore'
 
-// A server with folder_order_v1 keeps one chat-list folder order for every device: the app shows it, sends its own
-// changes, and follows another device's from a pushed packet or, when the socket dropped, the health revision. An older
-// server leaves the app its own order, as before. The cases run in order on one store.
+// A server with folder_order_v1 keeps a shared folder order that every device shows: the app shows it, sends its
+// own changes, and follows another device's from a pushed packet or, when the socket dropped, the health revision.
+// With an older server each device keeps its own order, as before. The cases run in order on one store.
 
 const timestamp = '2026-11-13T00:00:00.000Z'
 const chat = (id: string, folder: string): Session => ({
@@ -65,7 +65,7 @@ useAppStore.setState({
   error: null,
 })
 
-await test('an older server leaves the order to this app: folders seen in chats join it, and nothing is read or sent', async () => {
+await test('an older server leaves the order to this device: folders seen in chats join it, and nothing is read or sent', async () => {
   assert.deepEqual(state().folderOrder, ['Work', 'Zeta', 'General'])
   assert.equal(await state().setFolderOrder(['General', 'Work', 'Zeta']), true)
   assert.deepEqual(state().folderOrder, ['General', 'Work', 'Zeta'])
@@ -76,34 +76,64 @@ await test('an older server leaves the order to this app: folders seen in chats 
   assert.deepEqual(requests, [])
 })
 
-await test('a server without an order yet takes this app\'s, as its sidebar shows it', async () => {
-  // The stored order, then the chat folders it lacks alphabetically, then folders holding only tabs.
-  health = { ...olderServer, capabilities: sharedOrder, folder_order_revision: 100 }
-  useAppStore.setState({ health, sessions: chats, folderOrder: ['Work'] })
+await test('before the first read of the shared folder order, a change stays on this device and the first read replaces it', async () => {
+  kept = { order: ['Zeta', 'General', 'Work'], revision: 90 }
+  health = { ...olderServer, capabilities: sharedOrder, folder_order_revision: 90 }
+  useAppStore.setState({ health, sessions: chats, folderOrder: ['Work', 'General', 'Zeta'], folderOrderRevision: null })
+  assert.equal(await state().setFolderOrder(['General', 'Work', 'Zeta']), true)
+  assert.deepEqual(state().folderOrder, ['General', 'Work', 'Zeta'])
+  assert.deepEqual(requests, [], 'nothing is sent before the first read')
   await state().refreshSessions()
   await settle()
-  assert.deepEqual(requests, [['GET'], ['PUT', ['Work', 'General', 'Zeta', 'Tabs']]])
-  assert.deepEqual(state().folderOrder, ['Work', 'General', 'Zeta', 'Tabs'])
-  assert.equal(state().folderOrderRevision, 101)
-  assert.deepEqual(await savedOrder(), ['Work', 'General', 'Zeta', 'Tabs'])
+  assert.deepEqual(requests, [['GET']])
+  assert.deepEqual(state().folderOrder, ['Zeta', 'General', 'Work'])
+  assert.equal(state().folderOrderRevision, 90)
 })
 
-await test('at connect the server\'s order replaces the cached one as it is, and is saved for the next cold start', async () => {
+await test('when the chat list fails to load at connect, nothing is read or sent', async () => {
+  // A server without a shared folder order would otherwise take an order built from no chats.
+  kept = { order: null, revision: 100 }
+  health = { ...health, folder_order_revision: 100 }
+  const listChats = client.sessions
+  client.sessions = async () => { throw new Error('The chat list could not be loaded.') }
+  useAppStore.setState({ connected: false, sessions: [], folderOrder: [], folderOrderRevision: null })
+  const sent = requests.length
+  await state().reconnect()
+  await settle()
+  client.sessions = listChats
+  assert.equal(state().connected, true)
+  assert.deepEqual(requests.slice(sent), [])
+  useAppStore.setState({ error: null })
+})
+
+await test('a server without an order yet takes this device\'s own order, as its sidebar shows it', async () => {
+  // The stored order, then the chat folders it lacks alphabetically; a folder holding only tabs stays out.
+  useAppStore.setState({ sessions: chats, folderOrder: ['Work'] })
+  const sent = requests.length
+  await state().refreshSessions()
+  await settle()
+  assert.deepEqual(requests.slice(sent), [['GET'], ['PUT', ['Work', 'General', 'Zeta']]])
+  assert.deepEqual(state().folderOrder, ['Work', 'General', 'Zeta'])
+  assert.equal(state().folderOrderRevision, 101)
+  assert.deepEqual(await savedOrder(), ['Work', 'General', 'Zeta'])
+})
+
+await test('at connect the shared folder order replaces the cached one as it is, and is saved for the next cold start', async () => {
   // Launch, a server switch and an identity adoption all connect with no revision shown.
   kept = { order: ['Zeta', 'Work'], revision: 150 }
   health = { ...health, folder_order_revision: 150 }
-  const read = requests.length
+  const sent = requests.length
   useAppStore.setState({ connected: false, folderOrderRevision: null })
   await state().reconnect()
   await settle()
   assert.equal(state().connected, true)
-  assert.deepEqual(requests.slice(read), [['GET']])
-  assert.deepEqual(state().folderOrder, ['Zeta', 'Work'], 'folders seen in chats are not added to the server\'s order')
+  assert.deepEqual(requests.slice(sent), [['GET']])
+  assert.deepEqual(state().folderOrder, ['Zeta', 'Work'], 'folders seen in chats are not added to the shared folder order')
   assert.equal(state().folderOrderRevision, 150)
   assert.deepEqual(await savedOrder(), ['Zeta', 'Work'])
 })
 
-await test('a change shows at once, is sent whole and the answer kept; a refused one reports why and leaves the server\'s order', async () => {
+await test('a change shows at once, is sent whole and the answer kept; a refused one reports why and is put back', async () => {
   const reordering = state().setFolderOrder(['Work', 'General', 'Zeta'])
   assert.deepEqual(state().folderOrder, ['Work', 'General', 'Zeta'], 'the change shows before the server answers')
   assert.equal(await reordering, true)
@@ -130,7 +160,7 @@ await test('another device\'s change arrives on the summary stream; an older rev
   assert.deepEqual(await savedOrder(), ['General', 'Work', 'Zeta'])
 })
 
-await test('the server, not this app, adds a chat\'s new folder to the order', async () => {
+await test('the server, not this device, adds a chat\'s new folder to the shared folder order', async () => {
   const sent = requests.length
   useAppStore.setState({ sessions: [...state().sessions, chat('lab', 'Lab')] })
   await settle()
@@ -141,14 +171,14 @@ await test('the server, not this app, adds a chat\'s new folder to the order', a
 await test('a change a dropped socket missed shows at the next chat-list refresh, read only when the health revision moved', async () => {
   kept = { order: ['Lab', 'General', 'Work', 'Zeta'], revision: 180 }
   health = { ...health, folder_order_revision: 180 }
-  const read = requests.length
+  const sent = requests.length
   await state().refreshSessions()
   await settle()
-  assert.deepEqual(requests.slice(read), [['GET']])
+  assert.deepEqual(requests.slice(sent), [['GET']])
   assert.deepEqual(state().folderOrder, ['Lab', 'General', 'Work', 'Zeta'])
   await state().refreshSessions()
   await settle()
-  assert.equal(requests.length, read + 1)
+  assert.equal(requests.length, sent + 1)
 })
 
 await test('after a server switch the next server\'s order is taken whatever its revision', async () => {

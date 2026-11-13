@@ -822,7 +822,7 @@ interface AppState {
   uploadFailed: Record<string, FailedUpload[]>
   pins: PinnedItem[]
   folderOrder: string[]
-  /** The revision of the server's order that `folderOrder` shows (folder_order_v1); null until one is read. */
+  /** The revision of the shared folder order (folder_order_v1) that `folderOrder` shows; null before the first read and with an older server. */
   folderOrderRevision: number | null
   collapsedFolders: string[]
   chatDefaults: ChatDefaults
@@ -940,7 +940,7 @@ interface AppState {
   markRead(sessionId: string, expectedGeneration?: number): Promise<void>
   markUnread(sessionId: string, expectedGeneration?: number): Promise<void>
   acknowledgeEmergency(sessionId: string, alertId: string, expectedGeneration?: number): Promise<boolean>
-  /** On a server that keeps the order, shown at once, then sent; resolves false when it was refused or could not be sent. */
+  /** Changes this device's own order or, once the shared folder order has been read, shows the change and sends it; resolves false when it was refused or could not be sent. */
   setFolderOrder(order: string[], expectedGeneration?: number): Promise<boolean>
   setCollapsedFolders(folders: string[], expectedGeneration?: number): void
   setFontScale(value: number): void
@@ -1611,7 +1611,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     void updateBadge(get())
     // Read tabs now rather than at the next chat-list poll, a minute away.
     if (health.surfaces_revision !== undefined) void get().refreshSurfaces(scope.generation)
-    void syncFolderOrder(scope, health)
+    // Only with the chat list loaded: a server without a shared folder order takes this device's, built from the chats' folders.
+    if (sessionsResult.status === 'fulfilled') void syncFolderOrder(scope, health)
     const saves: Promise<void>[] = [saveCurrentWorkspace(get)]
     if (sessionsResult.status === 'fulfilled') saves.push(saveCachedSessions(scope.namespace, sessions))
     void Promise.all(saves).catch(error => { if (connectionIsCurrent(scope)) set({ error: errorMessage(error) }) })
@@ -3699,22 +3700,23 @@ export const useAppStore = create<AppState>((set, get) => ({
   async setFolderOrder(order, expectedGeneration) {
     if (captureConnection().namespaceAdopting) return false
     if (expectedGeneration !== undefined && expectedGeneration !== get().profileGeneration) return false
-    if (!sharesFolderOrder(get().health)) {
+    // This device's own order; also before the first read of the shared folder order, which then replaces it.
+    if (!sharesFolderOrder(get().health) || get().folderOrderRevision === null) {
       set({ folderOrder: order })
       void saveCurrentWorkspace(get)
       return true
     }
-    // Every device shows the server's order: the change shows at once, then the order the server keeps.
+    // Every device shows the shared folder order: the change shows at once, then the order the server keeps.
     const scope = validatedConnectionOrReport(get, set, expectedGeneration)
     if (!scope) return false
     const { folderOrder: previous, folderOrderRevision: revision } = get()
     set({ folderOrder: order })
     try {
-      applyServerFolderOrder(scope, await scope.client.putFolderOrder(order))
+      adoptFolderOrder(scope, await scope.client.putFolderOrder(order))
       return true
     } catch (error) {
       if (isStaleConnectionError(error, scope)) return false
-      // The server's last order stays, unless a newer one arrived meanwhile.
+      // Put back the order shown before the change, unless a newer shared folder order arrived meanwhile.
       set(state => ({ error: errorMessage(error), ...(state.folderOrderRevision === revision ? { folderOrder: previous } : {}) }))
       return false
     }
@@ -5103,7 +5105,7 @@ function newestChatInFolder(sessions: readonly Session[], folder: string): Sessi
 // or deleting a folder's last chat leaves the folder in place until Delete folder.
 useAppStore.subscribe((state, previous) => {
   if (state.sessions === previous.sessions || state.workspaceAdopting || state.switchingProfileId) return
-  // A server that keeps the order adds a chat's new folder to it itself and pushes the result.
+  // The server adds a chat's new folder to the shared folder order itself and pushes the result.
   if (sharesFolderOrder(state.health)) return
   const remembered = rememberedFolderOrder(state.folderOrder, state.sessions)
   if (remembered !== state.folderOrder) void state.setFolderOrder(remembered, state.profileGeneration)
@@ -5960,7 +5962,7 @@ function startSessionSummaryStream(): void {
       opened = true
     },
     onSession: incoming => applyPushedSessionSummary(scope, incoming),
-    onFolderOrder: pushed => { if (pushed.server_identity === get().health?.server_identity) applyServerFolderOrder(scope, pushed) },
+    onFolderOrder: pushed => { if (pushed.server_identity === get().health?.server_identity) adoptFolderOrder(scope, pushed) },
   })
 }
 
@@ -6002,8 +6004,8 @@ function applyPushedSessionSummary(scope: ConnectionScope, incoming: Session): v
   void updateBadge(get())
 }
 
-/** Shows the server's folder order if it is newer than the one shown; the workspace keeps it for the next cold start. */
-function applyServerFolderOrder(scope: ConnectionScope, { order, revision }: FolderOrder): void {
+/** Shows the shared folder order if it is newer than the one shown; the workspace keeps it for the next cold start. */
+function adoptFolderOrder(scope: ConnectionScope, { order, revision }: FolderOrder): void {
   const shown = useAppStore.getState().folderOrderRevision
   if (!connectionIsCurrent(scope) || scope.namespaceAdopting || (shown !== null && revision <= shown)) return
   useAppStore.setState({ folderOrder: order, folderOrderRevision: revision })
@@ -6011,9 +6013,9 @@ function applyServerFolderOrder(scope: ConnectionScope, { order, revision }: Fol
 }
 
 /**
- * Reads the server's folder order when its revision differs from the one shown: at connect, where none is shown yet,
- * and at each chat-list refresh, for a change a dropped summary socket missed. Until a device sends its order the
- * server has none; this app's, as its sidebar shows it, then becomes every device's.
+ * Reads the shared folder order when its revision differs from the one shown: at connect, where none is shown yet,
+ * and at each chat-list refresh, for a change a dropped summary socket missed. Until a device sends one the server
+ * has none; this device's own order, as its sidebar shows it, then becomes the shared folder order.
  */
 async function syncFolderOrder(scope: ConnectionScope, health: Health): Promise<void> {
   const get = useAppStore.getState
@@ -6021,9 +6023,9 @@ async function syncFolderOrder(scope: ConnectionScope, health: Health): Promise<
   try {
     const kept = await scope.client.folderOrder()
     if (!connectionIsCurrent(scope) || scope.namespaceAdopting) return
-    const { sessions, folderOrder, surfaces } = get()
-    applyServerFolderOrder(scope, kept.order === null
-      ? await scope.client.putFolderOrder(sidebarFolderOrder(sessions, folderOrder, surfaces))
+    const { sessions, folderOrder } = get()
+    adoptFolderOrder(scope, kept.order === null
+      ? await scope.client.putFolderOrder(sidebarFolderOrder(sessions, folderOrder))
       : { order: kept.order, revision: kept.revision })
   } catch { /* the next chat-list refresh reads it again */ }
 }

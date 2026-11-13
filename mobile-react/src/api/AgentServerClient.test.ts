@@ -1592,7 +1592,7 @@ try {
   negotiated.dispose()
   globalThis.fetch = fetchBeforeNegotiation
 
-  // The chat-row stream offers v2 first, which adds the server's folder order after each change; a server without it
+  // The chat-row stream offers v2 first, which adds the shared folder order after each change; a server without it
   // accepts v1 from the same offer.
   globalThis.fetch = (() => Promise.resolve(new Response(JSON.stringify({
     ok: true, server_identity: 'srv-summary', api_contract_version: 9,

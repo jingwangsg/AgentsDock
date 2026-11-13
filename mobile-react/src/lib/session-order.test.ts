@@ -64,11 +64,21 @@ test('a folder holding only tabs keeps its place in folderOrder, else follows th
     orderedSessionSections(sessions, ['Ops', 'Work'], true, true, tabFolders).map(section => [section.id, section.sessions.length]),
     [['Ops', 0], ['Work', 1], ['Zeta', 1], ['Beta', 0], ['Lab', 0], ['Archived', 1]],
   )
-  // What folder actions act on and the server is sent: the same folders, without Pinned and Archived.
-  assert.deepEqual(
-    sidebarFolderOrder([{ ...session('p', 'Work'), pinned: true }, ...sessions], ['Ops', 'Work'], tabFolders.map(folder => ({ folder }))),
-    ['Ops', 'Work', 'Zeta', 'Beta', 'Lab'],
-  )
+  // What folder actions act on and the shared folder order is replaced with: Pinned, Archived and the folders holding
+  // only tabs that the order does not list are left out.
+  assert.deepEqual(sidebarFolderOrder([{ ...session('p', 'Work'), pinned: true }, ...sessions], ['Ops', 'Work']), ['Ops', 'Work', 'Zeta'])
+})
+
+test('with a shared folder order, a dropped folder order leaves out folders holding only tabs it does not list', () => {
+  const sessions = [session('w1', 'Work'), session('a')]
+  const folders = ['Work', 'General']
+  // As the sidebar draws it: Tabs holds only tabs, so it follows the chat folders.
+  const rows: SidebarDropRow[] = [...rowsOf(sessions, folders), { kind: 'header', folder: 'Tabs' }]
+  // General dragged above Work: this device's own order takes Tabs along, the shared folder order does not.
+  assert.deepEqual(resolveSidebarDrop(dropped(rows, 2, 0), 0, sessions, folders), { kind: 'folder-order', order: ['General', 'Work', 'Tabs'] })
+  assert.deepEqual(resolveSidebarDrop(dropped(rows, 2, 0), 0, sessions, folders, true), { kind: 'folder-order', order: ['General', 'Work'] })
+  // Dragging Tabs itself changes nothing in the shared folder order.
+  assert.equal(resolveSidebarDrop(dropped(rows, 4, 0), 0, sessions, folders, true), null)
 })
 
 test('only a server advertising folder_order_v1 keeps the folder order', () => {

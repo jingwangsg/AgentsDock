@@ -1,4 +1,4 @@
-import type { Health, Session, Surface } from '../types'
+import type { Health, Session } from '../types'
 import { fuzzyScore } from './fuzzy'
 
 export interface SessionSection {
@@ -42,7 +42,7 @@ export function unreadCount(sessions: readonly Session[]): number {
 
 /**
  * `tabFolders` are the folders terminal and browser tabs are filed under: one holding no chat is listed after the
- * chat folders unless the order places it.
+ * chat folders unless `folderOrder` places it.
  */
 export function orderedSessionSections(
   sessions: Session[],
@@ -78,15 +78,14 @@ export function orderedSessionSections(
 }
 
 /**
- * The folders the unfiltered sidebar lists, in display order, without Pinned: what Move Folder Up/Down, Create,
- * Rename and Delete Folder act on, and what a server that keeps the order (folder_order_v1) is sent.
+ * The folders the unfiltered sidebar lists, in display order, except Pinned and folders holding only tabs that
+ * `folderOrder` does not list: what folder actions act on, and what the shared folder order is replaced with.
  */
-export function sidebarFolderOrder(sessions: Session[], folderOrder: string[], surfaces: readonly Pick<Surface, 'folder'>[]): string[] {
-  return orderedSessionSections(sessions, folderOrder, false, true, surfaces.map(surface => surface.folder))
-    .map(section => section.id).filter(folder => folder !== 'Pinned')
+export function sidebarFolderOrder(sessions: Session[], folderOrder: string[]): string[] {
+  return orderedSessionSections(sessions, folderOrder, false, true).map(section => section.id).filter(folder => folder !== 'Pinned')
 }
 
-/** The server keeps one chat-list folder order that every device shows; an older server leaves each app its own. */
+/** The server keeps a shared folder order that every device shows; with an older server each device keeps its own order. */
 export function sharesFolderOrder(health: Health | null | undefined): boolean {
   return health?.capabilities?.folder_order_v1?.available === true
 }
@@ -105,12 +104,13 @@ type SidebarDrop =
  * it lands under, may move into any folder, but never into Pinned or Archived from
  * outside; folder headers reorder folders only. A pinned chat dropped into a folder
  * is unpinned, like Move to Folder here (the desktop keeps it pinned). null means
- * nothing changes.
+ * nothing changes. With `sharedOrder` the folders dropped leave out those holding only tabs that `folders`
+ * does not list: as on the desktop, the shared folder order never takes them.
  */
-export function resolveSidebarDrop(next: SidebarDropRow[], to: number, sessions: Session[], folders: string[]): SidebarDrop | null {
+export function resolveSidebarDrop(next: SidebarDropRow[], to: number, sessions: Session[], folders: string[], sharedOrder = false): SidebarDrop | null {
   const moved = next[to]
   if (moved.kind === 'header') {
-    const order = next.flatMap(row => row.kind === 'header' && !['Pinned', 'Archived'].includes(row.folder) ? [row.folder] : [])
+    const order = next.flatMap(row => row.kind === 'header' && !['Pinned', 'Archived'].includes(row.folder) && (!sharedOrder || folders.includes(row.folder)) ? [row.folder] : [])
     return order.join('\n') === folders.join('\n') ? null : { kind: 'folder-order', order }
   }
   let index = to - 1
