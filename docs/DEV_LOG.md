@@ -1,5 +1,43 @@
 # Public development log
 
+## 2026-11-13 — Claude chats: another model or effort no longer needs a new process (server)
+
+- In a Claude chat, a message sent after picking another model or reasoning
+  effort was refused while the chat's Claude process still ran a background
+  task: "Claude SDK could not start: N background task(s) are still running on
+  this chat's Claude process; the new model, effort or runtime applies after
+  they finish or after Stop." The server started a new Claude process for a
+  changed model or effort, and it does not replace a process that still tracks
+  background agents or shells, because that would end them.
+- The server now switches the running process to the chat's model and effort
+  before the turn, as Claude Code's `/model` and `/effort` do. The message is
+  answered on the new model, and the process, its conversation and its
+  background tasks stay. A chat without background tasks keeps its process too
+  when the model or effort changes.
+- A message queued during a turn on another model or effort still waits for
+  that turn to end instead of being added to it.
+- If the process cannot switch, a chat without background tasks gets a new
+  process on the chosen model, as before. With background tasks the message is
+  refused and says so.
+- Claude Code records a requested switch in its transcript as a `/model`
+  command. History sync leaves that row out, so the timeline does not gain a
+  "/model opus" message that nobody typed. A `/model` typed in a terminal
+  session of the same conversation is still imported.
+- A changed working directory, permission mode, system prompt or subagent
+  limit still needs a new process and is still refused while background tasks
+  run; the message now names the directory and permission mode.
+
+```text
+Change and expected user behavior: with a background shell or agent running in a Claude chat, picking another model or effort and sending a message gets an answer on that model, and the background task keeps running.
+Source commit / app build / server version: branch fix/claude-live-model-switch; no client build (desktop 143 unchanged); server 1.0.7-beta.11.
+Test surface: two isolated servers on this Mac (main and the branch) with the real Claude CLI 2.1.323; desktop 143 built from source, run offscreen with its own user data against the branch server and driven over CDP; the CLI alone through the Agent SDK for the switch request.
+Actions exercised and observed outcomes: (1) Turn API: a sonnet turn started `sleep` in the background, Stop released the run, then a message on opus. Main: "Claude SDK could not start: 1 background task(s) are still running on this chat's Claude process; the new model, effort or runtime applies after they finish or after Stop." Branch: answered; then fable/xhigh, fable/low (effort only) and the default model, each answered. Claude's transcript shows the answers from sonnet, opus, fable and sonnet in that order, and the shell stayed listed and alive throughout. (2) A message on another model sent while the previous run was still open: it waited, the run was released, the process switched, the message was answered; a following message on the same model was added to the running turn. (3) Desktop, offscreen: sent the background-shell message, pressed Stop, picked Opus in the composer's model menu and sent: answered, "1 running" still in the header, no error row; the same with Fable, and with Sonnet while the previous run was still open. (4) After the switches the timeline lists only the messages sent; without the history change each switch was imported as a "/model opus" message. (5) The CLI alone: the switch request is answered in about 0.1 s, also while the CLI runs a turn of its own; that turn finishes on its model and the next one runs on the new model; a null model and effort equal a start without the flags; an effort-only switch writes no transcript row.
+Real boundaries exercised; any mocked/stubbed boundaries: HTTP turn, Stop, chat settings and background-activity APIs; the Claude CLI through the Agent SDK; the desktop composer, model menu, Stop button, header chip and timeline over the real transport. Mobile was not exercised (server-only change). A process that fails to switch was exercised only with a fake client in unit tests.
+Focused regression / typecheck / production build: supervisor tests (the switch precedes the prompt, no request when nothing changed, a failed switch with and without background tasks), the configuration key and steering admission, history import of the `/model` row, the Claude process environment; all 8 server shards.
+Remaining limitations or blocked acceptance: the hub and remote servers run the previous code until they are updated. Stop pressed in the roughly 0.3 s between the answer text and the end of the turn interrupts the turn and ends its background tasks; this is unchanged and also happens without a model change (seen on main in 1 of 3 tries). A context-usage sample of an idle Claude process that takes longer than 2 s resets that process, also one that still runs background tasks; this is unchanged and happened once during these runs, while two test suites loaded the machine. Other changed settings are still refused while background tasks run, and an idle chat has no control that ends a background shell.
+Availability: source only; the hub and remote servers need a server update.
+```
+
 ## 2026-11-13 — Hub: adding a cluster that lacks the configured home no longer fails (server)
 
 - Adding a server for a SkyPilot cluster on GCP (`oci@<cluster>`) with the
