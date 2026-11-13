@@ -1,5 +1,37 @@
 # Public development log
 
+## 2026-11-13 — Hub: a cluster without a configured home uses your directory on its shared storage; a slow setup step no longer ends the deploy (server)
+
+- Adding a server for a cluster that mounts none of the homes in
+  `AGENTSDOCK_OCI_HOME` or `AGENTSDOCK_OSMO_HOME` failed at `mkdir` until its
+  home was added to the hub's environment.
+- A deploy that keeps the default directory now also searches such a host: on
+  its NFS and Lustre mounts, for a directory named like the first configured
+  home's last path component (normally the user name) that the ssh user can
+  write (`<mount>/<name>` or `<mount>/<dir>/<name>`). It takes the first that
+  already holds the target's install, else the first that holds a Claude or
+  Codex login, else the first. The server runs with that directory as HOME,
+  and the log names the install directory inside it ("<home> does not exist
+  on <host>; installing in <directory>."). A configured home that exists is
+  still taken first, without the search; a directory typed into Add server is
+  the only one tried; a found directory that is already another remote's
+  install is refused.
+- The hub ends a deploy whose host prints nothing for 180 s. A setup step
+  prints nothing while it runs, and when shared storage is slow a silent
+  stretch exceeds that: a deploy into an NFS home ended during the Claude
+  Code install. The host's setup now prints "Setup is still running (N min)"
+  each minute, for an hour at most. The line does not hide a failed step's
+  error. A deploy that lost its host still gets no line and ends as before.
+
+```text
+Change and expected user behavior: Add server with the default directory, for a cluster on a site whose home the hub's environment does not name, installs in the user's directory on that cluster's shared storage. A deploy onto slow storage keeps running and shows a line each minute instead of failing with "No output from the host for 180s."
+Source commit / app build / server version: branch feat/detect-shared-home; server 1.0.7-beta.11 plus the branch; desktop and Android unchanged.
+Test surface: unit tests with the scripted host and with the real probe and setup scripts run locally; the probe run on real clusters; a default deploy from an isolated hub (this branch, its own state and registry) to a real SkyPilot cluster on GCP.
+Actions exercised and observed outcomes: (1) The reported deploy first failed twice on the running hub: at `mkdir` of the missing home, then, with an NFS directory given, at "No output from the host for 180s." during the Claude Code install (the install finished on the host about 170 s after it began). (2) Isolated hub with only the OCI home configured, default directory, same cluster: the log read "<OCI home> does not exist on <host>; installing in <NFS directory>." and "Host: … home <NFS home>", the upload went to that directory, and the setup began. The NFS then took 0.3 s to tens of seconds per file operation: after "Unpacking AgentsServer source" came "Setup is still running (1 min)" to "(4 min)", 228 s without a step line, and the deploy was still running when it was cancelled. (3) The probe on that cluster, whose NFS holds two directories with the user's name: with the search it reports the one that holds the Claude and Codex logins (the deploy in (2) ran before that preference and took the first); without a search candidate, or for a name the host lacks, the first candidate as before. (4) The probe over the hub's route on an OCI cluster whose configured home exists: that home and its install, no search. (5) Unit tests: the search takes NFS and Lustre mounts only, passes over a directory the login cannot write, prefers the install, then the logins; a default deploy uses the found home as HOME and records it; a Redeploy and a typed directory are not searched for; a found directory that another remote lists, or whose path the registry could not load, is refused; the setup prints its line each minute during a silent step, does not hold the session open at its end, still succeeds after its hour of lines, and its line after a step's error output leaves that error as the deploy's. Without the changes these tests fail.
+Real boundaries exercised; any mocked/stubbed boundaries: ssh through Sky's websocket proxy, the probe, the upload and the start of the setup on the real cluster. The apps' Add server form is unchanged and was not driven; the deploy was started through the hub's HTTP route the form uses.
+Focused regression / typecheck / production build: tests/test_remote_servers.py and tests/test_remote_bootstrap_env.py; all 8 server shards.
+Remaining limitations or blocked acceptance: the isolated deploy was cancelled during the setup, because the cluster's NFS was too slow at the time for an install to finish; a deploy onto such storage still takes as long as the storage needs. A setup step that never returns now holds the deploy for up to about an hour instead of three minutes; Cancel ends it. The search needs at least one configured home, whose last path component it searches for. The hub must restart on this version for the search; the setup's line each minute applies from the next deploy.
+Availability: source only until the hub restarts on this version.
 ## 2026-11-13 — Android: the open chat catches up first on return to the app (Android 88)
 
 - On return to the app, it read the server's health, then the chat list, and

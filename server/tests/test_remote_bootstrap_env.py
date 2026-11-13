@@ -4,6 +4,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -44,6 +45,27 @@ class RemoteBootstrapEnvTests(unittest.TestCase):
         subprocess.run(["bash", str(SCRIPT), str(install), "59871", str(home_dir)], check=True, capture_output=True,
                        env={"HOME": str(self.home), "PATH": self.path})
         return (install / "env").read_text()
+
+    def test_the_setup_prints_a_line_each_minute_during_a_silent_step(self) -> None:
+        # 2026-11-13: a deploy into an NFS home ended at the hub's limit of 180 s without a line, during the
+        # Claude Code install, which prints nothing.
+        started = time.monotonic()
+        self.bootstrap(self.shared)
+        # load-bearing: as shipped, the sleep still running at the end must not keep the run's pipe open for its minute.
+        self.assertLess(time.monotonic() - started, 30)
+
+        # Here a minute lasts 0.3 s and uv sync 1 s.
+        (self.home / ".local" / "bin" / "uv").write_text("#!/bin/sh\nsleep 1\n")
+        args = ["bash", "-s", "--", str(self.shared / ".agentsdock-server-test"), "59871", str(self.shared)]
+        env = {"HOME": str(self.home), "PATH": self.path}
+        script = SCRIPT.read_bytes().replace(b"sleep 60 ", b"sleep 0.3 ")
+        lines = subprocess.run(args, input=script, check=True, capture_output=True, env=env).stdout.decode().splitlines()
+        sync = lines.index("[AgentsDock setup] Preparing the Python runtime (uv sync)")
+        self.assertEqual(lines[sync + 1:sync + 3], ["[AgentsDock setup] Setup is still running (1 min)", "[AgentsDock setup] Setup is still running (2 min)"])
+        # The lines end with the setup: nothing follows the result line.
+        self.assertTrue(lines[-1].startswith("AGENTSDOCK_SETUP_RESULT="))
+        # A setup that outlasts the hour of lines (here two) still succeeds.
+        subprocess.run(args, input=script.replace(b"seq 1 60", b"seq 1 2"), check=True, capture_output=True, env=env)
 
     def test_a_shared_home_keeps_codex_sqlite_state_in_the_install(self) -> None:
         # Two machines mounting one home cannot both open Codex's WAL-mode SQLite state.

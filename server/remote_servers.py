@@ -52,6 +52,8 @@ BOOTSTRAP_SCRIPT = SERVER_DIR / "remote_bootstrap.sh"
 PROBE_PREFIX = "AGENTSDOCK_TUNNEL_PROBE="
 RESULT_PREFIX = "AGENTSDOCK_SETUP_RESULT="
 SETUP_LOG_PREFIX = "[AgentsDock setup] "
+# The line remote_bootstrap.sh prints each minute while a step runs: progress, not a step of its own.
+SETUP_ALIVE_LINE = SETUP_LOG_PREFIX + "Setup is still running"
 TOKEN_SUBPROTOCOL_PREFIX = "agentsdock-token."
 PROXY_PREFIX = "/api/remote"
 ADMIN_PATH = "/api/admin/remote-servers"
@@ -121,7 +123,8 @@ SKY_LOGIN_ERROR = ("SkyPilot on the hub's machine needs a new login. Click Autho
 # site-specific, so they stay out of the source. Sites mount different storage (an oci@ target can
 # be a SkyPilot cluster on GCP, without OCI's Lustre), so a variable may name several homes,
 # space-separated: a default deploy takes the first that holds the target's install, else the
-# first the host has (see remote_probe.sh).
+# first the host has, else a directory on the host's NFS or Lustre mounts named like the first
+# home's last path component, normally the user name (see remote_probe.sh).
 CLUSTER_HOME_ENV = {"oci@": "AGENTSDOCK_OCI_HOME", "osmo@": "AGENTSDOCK_OSMO_HOME"}
 # workflow -> OSMO pool, recorded by osmo_lead_task on every tunnel and deploy query. Pools mount different
 # storage and a workflow's name need not name its pool, so cluster_homes matches AGENTSDOCK_OSMO_POOL_HOMES
@@ -2063,14 +2066,19 @@ class RemoteServerManager:
             # and may hold another workflow's install.
             homes = cluster_homes(ssh_host)
             probe_dirs = [install_dir]
+            # Another entry owns such an install: a moved entry taking it too would list one server twice.
+            owned = {other.install_dir: other.name for other in self.servers.values()
+                     if existing is not None and other.id != existing.id and other.ssh_host == ssh_host}
             if from_default:
                 for home in [*homes[1:], *cluster_homes(ssh_host, by_pool=False)]:
                     directory = home_install_dir(home, ssh_host)
-                    # Another entry owns that install: a moved entry taking it too would list one server twice.
-                    owned = existing is not None and any(other.id != existing.id and other.ssh_host == ssh_host
-                                                         and other.install_dir == directory for other in self.servers.values())
-                    if directory not in probe_dirs and not owned:
+                    if directory not in probe_dirs and directory not in owned:
                         probe_dirs.append(directory)
+                if homes:
+                    # Last, a search (see remote_probe.sh) for a site whose home the environment does not name
+                    # yet: a directory on the host's shared storage named like the first home's last path
+                    # component, normally the user name.
+                    probe_dirs.append(home_install_dir(homes[0].rpartition("/")[2], ssh_host))
             if request is not None and request.password:
                 job.progress("connect", f"Installing this hub's SSH key on {ssh_host} with the password…")
                 await self._install_key(job, route, request.password)
@@ -2084,7 +2092,12 @@ class RemoteServerManager:
                     job.progress("connect", f"Found an existing install at {probe['install_dir']}; deploying there to keep its chats.")
                 else:
                     job.progress("connect", f"{install_dir.rpartition('/')[0]} does not exist on {ssh_host}; installing in {probe['install_dir']}.")
-                install_dir = probe["install_dir"]
+                # load-bearing: a found directory's path comes from the host's mount table, not from validated
+                # hub input. Unvalidated, it would go unquoted into the upload's shell command, and the registry
+                # would fail to load its whole file.
+                install_dir = validate_remote_dir(probe["install_dir"])
+                if install_dir in owned:  # only a found directory: the configured candidates left these out
+                    raise RuntimeError(f"{install_dir} on {ssh_host} already belongs to the server {owned[install_dir]}.")
             if from_default and existing is None:
                 # start_deploy looked for this install before the pool was known: a registered one is updated.
                 existing = next((server for server in self.servers.values()
@@ -2094,8 +2107,10 @@ class RemoteServerManager:
             # The probe takes the install's parent as HOME only once it holds a Claude or Codex
             # login. A fresh cluster home has none yet; the container's own ~ (often /root) would
             # then receive the CLIs and logins, and the next container drops them. An earlier install in a
-            # home named before its pool got one (by_pool=False) keeps that home.
-            if (parent := install_dir.rpartition("/")[0]) in {*homes, *cluster_homes(ssh_host, by_pool=False)}:
+            # home named before its pool got one (by_pool=False) keeps that home. A candidate after the first
+            # is a direct child of a cluster home too: a configured one (in the set below) or the one the
+            # search found, which only candidate > 0 covers.
+            if (parent := install_dir.rpartition("/")[0]) in {*homes, *cluster_homes(ssh_host, by_pool=False)} or probe["candidate"] > 0:
                 probe["home"] = parent
             remote_port = requested_port or probe.get("existing_port") or probe["free_port"]
             job.progress("connect", f"Host: {probe.get('os')} {probe.get('arch')}, uid {probe.get('uid')}, home {probe['home']}; remote port {remote_port}.")
@@ -2238,6 +2253,8 @@ class RemoteServerManager:
         finally:
             job.proc = None
         if code != 0:
+            # One printed after a step's error output must not pass for the step announced last.
+            lines = [line for line in lines if not line.startswith(SETUP_ALIVE_LINE)]
             detail = next((line for line in reversed(lines) if line.strip() and not line.startswith((PROBE_PREFIX, RESULT_PREFIX))), "")
             if code == 255:
                 raise SSHConnectionLost(detail or "ssh exited 255")
