@@ -7538,15 +7538,8 @@ class SurfacePatchRequest(BaseModel):
 
 
 class FolderOrderRequest(BaseModel):
-    """Every folder the chat list shows, in its new order. A session's folder name has no length limit."""
+    """The chat list's folders in their new order. A name has no length limit, as a chat's folder has none."""
     order: list[str] = Field(max_length=FOLDER_ORDER_LIMIT)
-
-    @field_validator("order")
-    @classmethod
-    def bounded_names(cls, order: list[str]) -> list[str]:
-        if any(len(name) > 1024 for name in order):
-            raise ValueError("a folder name is longer than 1024 characters")
-        return order
 
 
 class SurfaceOrderRequest(BaseModel):
@@ -29053,47 +29046,61 @@ def save_surfaces() -> None:
 # The chat list's folder order, one per server so every client shows the same: None until a client
 # first sends its own, which then becomes the shared one.
 def normalized_folder_order(values: Iterable[Any]) -> list[str]:
-    # Folders are the trimmed names chats and tabs are filed under, each listed once.
+    # Folders are the trimmed names chats are filed under, each listed once.
     return list(dict.fromkeys(name for value in values if isinstance(value, str) and (name := value.strip())))[:FOLDER_ORDER_LIMIT]
 
 
-def load_folder_order() -> list[str] | None:
+def load_folder_order() -> tuple[list[str] | None, int]:
     try:
         loaded = json.loads(FOLDER_ORDER_FILE.read_text())
     except (OSError, ValueError):
-        return None
+        loaded = None
     order = loaded.get("order") if isinstance(loaded, dict) else None
-    return normalized_folder_order(order) if isinstance(order, list) else None
+    saved = loaded.get("revision") if isinstance(loaded, dict) else None
+    # Above the saved revision and the clock: clients adopt only a newer revision, so a restarted
+    # server must never go back to one they already saw.
+    revision = max(int(time.time()), saved + 1 if type(saved) is int else 0)
+    return (normalized_folder_order(order) if isinstance(order, list) else None), revision
 
 
-FOLDER_ORDER: list[str] | None = load_folder_order()
-# Seeded from the clock so a restarted server never repeats a revision a client already saw.
-FOLDER_ORDER_REVISION = int(time.time())
+FOLDER_ORDER, FOLDER_ORDER_REVISION = load_folder_order()
+# A change reads FOLDER_ORDER and saves the next one across an await (the file write).
+FOLDER_ORDER_LOCK = asyncio.Lock()
+
+
+def folder_order_packet() -> dict[str, Any]:
+    return {"type": "folder_order", "server_identity": server_identity(),
+            "order": FOLDER_ORDER, "revision": FOLDER_ORDER_REVISION}
 
 
 async def save_folder_order(order: list[str]) -> None:
-    """Persist the order, then push it to the chat lists on session summary stream v2."""
+    """Persist the order, then push it on session summary stream v2. The caller holds FOLDER_ORDER_LOCK."""
     global FOLDER_ORDER, FOLDER_ORDER_REVISION
-    scratch = FOLDER_ORDER_FILE.with_suffix(".json.tmp")
-    scratch.parent.mkdir(parents=True, exist_ok=True)
-    scratch.write_text(json.dumps({"order": order}, ensure_ascii=False))
-    os.replace(scratch, FOLDER_ORDER_FILE)
-    FOLDER_ORDER, FOLDER_ORDER_REVISION = order, FOLDER_ORDER_REVISION + 1
-    await HUB.broadcast(SESSION_SUMMARY_V2_HUB_KEY, {
-        "type": "folder_order", "server_identity": server_identity(),
-        "order": order, "revision": FOLDER_ORDER_REVISION,
-    })
+    revision = FOLDER_ORDER_REVISION + 1
+
+    def write() -> None:
+        scratch = FOLDER_ORDER_FILE.with_suffix(".json.tmp")
+        scratch.parent.mkdir(parents=True, exist_ok=True)
+        scratch.write_text(json.dumps({"order": order, "revision": revision}, ensure_ascii=False))
+        os.replace(scratch, FOLDER_ORDER_FILE)
+
+    # A chat move waits for this write; on a stalled network filesystem the other requests do not.
+    await asyncio.to_thread(write)
+    FOLDER_ORDER, FOLDER_ORDER_REVISION = order, revision
+    await HUB.broadcast(SESSION_SUMMARY_V2_HUB_KEY, folder_order_packet())
 
 
 async def remember_folder(folder: Any) -> None:
-    """A folder a chat or tab is filed under joins the shared order at its end. Only an order sent
+    """A folder a chat is filed under joins the shared order at its end. Only an order sent
     without it removes it, as Delete folder sends once its chats have moved out."""
-    name = str(folder or "General").strip()
-    if FOLDER_ORDER is not None and name not in FOLDER_ORDER and len(FOLDER_ORDER) < FOLDER_ORDER_LIMIT:
+    name = str(folder or "").strip() or "General"
+    async with FOLDER_ORDER_LOCK:
+        if FOLDER_ORDER is None or name in FOLDER_ORDER or len(FOLDER_ORDER) >= FOLDER_ORDER_LIMIT:
+            return
         try:
             await save_folder_order([*FOLDER_ORDER, name])
         except OSError as exc:
-            # The chat or tab is already saved; the folder still shows, after the ordered ones.
+            # The chat is already saved; its folder still shows, after the ordered ones.
             logger.warning("could not add folder to the shared order: %s", concise_error_message(exc))
 
 
@@ -90051,7 +90058,6 @@ async def create_surface(req: SurfaceCreateRequest) -> dict[str, Any]:
     }
     SURFACES[surface["id"]] = surface
     save_surfaces()
-    await remember_folder(surface["folder"])
     return {"surface": surface}
 
 
@@ -90065,7 +90071,6 @@ async def update_surface(surface_id: str, req: SurfacePatchRequest) -> dict[str,
         surface[field] = (value or "").strip() or ("General" if field == "folder" else None)
     surface["updated_at"] = now_iso()
     save_surfaces()
-    await remember_folder(surface["folder"])
     return {"surface": surface}
 
 
@@ -90077,9 +90082,10 @@ async def get_folder_order() -> dict[str, Any]:
 @app.put("/api/folders/order")
 async def put_folder_order(req: FolderOrderRequest) -> dict[str, Any]:
     order = normalized_folder_order(req.order)
-    if order != FOLDER_ORDER:
-        await save_folder_order(order)
-    return {"order": FOLDER_ORDER, "revision": FOLDER_ORDER_REVISION}
+    async with FOLDER_ORDER_LOCK:
+        if order != FOLDER_ORDER:
+            await save_folder_order(order)
+        return {"order": FOLDER_ORDER, "revision": FOLDER_ORDER_REVISION}
 
 
 @app.put("/api/surfaces/order")
@@ -91449,9 +91455,10 @@ async def update_session(session_id: str, req: UpdateSessionRequest) -> dict[str
     live_shares = globals().get("INTERACTIVE_CHAT_LIVE")
     if live_shares is not None:
         live_shares.notify(session_id, {"type": "session_updated"})
-    await remember_folder(sess.get("folder"))
-    # Other devices' chat lists take a move, rename or archive now instead of at their next list poll.
-    await broadcast_session_summary(sess)
+    if {"folder", "pinned", "archived"}.intersection(patch):
+        await remember_folder(sess.get("folder"))
+        # Other devices' chat lists show a chat's new place now instead of at their next list poll.
+        await broadcast_session_summary(sess)
     return {"session": public_session(sess)}
 
 
@@ -102058,6 +102065,9 @@ async def session_summary_events(ws: WebSocket) -> None:
         if not await HUB.register_accepted(hub_key, ws):
             await close_event_websocket_over_capacity(ws)
             return
+        if v2 and FOLDER_ORDER is not None:
+            # A client that reconnects takes the changes it missed while its socket was down.
+            await ws.send_json(folder_order_packet())
         while True:
             await ws.receive_text()
     except WebSocketDisconnect:
