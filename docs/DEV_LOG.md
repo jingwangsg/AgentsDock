@@ -1,5 +1,33 @@
 # Public development log
 
+## 2026-11-13 — Hub: adding a cluster that lacks the configured home no longer fails (server)
+
+- Adding a server for a SkyPilot cluster on GCP (`oci@<cluster>`) with the
+  default install directory failed at `mkdir`: the hub gave every `oci@`
+  target the home named in `AGENTSDOCK_OCI_HOME`, an OCI Lustre path that
+  clusters on GCP do not mount.
+- `AGENTSDOCK_OCI_HOME` and `AGENTSDOCK_OSMO_HOME` may now list several
+  homes, space-separated. A deploy that keeps the default directory takes the
+  first of them that already holds the target's install, else the first that
+  exists on the host, and its log says which ("<home> does not exist on
+  <host>; installing in <directory>."). The server runs with that home as
+  HOME, as with the first. When the host has none of them, the deploy fails as
+  before.
+- Changing a remote's SSH host now leaves the directory to its deploy, which
+  chooses the same way. Before, the change fixed the first home's directory
+  in advance, so moving a remote onto a GCP cluster failed the same way.
+
+```text
+Change and expected user behavior: with the GCP clusters' home listed after the OCI one, Add server for a GCP cluster installs in that home, and OCI clusters keep their Lustre home.
+Source commit / app build / server version: branch fix/cluster-home-missing; server 1.0.7-beta.11 plus the branch; desktop and Android unchanged.
+Test surface: unit tests with the scripted host; the probe script run over the hub's own `oci@` route on a real SkyPilot cluster on GCP.
+Actions exercised and observed outcomes: (1) The reported deploy, repeated through the running hub with the install directory set to the cluster's NFS home, succeeded: the server answered through the hub, with Claude Code installed and the hub's Claude token. (2) On that cluster, the new probe given the Lustre and NFS directories chose the NFS one for a new target (no install) and for the deployed target (its install and port); the default `~/.agentsdock-server` still expanded to the container's home. (3) Unit tests: a default deploy with the first home missing installs in the second, with HOME there, and logs the reason; a remote moved onto such a cluster does the same; with no home on the host the first directory is used as before; an install in a later home is kept; an install another entry owns is not taken. On main these tests fail.
+Real boundaries exercised; any mocked/stubbed boundaries: ssh through Sky's websocket proxy to the GCP cluster and the probe on that host, read-only. The hub's deploy logic ran against the scripted host: a full default deploy with this code needs the hub restarted on it.
+Focused regression / typecheck / production build: tests/test_remote_servers.py (81 tests); all 8 server shards.
+Remaining limitations or blocked acceptance: the GCP home must be added to `AGENTSDOCK_OCI_HOME` in the hub's environment and the hub restarted. A remote deployed with an explicit directory keeps its HOME until its next Redeploy.
+Availability: source only until the hub restarts on this version.
+```
+
 ## 2026-11-12 — Agents create new agent chats when the user asks (server)
 
 - A chat's agent can now create new agent chats itself. When the user's own

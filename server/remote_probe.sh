@@ -9,22 +9,23 @@ if ! command -v curl >/dev/null 2>&1; then
   printf 'curl is required on the host.\n' >&2
   exit 78
 fi
-# The arguments are candidate install directories, in order: the hub's choice, then the target's
-# earlier install (a deploy into an OSMO pool home), then the next configured cluster homes and the
-# container's own ~. The install is the first that holds one (its env: an earlier install keeps its
-# chats), else the first whose parent exists (not every cluster mounts a configured home), else $1.
+# The arguments are candidate install directories, in order: the hub's first choice, then the target's
+# directories in the other configured homes (the earlier install of a workflow whose pool got its own
+# home, and the next homes: not every cluster mounts every configured home). The probe takes the first
+# that holds an install (an env file), so a deploy keeps its chats; else the first whose home exists;
+# else the first, whose mkdir then names the missing directory.
 expand() { case "$1" in "~"*) printf '%s\n' "$HOME${1#\~}" ;; *) printf '%s\n' "$1" ;; esac; }
-CANDIDATE="" index=0
-for dir in "$@"; do
-  if [ -z "$CANDIDATE" ] && [ -r "$(expand "$dir")/env" ]; then CANDIDATE=$index; fi
-  index=$((index + 1))
-done
+HELD=""
+MOUNTED=""
 index=0
 for dir in "$@"; do
-  if [ -z "$CANDIDATE" ] && [ -d "$(dirname "$(expand "$dir")")" ]; then CANDIDATE=$index; fi
+  dir="$(expand "$dir")"
+  if [ -z "$HELD" ] && [ -r "$dir/env" ]; then HELD=$index; fi
+  if [ -z "$MOUNTED" ] && [ -d "$(dirname "$dir")" ]; then MOUNTED=$index; fi
   index=$((index + 1))
 done
-CANDIDATE="${CANDIDATE:-0}" INSTALL_DIR=""
+CANDIDATE="${HELD:-${MOUNTED:-0}}"
+INSTALL_DIR=""
 if [ "$#" -gt 0 ]; then shift "$CANDIDATE"; INSTALL_DIR="$(expand "$1")"; fi
 # The server's HOME decides where claude/codex look for their logins. Prefer the
 # install directory's parent when it already holds those logins (a persistent
