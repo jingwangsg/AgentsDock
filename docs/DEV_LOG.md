@@ -1,5 +1,31 @@
 # Public development log
 
+## 2026-11-13 — Android: the open chat catches up first on return to the app (Android 88)
+
+- On return to the app, it read the server's health, then the chat list, and
+  only then the new events of the open chat. Each read is one round trip. For
+  a chat on a remote server behind the hub a round trip is about 0.5 s, so
+  the timeline updated after three and the live stream came back after four.
+- The open chat's catch-up now goes out together with the health read. With a
+  0.5 s round trip the catch-up left 1.06-1.13 s after the return before and
+  0.04-0.10 s after it now; the live stream came back at 1.6-1.7 s before and
+  at about 0.6 s now. The requests are the same as before; only their order
+  changed.
+- The read receipt for the open chat still goes out after the chat list has
+  arrived. Sent earlier, it could cross a chat list computed without it, and
+  the chat would show as unread until the next refresh.
+
+```text
+Change and expected user behavior: returning to the app with a chat open shows its new messages about two round trips sooner; this is most visible for chats on remote servers.
+Source commit / app build / server version: branch perf/mobile-foreground-open-chat-first; Android 88; server unchanged.
+Test surface: Android emulator (fold AVD) with the 87 package and the same package carrying this branch's JS bundle, against an isolated server behind a proxy that adds 0.25 s each way and logs when each request arrives.
+Actions exercised and observed outcomes: opened a chat, pressed Home, returned; three times per build. 87: health +0.00 s, chat list +0.55 s, open chat +1.06-1.13 s, event stream +1.60-1.70 s. Branch: open chat +0.04-0.10 s (with the health read), event stream +0.58-0.68 s, chat list +0.64-0.72 s; the same seven requests as 87, each once.
+Real boundaries exercised; any mocked/stubbed boundaries: the app's own HTTP and WebSocket transport to a real server, with the delay added by the proxy. No remote behind a hub in the emulator run; against an OCI remote the old order took 2.9-3.2 s until the new events arrived and 0.5-1.7 s with the open chat first (requests issued from the Mac). The read receipt order ran in the store's integration test only (the emulator chats had nothing unread). iOS shares the store code and was not built or exercised.
+Focused regression / typecheck / production build: the lifecycle integration test gains a return with the health read held back (fails on the old order, and fails when the receipt is sent before the chat list); all 19 store tests; tsc; the Android contract tests; the sideload APK build.
+Remaining limitations or blocked acceptance: a cold start and a switch to another server still read health and the chat list before the chat. A server whose identity changed while the app was away is asked for the open chat once before the health read takes the connection offline. Not exercised on a physical phone yet.
+Availability: sideload APK 88, attached to the chat; source otherwise.
+```
+
 ## 2026-11-13 — The chat list's folder order is the same on every device and follows changes at once (server, desktop and Android source)
 
 - Each app kept its own folder order, so one server's folders appeared in a

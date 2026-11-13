@@ -2108,7 +2108,15 @@ export const useAppStore = create<AppState>((set, get) => ({
 
         if (!hasSelectedStream(sessionId)) startSelectedStream(sessionId, next.latestSeq ?? snapshotLatestSeq(next), epoch, set, get)
         else if (get().liveConnected) set({ syncStatus: 'live' })
-        void get().markRead(sessionId)
+        // A chat list read that is on its way was computed before this receipt and would bring the old read marker
+        // back, so the receipt waits for it. On return to the app this catch-up finishes before that read.
+        const chatListRead = refreshSessionsInFlight?.promise
+        if (chatListRead) {
+          void chatListRead.catch(() => undefined).then(() => {
+            // Not on a connection that this read took offline or that was replaced in the meantime.
+            if (get().connected && connectionIsCurrent(scope)) void get().markRead(sessionId)
+          })
+        } else void get().markRead(sessionId)
       } catch (error) {
         if (NativeAppState.currentState !== 'active') return
         if (isStaleConnectionError(error, scope) || epoch !== selectionEpoch || get().selectedSessionId !== sessionId) return
@@ -5649,7 +5657,14 @@ function installAppLifecycle(
       if (usesSecondAddress(activeConnection)) await routeActiveConnection()
       else void routeActiveConnection()
       if (NativeAppState.currentState !== 'active') return
-      if (get().connected) {
+      const reconnecting = !get().connected
+      if (!reconnecting) {
+        // refreshSessions reads the server's health, then the chat list. The open chat's catch-up needs neither, so
+        // it starts first: on a remote behind the hub each of those reads is a round trip of its own (0.5 s to an
+        // OCI remote, measured 2026-11-13). It is the sync refreshSessions used to start once the chat list had
+        // arrived. A server whose identity changed while the app was away answers it with "chat not found" at
+        // most; the health read then takes the connection offline as before, and no receipt is written to it.
+        void get().syncSelectedSession('recovery')
         await get().refreshSessions()
         reloadMissingRuntime(get, set)
       } else await get().reconnect()
@@ -5660,7 +5675,9 @@ function installAppLifecycle(
         && syncInFlight.epoch === selectionEpoch,
       )
       if (
-        NativeAppState.currentState === 'active'
+        // Only after a reconnect: the other branch has started the catch-up, and one that failed retries by itself.
+        reconnecting
+        && NativeAppState.currentState === 'active'
         && get().connected
         && selectedSessionId
         && !hasSelectedStream(selectedSessionId)
