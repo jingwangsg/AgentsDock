@@ -122,19 +122,21 @@ class StorageTests(unittest.TestCase):
                          [text_only_id])
         self.assertIsNone(xs.outbox_item(self.db, "handoff_" + "e" * 32))
 
-    def test_a_name_for_a_chat_is_kept_and_hidden_from_a_hub_that_predates_it(self) -> None:
-        name = "title_" + "d" * 32
-        xs.enqueue(self.db, mail(id=name, message_id=name, kind="title", idempotency_key=name, body="HuRo survey"))
-        now = xs.now_iso()
-        self.assertEqual([(row["kind"], row["body"]) for row in xs.due_outbox(self.db, now)], [("title", "HuRo survey")])
-        # Such a hub would take the item for a read receipt and fail it.
-        self.assertEqual(xs.due_outbox(self.db, now, with_titles=False), [])
-        self.assertIsNone(xs.next_due_at(self.db, with_titles=False))
+    def test_a_newer_title_for_the_same_chat_replaces_one_still_waiting(self) -> None:
+        # The first waits for a retry (its target server was unreachable); delivered after the second, it would win.
+        first, second, elsewhere = ("title_" + letter * 32 for letter in "def")
+        other_route = "route_" + "9" * 32
         xs.enqueue(self.db, mail())
-        self.assertEqual([row["id"] for row in xs.due_outbox(self.db, xs.now_iso(), with_titles=False)], [MESSAGE])
+        xs.enqueue(self.db, mail(id=first, message_id=first, kind="title", idempotency_key=first, body="Triage flaky tests"))
+        xs.enqueue(self.db, mail(id=elsewhere, message_id=elsewhere, kind="title", idempotency_key=elsewhere,
+                                 route_id=other_route, body="Another chat"))
+        xs.enqueue(self.db, mail(id=second, message_id=second, kind="title", idempotency_key=second, body="Fix the login bug"))
+        states = {row["id"]: (row["state"], row["error"]) for row in self.db.execute("SELECT id, state, error FROM cross_server_outbox")}
+        self.assertEqual(states, {MESSAGE: ("pending", None), first: ("failed", "replaced by a newer title"),
+                                  elsewhere: ("pending", None), second: ("pending", None)})
 
-    def test_an_outbox_from_before_names_is_rebuilt_with_its_rows(self) -> None:
-        # SQLite cannot alter a CHECK: a table that accepts 'mail' and 'read' only refuses a name.
+    def test_an_outbox_from_before_titles_is_rebuilt_with_its_rows(self) -> None:
+        # SQLite cannot alter a CHECK: a table that accepts 'mail' and 'read' only refuses a title.
         for with_attachments in (True, False):
             with self.subTest(with_attachments=with_attachments):
                 db = sqlite3.connect(":memory:")
@@ -163,8 +165,8 @@ class StorageTests(unittest.TestCase):
                 xs.initialize(db)  # a second start changes nothing
                 [row] = xs.due_outbox(db, xs.now_iso())
                 self.assertEqual((row["id"], row["body"], row["attempts"], row["attachments"]), (MESSAGE, "kept", 3, []))
-                name = "title_" + "d" * 32
-                xs.enqueue(db, mail(id=name, message_id=name, kind="title", idempotency_key=name, body="HuRo survey"))
+                item_id = "title_" + "d" * 32
+                xs.enqueue(db, mail(id=item_id, message_id=item_id, kind="title", idempotency_key=item_id, body="Triage flaky tests"))
                 self.assertEqual({row["kind"] for row in xs.due_outbox(db, xs.now_iso())}, {"mail", "title"})
                 tables = {row["name"]: row["tbl_name"] for row in db.execute("SELECT name, tbl_name FROM sqlite_master")}
                 self.assertNotIn("cross_server_outbox_before_titles", tables)
@@ -250,10 +252,10 @@ class FakeEnd(xs.End):
     async def receipt(self, item: dict) -> None:
         self.receipts.append(item)
 
-    async def rename(self, item: dict, source_identity: str) -> None:
+    async def set_title(self, item: dict, source_identity: str) -> None:
         if self.refuse:
             raise xs.Refused(self.refuse)
-        self.calls.append(f"rename {item['target_session_id']} to {item['body']!r} for {source_identity}")
+        self.calls.append(f"title of {item['target_session_id']}: {item['body']!r} from {source_identity}")
 
 
 class RelayRoutingTests(unittest.IsolatedAsyncioTestCase):
@@ -408,23 +410,26 @@ class RelayRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(hub.results, [("read_" + "c" * 32, "delivered", "", 0.0)])
 
 
-    async def test_a_name_goes_to_the_chats_server_and_its_refusal_fails_the_item_at_once(self) -> None:
-        name = "title_" + "d" * 32
+    async def test_a_title_goes_to_the_target_server_and_a_refusal_or_a_day_fails_it(self) -> None:
+        item_id = "title_" + "d" * 32
         remote = FakeEnd("srv-remote")
         relay, hub = self.relay(self.PAIR_ROW, remote)
-        await relay._route(hub, self.item(id=name, message_id=name, kind="title", body="HuRo survey"), set())
-        self.assertEqual(remote.calls, ["rename sess_remote to 'HuRo survey' for srv-hub"])
+        await relay._route(hub, self.item(id=item_id, message_id=item_id, kind="title", body="Triage flaky tests"), set())
+        self.assertEqual(remote.calls, ["title of sess_remote: 'Triage flaky tests' from srv-hub"])
         self.assertEqual((remote.delivered, remote.receipts), ([], []))
-        self.assertEqual(hub.results, [(name, "delivered", "", 0.0)])
-        # A server that predates names answers 404, which is such a refusal.
-        refusing = FakeEnd("srv-remote", refuse="Not Found")
-        relay, hub = self.relay(self.PAIR_ROW, refusing)
-        await relay._route(hub, self.item(id=name, message_id=name, kind="title", body="HuRo survey"), set())
-        self.assertEqual(hub.results, [(name, "failed", "Not Found", 0.0)])
-        # Only between the two chats of a pair, as for mail.
+        self.assertEqual(hub.results, [(item_id, "delivered", "", 0.0)])
+        # A target server that predates titles answers 404, which is such a refusal.
+        relay, hub = self.relay(self.PAIR_ROW, FakeEnd("srv-remote", refuse="Not Found"))
+        await relay._route(hub, self.item(id=item_id, message_id=item_id, kind="title", body="Triage flaky tests"), set())
+        self.assertEqual(hub.results, [(item_id, "failed", "Not Found", 0.0)])
+        # Mail a day late is still delivered; a title that old would replace whatever the chat was named since.
+        day_old = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat().replace("+00:00", "Z")
         relay, hub = self.relay(self.PAIR_ROW, remote)
-        await relay._route(hub, self.item(id=name, message_id=name, kind="title", body="X", target_session_id="sess_other"), set())
-        self.assertEqual(len(remote.calls), 1)
+        await relay._route(hub, self.item(id=item_id, message_id=item_id, kind="title", body="Stale", created_at=day_old), set())
+        await relay._route(hub, self.item(created_at=day_old), set())
+        self.assertEqual(hub.results, [(item_id, "failed", "No hub delivered this title within 24 hours.", 0.0),
+                                       (MESSAGE, "delivered", "", 0.0)])
+        self.assertEqual(len(remote.calls), 2)  # the first title and the late mail
 
 
 class TwoHubOutboxTests(unittest.IsolatedAsyncioTestCase):

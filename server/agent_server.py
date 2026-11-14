@@ -97135,12 +97135,14 @@ async def read_provider_chat_mailbox(req: ChatMailboxReadRequest, request: Reque
             "reply_routes": reply_routes, "automatic_reply": False}
 
 
-def agent_chat_title(raw: str) -> str:
+def cleaned_agent_chat_title(raw: str) -> str:
+    """An agent's title as stored: one line, capped, without a leading @."""
     # Chips render "@<title>", so a title starting with @ would show as "@@…", the Team Network mention form.
     return re.sub(r"^[@\s]+", "", sanitized_provider_route_label(raw, fallback="", max_chars=AGENT_CHAT_TITLE_MAX_CHARS))
 
 
 async def adopt_agent_chat_title(session_id: str, title: str) -> bool:
+    """Store an agent's title and tell open views; raises HTTPException as STORE.adopt_agent_title does."""
     changed = await STORE.adopt_agent_title(session_id, title)
     if changed:
         # No timeline event: the chat lists poll the saved title, as after a manual rename.
@@ -97153,7 +97155,7 @@ async def adopt_agent_chat_title(session_id: str, title: str) -> bool:
 @app.post("/api/agent/cross-chat/title")
 async def set_provider_chat_title(req: ProviderChatTitleRequest, request: Request) -> dict[str, Any]:
     """The agent names its own chat, or one it holds an instruction route to, after the task."""
-    title = agent_chat_title(req.title)
+    title = cleaned_agent_chat_title(req.title)
     if not title:
         raise HTTPException(status_code=400, detail="the title is empty")
     source_session_id = await provider_route_capability_source(
@@ -97167,21 +97169,20 @@ async def set_provider_chat_title(req: ProviderChatTitleRequest, request: Reques
             capability = await authorize_provider_action(request, action="agent_cross_chat_routes", session_id=source_session_id)
             if not PROVIDER_CROSS_CHAT_ROUTE_ID_RE.fullmatch(req.route_id):
                 raise HTTPException(status_code=400, detail="invalid route id")
-            foreign = CROSS_SERVER_ROUTES.get(req.route_id)
-            if foreign is not None and foreign["session_id"] == source_session_id:
-                # The chat is on another server, which only the hub reaches: the name goes out as mail does,
-                # and that server gives it to the chat (accept_cross_server_title).
+            route = CROSS_SERVER_ROUTES.get(req.route_id)
+            if route is not None and route["session_id"] == source_session_id:
+                # The target chat is on another server, which only the hub reaches: the title goes out as mail
+                # does, and the target server sets it (accept_cross_server_title) after this answer.
                 item_id = cross_server_mail.new_id("title")
                 await CROSS_CHAT.cross_server_call("enqueue", {
-                    "id": item_id, "message_id": item_id, "kind": "title", "pair_id": foreign["pair_id"],
+                    "id": item_id, "message_id": item_id, "kind": "title", "pair_id": route["pair_id"],
                     "route_id": req.route_id, "source_session_id": source_session_id, "source_title": "",
                     "source_run_id": str(capability.get("source_run_id") or ""), "idempotency_key": item_id,
-                    "target_server_identity": foreign["peer_server_identity"],
-                    "target_session_id": foreign["peer_session_id"], "body": title, "reply_to_message_id": None,
+                    "target_server_identity": route["peer_server_identity"],
+                    "target_session_id": route["peer_session_id"], "body": title,
                 })
                 CROSS_SERVER_OUTBOX_CHANGED.set()
-                return {"ok": True, "title": title, "changed": None, "route_id": req.route_id, "state": "queued",
-                        "note": "the chat is on another server; the hub renames it there"}
+                return {"ok": True, "title": title, "route_id": req.route_id, "state": "queued"}
             issued = provider_run_route_ceiling(source_session_id, capability).get(req.route_id)
             live = live_provider_cross_chat_route(source_session_id, dict(issued)) if issued else None
             if live is None or "instruction" not in set(live.get("actions") or []):
@@ -102556,7 +102557,7 @@ async def send_cross_server_mail(request: Request, source_session_id: str, route
 
 
 async def cross_server_outbox_items(wait: float, *, paired_here: bool = False, with_attachments: bool = True,
-                                    with_titles: bool = True, hub: str = "") -> list[dict[str, Any]]:
+                                    hub: str = "") -> list[dict[str, Any]]:
     """Due outbox items; with none due, wait up to `wait` seconds for one (the hub's long poll)."""
     global CROSS_SERVER_OUTBOX_CHANGED
     deadline = time.monotonic() + max(0.0, min(wait, 55.0))
@@ -102572,12 +102573,12 @@ async def cross_server_outbox_items(wait: float, *, paired_here: bool = False, w
         # Also left out of next_due_at, so a skipped item that is due does not wake this poll every 0.5 s.
         skipped = [item_id for reader, item_id in CROSS_SERVER_OUTBOX_SKIPPED if reader == hub]
         items = await CROSS_CHAT.cross_server_call("due_outbox", cross_server_mail.now_iso(), paired_here=paired_here,
-                                                   with_attachments=with_attachments, with_titles=with_titles, skipped=skipped)
+                                                   with_attachments=with_attachments, skipped=skipped)
         remaining = deadline - time.monotonic()
         if items or remaining <= 0:
             return items
         due = await CROSS_CHAT.cross_server_call("next_due_at", paired_here=paired_here,
-                                                 with_attachments=with_attachments, with_titles=with_titles, skipped=skipped)
+                                                 with_attachments=with_attachments, skipped=skipped)
         if due:
             until_due = (datetime.fromisoformat(due.replace("Z", "+00:00")) - datetime.now(timezone.utc)).total_seconds()
             remaining = min(remaining, max(0.5, until_due))
@@ -102597,11 +102598,12 @@ async def record_cross_server_result(item_id: str, state: str, error: str = "", 
         shutil.rmtree(cross_server_attachment_dir("outbox", row["message_id"]), ignore_errors=True)
         if row["state"] == "failed":
             await notify_cross_server_mail_failed(row)
-    if row is not None and row["kind"] == "title":
+    elif row is not None and row["kind"] == "title":
         if row["state"] == "failed":
-            logger.warning("the name for the chat behind route %s was not delivered: %s", row["route_id"], row.get("error"))
+            # The agent was answered "queued": this line and the outbox row are the only trace.
+            logger.warning("the title for the chat behind route %s was not set: %s", row["route_id"], row.get("error"))
         elif (route := CROSS_SERVER_ROUTES.get(row["route_id"])) is not None:
-            # The chat's label on this server, which its own mail would otherwise bring only later.
+            # This server's stored title of the target chat; otherwise it changes only when that chat next sends mail.
             await CROSS_CHAT.cross_server_call("rename_peer", route["route_id"], row["body"], route["peer_server_name"])
             route["peer_title"] = row["body"]
 
@@ -102704,15 +102706,20 @@ async def accept_cross_server_receipt(message_id: str, read_at: str) -> None:
         )
 
 
-async def accept_cross_server_title(item: dict[str, Any]) -> None:
-    """Give a local chat the name its paired chat on another server chose for it."""
-    target_session_id = str(item["target_session_id"])
+async def accept_cross_server_title(request: dict[str, Any]) -> None:
+    """Set a local chat's title to the one its paired chat on another server gave it."""
+    target_session_id = str(request["target_session_id"])
     route = cross_server_peer_route(target_session_id, cross_server_mail.sender_key(
-        str(item["source_server_identity"]), str(item["source_session_id"])))
-    # Cleaned here as well: the name was accepted by another server.
-    title = agent_chat_title(str(item["title"]))
-    if route is None or route["pair_id"] != item["pair_id"] or not title:
-        raise cross_server_mail.Refused("The chat is not paired with the sender, or the name is empty.")
+        str(request["source_server_identity"]), str(request["source_session_id"])))
+    session = STORE.sessions.get(target_session_id)
+    # The same chats mail reaches: an archived chat keeps its title.
+    if (route is None or route["pair_id"] != request["pair_id"] or not session or session.get("archived")
+            or target_session_id in DELETING_SESSIONS):
+        raise cross_server_mail.Refused("The target chat is not paired with the source chat or no longer exists.")
+    # Cleaned again: this server does not rely on the source server's cleaning.
+    title = cleaned_agent_chat_title(str(request["title"]))
+    if not title:
+        raise cross_server_mail.Refused("The title is empty.")
     try:
         await adopt_agent_chat_title(target_session_id, title)
     except HTTPException as exc:
@@ -102794,7 +102801,7 @@ class LocalCrossServerEnd(cross_server_mail.End):
     async def receipt(self, item: dict) -> None:
         await accept_cross_server_receipt(item["message_id"], item["created_at"])
 
-    async def rename(self, item: dict, source_identity: str) -> None:
+    async def set_title(self, item: dict, source_identity: str) -> None:
         await accept_cross_server_title({**item, "source_server_identity": source_identity, "title": item["body"]})
 
     async def describe(self, session_id: str) -> dict:
@@ -102889,13 +102896,13 @@ class CrossServerPairRequest(BaseModel):
 # Server-to-server: only the hub that registered this server holds its token.
 @app.get("/api/admin/cross-server/outbox")
 async def get_cross_server_outbox(
-    request: Request, wait: float = Query(default=0.0, ge=0, le=55), attachments: bool = False, titles: bool = False,
+    request: Request, wait: float = Query(default=0.0, ge=0, le=55), attachments: bool = False,
     hub: str = Query(default="", max_length=96),
 ) -> dict[str, Any]:
     require_native_admin_control(request)
-    # A hub that does not ask for mail with attachments, or for chat names, predates them; those wait for a newer hub.
+    # A hub that does not ask for mail with attachments predates them; that mail waits for a newer hub.
     # A hub that sends no `hub` predates per-hub skipping and reads every due item.
-    return {"items": await cross_server_outbox_items(wait, with_attachments=attachments, with_titles=titles, hub=hub)}
+    return {"items": await cross_server_outbox_items(wait, with_attachments=attachments, hub=hub)}
 
 
 @app.get("/api/admin/cross-server/outbox/{item_id}/attachments/{index}")
