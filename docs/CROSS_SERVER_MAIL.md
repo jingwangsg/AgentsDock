@@ -60,12 +60,13 @@ remote servers a hub manages.
 Server-to-server, with the remote's own token through the hub's tunnel:
 
 ```text
-GET    /api/admin/cross-server/outbox?wait=S&hub=ID  due items; long poll up to 55 s
+GET    /api/admin/cross-server/outbox?wait=S&hub=ID  due items; long poll up to 55 s (`attachments`, `titles`: kinds the hub takes)
 GET    /api/admin/cross-server/outbox/{id}/attachments/{n}  a sent message's file
 POST   /api/admin/cross-server/outbox/{id}/result delivered | failed | pending (retry_after, hub)
 PUT    /api/admin/cross-server/inbox/{message_id}/attachments/{n}  a file of the mail delivered next
 POST   /api/admin/cross-server/inbox              store mail from a paired chat
 POST   /api/admin/cross-server/receipts           a sent message was read
+POST   /api/admin/cross-server/titles             the paired chat named this chat
 GET    /api/admin/cross-server/sessions/{id}      title/backend, for pairing
 POST   /api/admin/cross-server/routes             install (or refresh) this server's half
 DELETE /api/admin/cross-server/pairs/{pair_id}    remove this server's halves
@@ -87,7 +88,8 @@ with that profile's token (the hub token); any other server is its own hub.
 ## Delivery
 
 - Each server keeps `cross_server_routes` (its halves) and
-  `cross_server_outbox` (sent mail and read receipts) in the cross-chat ledger;
+  `cross_server_outbox` (sent mail, read receipts, and names its chats gave to
+  their paired chats: `chats title --route`) in the cross-chat ledger;
   the hub also keeps `cross_server_pairs`.
 - The hub runs one pump per server: its own outbox wakes on an in-process
   event, each remote's on a long poll over the existing tunnel. A server's own

@@ -2285,6 +2285,50 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(revoked["routes"], [])
         self.assertTrue(token)
 
+    async def test_a_name_for_a_chat_on_another_server_is_queued_for_the_hub_and_given_by_that_server(self) -> None:
+        # 2026-11-15: an agent on a remote named the chat its handoff had created on the hub, and the server
+        # answered 409 "naming a chat on another server is not supported yet"; the chat stayed "New agent".
+        pair, here, there = "pair_" + "1" * 32, "route_" + "e" * 32, "route_" + "d" * 32
+        # This server's half of the pair, and the half the chat's own server holds.
+        sending = {"route_id": here, "pair_id": pair, "session_id": "source", "alias": "remote1", "peer_server_identity": "srv-far",
+                   "peer_server_name": "", "peer_session_id": "sess_far", "peer_title": "New agent"}
+        receiving = {"route_id": there, "pair_id": pair, "session_id": "target", "alias": "remote1",
+                     "peer_server_identity": "srv-near", "peer_server_name": "oci_dev", "peer_session_id": "source", "peer_title": "Source"}
+        agent_server.CURRENT_TURNS["source"] = {"run_id": "run_far_title"}
+        with self.native_transports(), patch.object(agent_server.STORE, "save", AsyncMock()), \
+                patch.dict(agent_server.CROSS_SERVER_ROUTES, {here: sending}):
+            authority = await agent_server.issue_cross_chat_capability(
+                "source", "run_far_title", [], actions={"agent_cross_chat_routes", "chat_title"},
+                async_route_v1=True, chat_routes_live=True)
+            token = json.loads(authority.read_text())["provider_capability"]
+            answer = await agent_server.set_provider_chat_title(
+                agent_server.ProviderChatTitleRequest(title=" @HuRo survey ", route_id=here), self.provider_request(token, method="POST"))
+            self.assertEqual(answer, {"ok": True, "title": "HuRo survey", "changed": None, "route_id": here, "state": "queued",
+                                      "note": "the chat is on another server; the hub renames it there"})
+            [item] = await agent_server.CROSS_CHAT.cross_server_call("due_outbox", agent_server.cross_server_mail.now_iso())
+            self.assertEqual({key: item[key] for key in ("kind", "pair_id", "route_id", "source_session_id",
+                                                         "target_server_identity", "target_session_id", "body")},
+                             {"kind": "title", "pair_id": pair, "route_id": here, "source_session_id": "source",
+                              "target_server_identity": "srv-far", "target_session_id": "sess_far", "body": "HuRo survey"})
+            # A hub that predates names would take the item for a read receipt: it does not get it.
+            self.assertEqual(await agent_server.cross_server_outbox_items(0, with_titles=False), [])
+            # Once the hub reports the name delivered, this server's label for that chat follows.
+            await agent_server.record_cross_server_result(item["id"], "delivered")
+            self.assertEqual(sending["peer_title"], "HuRo survey")
+
+        # The chat's own server: the name counts only from the chat it is paired with, and is cleaned again there.
+        delivered = {"pair_id": pair, "source_server_identity": "srv-near", "source_session_id": "source",
+                     "target_session_id": "target", "title": "@HuRo\u0000 survey"}
+        with patch.object(agent_server.STORE, "save", AsyncMock()), patch.dict(agent_server.CROSS_SERVER_ROUTES, {there: receiving}):
+            await agent_server.accept_cross_server_title(delivered)
+            target = agent_server.STORE.sessions["target"]
+            self.assertEqual((target["title"], target["_title_source"]), ("HuRo survey", "agent"))
+            for wrong in ({"source_session_id": "another"}, {"source_server_identity": "srv-else"},
+                          {"pair_id": "pair_" + "2" * 32}, {"target_session_id": "source"}, {"title": "@@ "}):
+                with self.assertRaises(agent_server.cross_server_mail.Refused):
+                    await agent_server.accept_cross_server_title({**delivered, "title": "Other", **wrong})
+            self.assertEqual(target["title"], "HuRo survey")
+
     async def test_chat_title_names_own_and_routed_chats_outlasts_automatic_titles_and_refuses_bad_routes(self) -> None:
         instruction = self.route("a", actions=["instruction"])
         reply_only = self.route("b", alias="reply", actions=["request_reply"])
@@ -2321,13 +2365,11 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(await agent_server.STORE.adopt_auto_title(
                 "target", "Generated", source="generated", backend="codex", provider_id="thread"))
             self.assertEqual(target["title"], "Triage flaky tests")
-            # A reply-only route, an unknown route, a malformed id, a route to another server and an empty title are refused.
-            foreign = "route_" + "e" * 32
-            with patch.dict(agent_server.CROSS_SERVER_ROUTES, {foreign: {"route_id": foreign, "session_id": "source"}}):
-                for route_id, status in ((reply_only["route_id"], 403), ("route_" + "f" * 32, 403), ("nope", 400), (foreign, 409)):
-                    with self.assertRaises(HTTPException) as refused:
-                        await titled(token, title="Renamed", route_id=route_id)
-                    self.assertEqual(refused.exception.status_code, status, route_id)
+            # A reply-only route, an unknown route, a malformed id and an empty title are refused.
+            for route_id, status in ((reply_only["route_id"], 403), ("route_" + "f" * 32, 403), ("nope", 400)):
+                with self.assertRaises(HTTPException) as refused:
+                    await titled(token, title="Renamed", route_id=route_id)
+                self.assertEqual(refused.exception.status_code, status, route_id)
             with self.assertRaises(HTTPException) as empty:
                 await titled(token, title="@@ \u200e")
             self.assertEqual(empty.exception.status_code, 400)

@@ -1,5 +1,37 @@
 # Public development log
 
+## 2026-11-15 — An agent can name a chat on another server (server)
+
+- An agent that hands work to a chat names that chat with
+  `chats title --route`. When the chat was on another server (for example a
+  chat the composer's "Create new agent" made on the hub for a chat on a
+  remote), the server answered 409 "naming a chat on another server is not
+  supported yet", and the chat stayed "New agent".
+- The name now travels like mail: the agent's server puts it in its
+  cross-server outbox, the hub takes it and calls the chat's server, and that
+  server gives it to the chat. The helper answers `"state": "queued"`, because
+  the chat's server applies the name after the answer.
+- The same limits as for mail apply: the hub relays a name only between the
+  two chats of a pair in its registry, and the chat's server accepts it only
+  from the chat it is paired with and cleans it again. The name is stored as
+  an agent's title, as for a chat on the same server.
+- Once the hub reports the name delivered, the naming chat's own label for
+  that chat (its route list, its chips) changes too.
+- A hub that predates this is not handed such items; a chat's server that
+  predates it refuses, and the item fails. The chat list's other menu
+  commands still do not reach a chat on another server.
+
+```text
+Change and expected user behavior: `chats title --route` for a chat on another server renames that chat within a second instead of failing with 409.
+Source commit / app build / server version: branch feat/cross-server-chat-title; server 1.0.7-beta.11 plus the branch; desktop and Android unchanged.
+Test surface: unit tests of the outbox storage, the relay and both servers' handlers; two real server processes from the branch (an isolated hub and an isolated remote behind a stand-in ssh that forwards the main tunnel), driven through their HTTP APIs, with real Claude turns.
+Actions exercised and observed outcomes: (1) The report, read from the remote's chat events: `chats title --route <route> "<name>"` answered 409, and the route list showed the hub chat as "New agent". (2) Real processes, remote to hub: two chats created and paired through the hub; a Claude turn in the remote's chat ran `chats list` (the route to "New agent" on "hub") and `chats title --route`, which answered `"ok": true, "state": "queued"`; the hub chat's title in its chat list became the name; the remote's outbox item was marked delivered 15 ms after it was stored; the remote's label for the hub chat became the name. (3) Hub to remote: a Claude turn in the hub chat named the remote's chat with a leading "@"; the hub called `POST /api/admin/cross-server/titles` (200), the remote's chat got the name without the "@", and the hub's item was delivered in 16 ms. (4) Unit tests: an outbox table from before this change, with and without the attachments column, is rebuilt with its rows and index and then takes a name; a hub that does not ask for names is not given one; the relay calls the chat's server for a name, fails the item at once on a refusal, and relays nothing outside the pair; the chat's server refuses a name from another chat, another server, another pair or for another chat, and an empty one. Without the change the server test fails with the 409.
+Real boundaries exercised; any mocked/stubbed boundaries: HTTP between the two servers, the outbox long poll, the SQLite ledgers and real provider turns. The ssh tunnel was a local TCP forward. A hub or a remote that predates the change was exercised only in unit tests. The apps were not driven: no client code changed, and the chat lists read the saved title as before.
+Focused regression / typecheck / production build: tests/test_cross_server_mail.py and tests/test_agent_cross_chat_routes.py; all 8 server shards.
+Remaining limitations or blocked acceptance: the agent gets "queued", not the result; a name that fails on the way is written to the server log only. The chat list's other menu commands (pin, move, archive) still do not reach a chat on another server.
+Availability: source only until the hub and the remotes run this version.
+```
+
 ## 2026-11-13 — Server: eight more JSON reads are gzipped for a client that accepts gzip (server)
 
 - The server already gzipped the chat list, a chat's page, its subagent and

@@ -122,6 +122,54 @@ class StorageTests(unittest.TestCase):
                          [text_only_id])
         self.assertIsNone(xs.outbox_item(self.db, "handoff_" + "e" * 32))
 
+    def test_a_name_for_a_chat_is_kept_and_hidden_from_a_hub_that_predates_it(self) -> None:
+        name = "title_" + "d" * 32
+        xs.enqueue(self.db, mail(id=name, message_id=name, kind="title", idempotency_key=name, body="HuRo survey"))
+        now = xs.now_iso()
+        self.assertEqual([(row["kind"], row["body"]) for row in xs.due_outbox(self.db, now)], [("title", "HuRo survey")])
+        # Such a hub would take the item for a read receipt and fail it.
+        self.assertEqual(xs.due_outbox(self.db, now, with_titles=False), [])
+        self.assertIsNone(xs.next_due_at(self.db, with_titles=False))
+        xs.enqueue(self.db, mail())
+        self.assertEqual([row["id"] for row in xs.due_outbox(self.db, xs.now_iso(), with_titles=False)], [MESSAGE])
+
+    def test_an_outbox_from_before_names_is_rebuilt_with_its_rows(self) -> None:
+        # SQLite cannot alter a CHECK: a table that accepts 'mail' and 'read' only refuses a name.
+        for with_attachments in (True, False):
+            with self.subTest(with_attachments=with_attachments):
+                db = sqlite3.connect(":memory:")
+                self.addCleanup(db.close)
+                db.row_factory = sqlite3.Row
+                db.execute("""CREATE TABLE cross_server_outbox (
+                    id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('mail','read')),
+                    pair_id TEXT NOT NULL, route_id TEXT NOT NULL,
+                    source_session_id TEXT NOT NULL, source_title TEXT NOT NULL,
+                    source_run_id TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+                    target_server_identity TEXT NOT NULL, target_session_id TEXT NOT NULL,
+                    body TEXT NOT NULL, reply_to_message_id TEXT, message_id TEXT NOT NULL,
+                    source_user_instruction TEXT NOT NULL DEFAULT '', source_user_delegation_action TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL, next_attempt_at TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    state TEXT NOT NULL CHECK(state IN ('pending','delivered','failed')),
+                    error TEXT, finished_at TEXT, read_at TEXT""" + (", attachments_json TEXT" if with_attachments else "") + """,
+                    UNIQUE(source_run_id, idempotency_key))""")
+                db.execute("CREATE INDEX cross_server_outbox_due ON cross_server_outbox(state, next_attempt_at)")
+                db.execute("""INSERT INTO cross_server_outbox (id, kind, pair_id, route_id, source_session_id, source_title,
+                    source_run_id, idempotency_key, target_server_identity, target_session_id, body, message_id, created_at,
+                    next_attempt_at, attempts, state) VALUES (?, 'mail', ?, ?, 'sess_hub', 'Hub chat', 'run_0', 'key-00000',
+                    'srv-remote', 'sess_remote', 'kept', ?, '2026-11-01T00:00:00Z', '2026-11-01T00:00:00Z', 3, 'pending')""",
+                           (MESSAGE, PAIR, HUB_ROUTE, MESSAGE))
+                xs.initialize(db)
+                xs.initialize(db)  # a second start changes nothing
+                [row] = xs.due_outbox(db, xs.now_iso())
+                self.assertEqual((row["id"], row["body"], row["attempts"], row["attachments"]), (MESSAGE, "kept", 3, []))
+                name = "title_" + "d" * 32
+                xs.enqueue(db, mail(id=name, message_id=name, kind="title", idempotency_key=name, body="HuRo survey"))
+                self.assertEqual({row["kind"] for row in xs.due_outbox(db, xs.now_iso())}, {"mail", "title"})
+                tables = {row["name"]: row["tbl_name"] for row in db.execute("SELECT name, tbl_name FROM sqlite_master")}
+                self.assertNotIn("cross_server_outbox_before_titles", tables)
+                self.assertEqual(tables["cross_server_outbox_due"], "cross_server_outbox")
+
     def test_removing_a_pair_fails_its_undelivered_mail(self) -> None:
         xs.install_route(self.db, {"route_id": HUB_ROUTE, "pair_id": PAIR, "session_id": "sess_hub",
                                    "peer_server_identity": "srv-remote", "peer_server_name": "",
@@ -201,6 +249,11 @@ class FakeEnd(xs.End):
 
     async def receipt(self, item: dict) -> None:
         self.receipts.append(item)
+
+    async def rename(self, item: dict, source_identity: str) -> None:
+        if self.refuse:
+            raise xs.Refused(self.refuse)
+        self.calls.append(f"rename {item['target_session_id']} to {item['body']!r} for {source_identity}")
 
 
 class RelayRoutingTests(unittest.IsolatedAsyncioTestCase):
@@ -353,6 +406,25 @@ class RelayRoutingTests(unittest.IsolatedAsyncioTestCase):
         await relay._route(hub, self.item(id="read_" + "c" * 32, kind="read", body=""), set())
         self.assertEqual([receipt["message_id"] for receipt in remote.receipts], [MESSAGE])
         self.assertEqual(hub.results, [("read_" + "c" * 32, "delivered", "", 0.0)])
+
+
+    async def test_a_name_goes_to_the_chats_server_and_its_refusal_fails_the_item_at_once(self) -> None:
+        name = "title_" + "d" * 32
+        remote = FakeEnd("srv-remote")
+        relay, hub = self.relay(self.PAIR_ROW, remote)
+        await relay._route(hub, self.item(id=name, message_id=name, kind="title", body="HuRo survey"), set())
+        self.assertEqual(remote.calls, ["rename sess_remote to 'HuRo survey' for srv-hub"])
+        self.assertEqual((remote.delivered, remote.receipts), ([], []))
+        self.assertEqual(hub.results, [(name, "delivered", "", 0.0)])
+        # A server that predates names answers 404, which is such a refusal.
+        refusing = FakeEnd("srv-remote", refuse="Not Found")
+        relay, hub = self.relay(self.PAIR_ROW, refusing)
+        await relay._route(hub, self.item(id=name, message_id=name, kind="title", body="HuRo survey"), set())
+        self.assertEqual(hub.results, [(name, "failed", "Not Found", 0.0)])
+        # Only between the two chats of a pair, as for mail.
+        relay, hub = self.relay(self.PAIR_ROW, remote)
+        await relay._route(hub, self.item(id=name, message_id=name, kind="title", body="X", target_session_id="sess_other"), set())
+        self.assertEqual(len(remote.calls), 1)
 
 
 class TwoHubOutboxTests(unittest.IsolatedAsyncioTestCase):

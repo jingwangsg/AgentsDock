@@ -75,6 +75,14 @@ def peer_label(route: dict) -> str:
 # -- storage -------------------------------------------------------------------
 
 def initialize(connection: sqlite3.Connection) -> None:
+    # An outbox created before chats could be named across servers accepts two kinds only, and SQLite
+    # cannot alter a CHECK: the table is created again below and its rows copied over.
+    outbox = connection.execute("SELECT sql FROM sqlite_master WHERE name='cross_server_outbox'").fetchone()
+    rebuild = outbox is not None and "'title'" not in outbox[0]
+    if rebuild:
+        connection.execute("ALTER TABLE cross_server_outbox RENAME TO cross_server_outbox_before_titles")
+        # The index keeps its name on the renamed table, and CREATE INDEX IF NOT EXISTS would then skip the new one.
+        connection.execute("DROP INDEX IF EXISTS cross_server_outbox_due")
     statements = (
         # This server's half of each pair: one row per local chat and peer.
         """CREATE TABLE IF NOT EXISTS cross_server_routes (
@@ -82,10 +90,11 @@ def initialize(connection: sqlite3.Connection) -> None:
             alias TEXT NOT NULL, peer_server_identity TEXT NOT NULL, peer_server_name TEXT NOT NULL,
             peer_session_id TEXT NOT NULL, peer_title TEXT NOT NULL, created_at TEXT NOT NULL,
             UNIQUE(pair_id, session_id))""",
-        # Mail this server's chats sent to foreign chats, and read receipts for
-        # foreign mail its chats read. The hub drains it.
+        # Mail this server's chats sent to foreign chats, read receipts for foreign
+        # mail its chats read, and names its chats gave to foreign chats (the name
+        # is the body). The hub drains it.
         """CREATE TABLE IF NOT EXISTS cross_server_outbox (
-            id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('mail','read')),
+            id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('mail','read','title')),
             pair_id TEXT NOT NULL, route_id TEXT NOT NULL,
             source_session_id TEXT NOT NULL, source_title TEXT NOT NULL,
             source_run_id TEXT NOT NULL, idempotency_key TEXT NOT NULL,
@@ -111,6 +120,11 @@ def initialize(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
     if "attachments_json" not in {row[1] for row in connection.execute("PRAGMA table_info(cross_server_outbox)")}:
         connection.execute("ALTER TABLE cross_server_outbox ADD COLUMN attachments_json TEXT")
+    if rebuild:
+        # By name: a table from before attachments has one column fewer.
+        columns = ", ".join(row[1] for row in connection.execute("PRAGMA table_info(cross_server_outbox_before_titles)"))
+        connection.execute(f"INSERT INTO cross_server_outbox ({columns}) SELECT {columns} FROM cross_server_outbox_before_titles")
+        connection.execute("DROP TABLE cross_server_outbox_before_titles")
 
 
 def routes(connection: sqlite3.Connection) -> list[dict]:
@@ -185,23 +199,27 @@ def enqueue(connection: sqlite3.Connection, item: dict) -> tuple[dict, bool]:
 _PAIRED_HERE = " AND pair_id IN (SELECT pair_id FROM cross_server_pairs)"
 # A hub that predates attachments would deliver such mail without its files.
 _TEXT_ONLY = " AND attachments_json IS NULL"
+# A hub that predates names would take one for a read receipt and fail it.
+_NO_TITLES = " AND kind!='title'"
 # Items the reading hub reported it has no pair for; every other hub still reads them.
 _NOT_SKIPPED = " AND id NOT IN (SELECT value FROM json_each(?))"
 
 
 def due_outbox(connection: sqlite3.Connection, now: str, limit: int = 20, *, paired_here: bool = False,
-               with_attachments: bool = True, skipped: list[str] | None = None) -> list[dict]:
+               with_attachments: bool = True, with_titles: bool = True, skipped: list[str] | None = None) -> list[dict]:
     return [{**dict(row), "attachments": json.loads(row["attachments_json"] or "[]")} for row in connection.execute(
         "SELECT * FROM cross_server_outbox WHERE state='pending' AND next_attempt_at<=?"
-        + (_PAIRED_HERE if paired_here else "") + ("" if with_attachments else _TEXT_ONLY) + _NOT_SKIPPED
+        + (_PAIRED_HERE if paired_here else "") + ("" if with_attachments else _TEXT_ONLY)
+        + ("" if with_titles else _NO_TITLES) + _NOT_SKIPPED
         + " ORDER BY next_attempt_at, created_at LIMIT ?", (now, json.dumps(skipped or []), limit))]
 
 
-def next_due_at(connection: sqlite3.Connection, *, paired_here: bool = False,
-                with_attachments: bool = True, skipped: list[str] | None = None) -> str | None:
+def next_due_at(connection: sqlite3.Connection, *, paired_here: bool = False, with_attachments: bool = True,
+                with_titles: bool = True, skipped: list[str] | None = None) -> str | None:
     row = connection.execute("SELECT MIN(next_attempt_at) AS due FROM cross_server_outbox WHERE state='pending'"
                              + (_PAIRED_HERE if paired_here else "")
-                             + ("" if with_attachments else _TEXT_ONLY) + _NOT_SKIPPED,
+                             + ("" if with_attachments else _TEXT_ONLY)
+                             + ("" if with_titles else _NO_TITLES) + _NOT_SKIPPED,
                              (json.dumps(skipped or []),)).fetchone()
     return row["due"] if row is not None else None
 
@@ -294,6 +312,8 @@ class End:
     async def attachment(self, item: dict, index: int, folder: Path) -> Path: raise NotImplementedError
     async def put_attachment(self, item: dict, index: int, path: Path) -> None: raise NotImplementedError
     async def receipt(self, item: dict) -> None: raise NotImplementedError
+    # The item's body is the name its source chat gave to its target chat.
+    async def rename(self, item: dict, source_identity: str) -> None: raise NotImplementedError
     async def describe(self, session_id: str) -> dict: raise NotImplementedError
     async def install(self, route: dict) -> None: raise NotImplementedError
     async def uninstall(self, pair_id: str) -> None: raise NotImplementedError
@@ -335,7 +355,7 @@ class RemoteEnd(End):
     async def outbox(self, wait: float, hub: str) -> list[dict]:
         # A server that predates `hub` ignores it and returns every due item.
         data = await self._request("GET", "/api/admin/cross-server/outbox",
-                                   params={"wait": wait, "attachments": True, "hub": hub}, timeout=wait + 10)
+                                   params={"wait": wait, "attachments": True, "titles": True, "hub": hub}, timeout=wait + 10)
         return list(data.get("items") or [])
 
     async def record_result(self, item_id: str, state: str, error: str = "", retry_after: float = 0.0,
@@ -389,6 +409,13 @@ class RemoteEnd(End):
     async def receipt(self, item: dict) -> None:
         await self._request("POST", "/api/admin/cross-server/receipts",
                             json={"message_id": item["message_id"], "read_at": item["created_at"]})
+
+    async def rename(self, item: dict, source_identity: str) -> None:
+        # A server that predates this answers 404, which fails the item at once.
+        await self._request("POST", "/api/admin/cross-server/titles",
+                            json={"pair_id": item["pair_id"], "source_server_identity": source_identity,
+                                  "source_session_id": item["source_session_id"],
+                                  "target_session_id": item["target_session_id"], "title": item["body"]})
 
     async def describe(self, session_id: str) -> dict:
         return await self._request("GET", f"/api/admin/cross-server/sessions/{session_id}")
@@ -545,6 +572,8 @@ class Relay:
                     for index in range(len(item.get("attachments") or [])):
                         await target.put_attachment(item, index, await source.attachment(item, index, Path(folder)))
                 await target.deliver(item, source.identity, source.name)
+            elif item["kind"] == "title":
+                await target.rename(item, source.identity)
             else:
                 await target.receipt(item)
         except Refused as exc:
