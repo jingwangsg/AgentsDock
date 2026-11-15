@@ -332,9 +332,12 @@ agentsdock-chats new TITLE [--backend B] [--model M] [--effort E] [--cwd DIR] [-
 instruction route (for example the chat the composer created for this run's
 handoff). The server stores it with provenance `agent`: generated and provider
 titles never replace it; a user's rename still does. Titles are one line of at
-most 120 characters. A route to a chat on another server is refused (409)
-until the hub relays title changes, and so is a scheduled job's run chat,
-which keeps the job's title.
+most 120 characters. For a chat on another server the answer is
+`"state": "queued"`: the hub carries the title to the target server, which
+sets it only when it comes from the chat the target chat is paired with (see
+CROSS_SERVER_MAIL.md). Whether the target server set it is not reported to
+the agent. A scheduled job's run chat is refused (409): it keeps the job's
+title.
 
 The other commands are the chat list's menu, on the same scope as
 `title`, and each calls the handler the menu item calls: the chat PATCH for

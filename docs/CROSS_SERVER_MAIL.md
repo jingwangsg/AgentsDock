@@ -66,6 +66,7 @@ POST   /api/admin/cross-server/outbox/{id}/result delivered | failed | pending (
 PUT    /api/admin/cross-server/inbox/{message_id}/attachments/{n}  a file of the mail delivered next
 POST   /api/admin/cross-server/inbox              store mail from a paired chat
 POST   /api/admin/cross-server/receipts           a sent message was read
+POST   /api/admin/cross-server/titles             the paired chat gave this chat a title
 GET    /api/admin/cross-server/sessions/{id}      title/backend, for pairing
 POST   /api/admin/cross-server/routes             install (or refresh) this server's half
 DELETE /api/admin/cross-server/pairs/{pair_id}    remove this server's halves
@@ -87,7 +88,8 @@ with that profile's token (the hub token); any other server is its own hub.
 ## Delivery
 
 - Each server keeps `cross_server_routes` (its halves) and
-  `cross_server_outbox` (sent mail and read receipts) in the cross-chat ledger;
+  `cross_server_outbox` (sent mail, read receipts, and titles its chats gave
+  to their paired chats with `chats title --route`) in the cross-chat ledger;
   the hub also keeps `cross_server_pairs`.
 - The hub runs one pump per server: its own outbox wakes on an in-process
   event, each remote's on a long poll over the existing tunnel. A server's own
@@ -98,7 +100,13 @@ with that profile's token (the hub token); any other server is its own hub.
   min) and fails after 24 hours; the rest of that batch for the same target
   waits without a call. When the receiving server refuses the item (it has no
   half of that pair, or the chat is gone) the item fails at once. Removing a
-  pair fails its undelivered mail. A failure shows on the sender's timeline.
+  pair fails its undelivered mail. A failed mail shows on the sender's
+  timeline; a failed title is written to the source server's log.
+- A title is set on the target chat as an agent's title, by the target
+  server, after it has cleaned it again (one line, capped, no leading `@`). A
+  newer title for the same chat fails an older one that still waits, so the
+  two cannot arrive in reverse order. A title is not delivered after 24
+  hours, unlike mail, and an archived chat keeps its title.
 - An item whose pair is not in this hub's registry is not failed: the hub
   reports it as pending with its own identity (`hub`), and the server leaves
   the item out of that hub's outbox reads for 5 minutes. A server listed by

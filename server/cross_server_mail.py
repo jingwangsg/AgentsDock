@@ -3,7 +3,8 @@
 A pair links one chat on one server with one chat on another. Only the hub
 creates pairs (from a chat the user picked in the composer) and only the hub
 moves mail: it reads every server's outbox and calls the target server, where
-the message becomes an ordinary mailbox row. Remote servers never call the hub,
+the message becomes an ordinary mailbox row. A title one chat gives its paired
+chat (`chats title --route`) travels the same way. Remote servers never call the hub,
 and the hub relays an item only when its own pair registry links exactly the
 item's source and target, so a remote cannot reach a chat it was not paired with.
 
@@ -75,6 +76,14 @@ def peer_label(route: dict) -> str:
 # -- storage -------------------------------------------------------------------
 
 def initialize(connection: sqlite3.Connection) -> None:
+    # An outbox created before titles crossed servers accepts two kinds only, and SQLite cannot alter
+    # a CHECK: the table is created again below and its rows copied over.
+    outbox = connection.execute("SELECT sql FROM sqlite_master WHERE name='cross_server_outbox'").fetchone()
+    rebuild = outbox is not None and "'title'" not in outbox[0]
+    if rebuild:
+        connection.execute("ALTER TABLE cross_server_outbox RENAME TO cross_server_outbox_before_titles")
+        # The index keeps its name on the renamed table, and CREATE INDEX IF NOT EXISTS would then skip the new one.
+        connection.execute("DROP INDEX IF EXISTS cross_server_outbox_due")
     statements = (
         # This server's half of each pair: one row per local chat and peer.
         """CREATE TABLE IF NOT EXISTS cross_server_routes (
@@ -82,10 +91,11 @@ def initialize(connection: sqlite3.Connection) -> None:
             alias TEXT NOT NULL, peer_server_identity TEXT NOT NULL, peer_server_name TEXT NOT NULL,
             peer_session_id TEXT NOT NULL, peer_title TEXT NOT NULL, created_at TEXT NOT NULL,
             UNIQUE(pair_id, session_id))""",
-        # Mail this server's chats sent to foreign chats, and read receipts for
-        # foreign mail its chats read. The hub drains it.
+        # Mail this server's chats sent to foreign chats, read receipts for foreign
+        # mail its chats read, and titles its chats gave to foreign chats (the title
+        # is the body). The hub drains it.
         """CREATE TABLE IF NOT EXISTS cross_server_outbox (
-            id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('mail','read')),
+            id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('mail','read','title')),
             pair_id TEXT NOT NULL, route_id TEXT NOT NULL,
             source_session_id TEXT NOT NULL, source_title TEXT NOT NULL,
             source_run_id TEXT NOT NULL, idempotency_key TEXT NOT NULL,
@@ -109,8 +119,11 @@ def initialize(connection: sqlite3.Connection) -> None:
     )
     for statement in statements:
         connection.execute(statement)
-    if "attachments_json" not in {row[1] for row in connection.execute("PRAGMA table_info(cross_server_outbox)")}:
-        connection.execute("ALTER TABLE cross_server_outbox ADD COLUMN attachments_json TEXT")
+    if rebuild:
+        # Columns are copied by name: a table from before attachments has one column fewer.
+        columns = ", ".join(row[1] for row in connection.execute("PRAGMA table_info(cross_server_outbox_before_titles)"))
+        connection.execute(f"INSERT INTO cross_server_outbox ({columns}) SELECT {columns} FROM cross_server_outbox_before_titles")
+        connection.execute("DROP TABLE cross_server_outbox_before_titles")
 
 
 def routes(connection: sqlite3.Connection) -> list[dict]:
@@ -167,6 +180,10 @@ def enqueue(connection: sqlite3.Connection, item: dict) -> tuple[dict, bool]:
             raise Refused("idempotency key was already used for a different message")
         return dict(existing), False
     timestamp = now_iso()
+    if item["kind"] == "title":
+        # An earlier title still waiting for a retry would otherwise arrive after this one and replace it.
+        connection.execute("""UPDATE cross_server_outbox SET state='failed', error='replaced by a newer title', finished_at=?
+            WHERE kind='title' AND route_id=? AND state='pending'""", (timestamp, item["route_id"]))
     connection.execute("""INSERT INTO cross_server_outbox (id, kind, pair_id, route_id, source_session_id,
         source_title, source_run_id, idempotency_key, target_server_identity, target_session_id, body,
         reply_to_message_id, message_id, source_user_instruction, source_user_delegation_action,
@@ -294,6 +311,8 @@ class End:
     async def attachment(self, item: dict, index: int, folder: Path) -> Path: raise NotImplementedError
     async def put_attachment(self, item: dict, index: int, path: Path) -> None: raise NotImplementedError
     async def receipt(self, item: dict) -> None: raise NotImplementedError
+    # The item's body is the title its source chat gave to its target chat.
+    async def set_title(self, item: dict, source_identity: str) -> None: raise NotImplementedError
     async def describe(self, session_id: str) -> dict: raise NotImplementedError
     async def install(self, route: dict) -> None: raise NotImplementedError
     async def uninstall(self, pair_id: str) -> None: raise NotImplementedError
@@ -389,6 +408,13 @@ class RemoteEnd(End):
     async def receipt(self, item: dict) -> None:
         await self._request("POST", "/api/admin/cross-server/receipts",
                             json={"message_id": item["message_id"], "read_at": item["created_at"]})
+
+    async def set_title(self, item: dict, source_identity: str) -> None:
+        # A server that predates this answers 404, which fails the item at once.
+        await self._request("POST", "/api/admin/cross-server/titles",
+                            json={"pair_id": item["pair_id"], "source_server_identity": source_identity,
+                                  "source_session_id": item["source_session_id"],
+                                  "target_session_id": item["target_session_id"], "title": item["body"]})
 
     async def describe(self, session_id: str) -> dict:
         return await self._request("GET", f"/api/admin/cross-server/sessions/{session_id}")
@@ -523,6 +549,10 @@ class Relay:
                 await source.record_result(item["id"], "pending", "this hub has no such chat pair", retry_after=300.0,
                                            hub=self.local.identity)
             return
+        if expired and item["kind"] == "title":
+            # Mail this late is still wanted; a title would replace whatever the chat was named since.
+            await source.record_result(item["id"], "failed", "No hub delivered this title within 24 hours.")
+            return
         target_identity = item["target_server_identity"]
         target = self.ends().get(target_identity)
         try:
@@ -545,6 +575,8 @@ class Relay:
                     for index in range(len(item.get("attachments") or [])):
                         await target.put_attachment(item, index, await source.attachment(item, index, Path(folder)))
                 await target.deliver(item, source.identity, source.name)
+            elif item["kind"] == "title":
+                await target.set_title(item, source.identity)
             else:
                 await target.receipt(item)
         except Refused as exc:

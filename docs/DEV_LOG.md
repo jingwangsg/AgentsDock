@@ -1,5 +1,41 @@
 # Public development log
 
+## 2026-11-15 — An agent can title a chat on another server (server)
+
+- An agent that hands work to a chat gives that chat a title with
+  `chats title --route`. When the chat was on another server (for example a
+  chat the composer's "Create new agent" made on the hub for a chat on a
+  remote), the server answered 409 "naming a chat on another server is not
+  supported yet", and the chat stayed "New agent".
+- The title now travels like mail: the source server puts it in its
+  cross-server outbox, the hub takes it and calls the target server, and the
+  target server sets it. The helper answers `"state": "queued"`, because the
+  target server sets the title after the answer.
+- The limits of mail apply. The hub relays a title only between the two chats
+  of a pair in its registry. The target server sets it only when it comes
+  from the chat the target chat is paired with, cleans it again (one line,
+  capped, no leading `@`) and stores it as an agent's title, as for a chat on
+  the same server. An archived chat keeps its title.
+- Two rules differ from mail. A newer title for the same chat fails an older
+  one that still waits for a retry, so the older one cannot arrive last. A
+  title is not delivered after 24 hours, because it would replace whatever
+  the chat was named since.
+- Once the hub reports the title set, the source server's stored title of
+  the target chat (its route list, its chips) changes too.
+- A hub or a target server that predates this fails the item at once. The
+  chat list's other menu commands still do not reach a chat on another server.
+
+```text
+Change and expected user behavior: `chats title --route` for a chat on another server sets that chat's title instead of failing with 409.
+Source commit / app build / server version: branch feat/cross-server-chat-title; server 1.0.7-beta.11 plus the branch; desktop and Android unchanged.
+Test surface: unit tests of the outbox storage, the relay and both servers' handlers; two real server processes from the branch (an isolated hub and an isolated remote behind a stand-in ssh that forwards the main tunnel), driven through their HTTP APIs, with real Claude turns.
+Actions exercised and observed outcomes: (1) The reported failure, read from the remote's chat events: `chats title --route <route> "<title>"` answered 409, and the route list showed the hub chat as "New agent". (2) Real processes, remote to hub: two chats created and paired through the hub; a Claude turn in the remote's chat ran `chats list` (the route to "New agent" on "hub") and `chats title --route`, which answered `"ok": true, "state": "queued"`; the hub chat's title in the hub's chat list became the new title; the remote's outbox item was marked delivered 8 ms after it was stored; the remote's stored title of the hub chat changed too. (3) Hub to remote: a Claude turn in the hub chat gave the remote's chat a title with a leading "@"; the hub called `POST /api/admin/cross-server/titles` (200), the remote's chat got the title without the "@", and the hub's item was delivered in 15 ms. Both times are over a local TCP forward. (4) The remote's title endpoint called as the hub calls it: 409 for the chat while archived, with its title unchanged; 200 after it was unarchived; 409 from a chat it is not paired with. (5) Unit tests: an outbox table from before this change, with and without the attachments column, is rebuilt with its rows and index and then takes a title; a newer title fails an older pending one of the same route only; the relay calls the target server for a title, fails the item at once on a refusal, and fails a title older than 24 hours while it still delivers mail that old; the target server refuses a title from another chat, another server, another pair, for another chat, for an archived chat, and an empty one. Without the change the server test fails with the 409.
+Real boundaries exercised; any mocked/stubbed boundaries: HTTP between the two servers, the outbox long poll, the SQLite ledgers and real provider turns. The ssh tunnel was a local TCP forward. The real-process run was repeated on the final code. The two rules that differ from mail (a newer title, 24 hours) ran in unit tests only. A hub or a target server that predates the change was exercised only in unit tests and by a review's simulation. The apps were not driven: no client code changed, and the chat lists read the saved title as before.
+Focused regression / typecheck / production build: tests/test_cross_server_mail.py and tests/test_agent_cross_chat_routes.py; all 8 server shards.
+Remaining limitations or blocked acceptance: the agent gets "queued", not the result; a title that fails on the way is written to the source server's log only. The chat list's other menu commands (pin, move, archive) still do not reach a chat on another server.
+Availability: source only until the hub and the remotes run this version.
+```
+
 ## 2026-11-13 — Server: eight more JSON reads are gzipped for a client that accepts gzip (server)
 
 - The server already gzipped the chat list, a chat's page, its subagent and
