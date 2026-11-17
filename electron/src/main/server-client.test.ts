@@ -3821,17 +3821,17 @@ describe('AgentServerClient live stream', () => {
     expect(timeout).toHaveBeenCalledWith(210_000)
   })
 
-  it('allows a canvas download the time a compile and a slow link take', async () => {
+  it('allows a canvas record to outlast the default timeout over a slow link, down and up', async () => {
     const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation(() => new AbortController().signal)
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ name: 'report', revision: 1 }), {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ name: 'report', revision: 1 }), {
       status: 200, headers: { 'Content-Type': 'application/json' }
     })))
     const client = new AgentServerClient('http://example.test:7850', 'secret')
 
     await client.getCanvas('chat', 'report')
+    await client.putCanvasSource('chat', 'report', 'source', 1)
 
-    expect(timeout).toHaveBeenCalledTimes(1)
-    expect(timeout).toHaveBeenCalledWith(180_000)
+    expect(timeout.mock.calls).toEqual([[180_000], [180_000]])
   })
 
   it('bounds background subagent hydration with its dedicated short timeout', async () => {

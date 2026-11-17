@@ -156,9 +156,9 @@ const CHAT_SHARE_SNAPSHOT_TIMEOUT_MS = 40_000
 const DIGEST_PREVIEW_REQUEST_TIMEOUT_MS = 210_000
 const TIMELINE_REQUEST_TIMEOUT_MS = 120_000
 const SUBAGENT_SNAPSHOT_REQUEST_TIMEOUT_MS = 15_000
-// The server compiles an edited canvas before it answers (agentsdock_canvas.COMPILE_TIMEOUT_SECONDS = 180), and the
-// answer carries the source with its bundle: 0.7 MB gzipped for a 1.3 MB report, 12-37 s over a remote link measured
-// at 18-56 KB/s. The mobile client allows the same time.
+// A canvas travels as one record with its source and its bundle, after the server's compile of an edit. Measured
+// 2026-11-17: 0.65 MiB gzipped for a 1.3 MiB report took 12-37 s over a remote link. 180 s is what the mobile client
+// allows for the download.
 const CANVAS_REQUEST_TIMEOUT_MS = 180_000
 // Answers kept for revalidation (getRevalidated): the chat list, plus the subagent snapshots and files lists of the
 // chats opened last. A subagent snapshot can reach about 0.5 MB of JSON.
@@ -1950,7 +1950,9 @@ export class AgentServerClient {
 
   /** Saves an edited source; the server answers 409 when the canvas changed after `baseRevision`. */
   putCanvasSource(sessionId: string, name: string, source: string, baseRevision: number): Promise<CanvasRecord> {
-    return this.put(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}/source`, { source, base_revision: baseRevision })
+    return this.request(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}/source`, {
+      method: 'PUT', body: JSON.stringify({ source, base_revision: baseRevision }), signal: AbortSignal.timeout(CANVAS_REQUEST_TIMEOUT_MS)
+    })
   }
 
   listCanvasComments(sessionId: string, name: string): Promise<{ threads: CanvasCommentThread[] }> {
