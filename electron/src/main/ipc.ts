@@ -480,6 +480,7 @@ export function registerIpc(
   handle('canvas:list', sessionId => service.listCanvases(sessionId))
   handle('canvas:get', (sessionId, name) => service.getCanvas(sessionId, name))
   handle('canvas:cached', (sessionId, name) => service.cachedCanvas(sessionId, name))
+  handle('canvas:source', (sessionId, name) => service.getCanvasSource(sessionId, name))
   handle('canvas:export-html', (sessionId, name, theme) => service.exportCanvasHtml(sessionId, name, theme))
   handle('canvas:put-state', (sessionId, name, state) => service.putCanvasState(sessionId, name, state))
   handle('canvas:put-source', (sessionId, name, source, baseRevision) => service.putCanvasSource(sessionId, name, source, baseRevision))

@@ -367,6 +367,34 @@ describe('CanvasPane comments and source editing', () => {
     expect(screen.queryByRole('alert')).toBeNull()
   })
 
+  it('reads the source when the source view opens for a record that came without it, and the record of an edit made meanwhile', async () => {
+    const { source: _source, ...viewed } = compiled
+    const source = vi.fn()
+      .mockResolvedValueOnce({ source: 'edited since', revision: 2 })
+      .mockResolvedValue({ source: 'edited since', revision: 2 })
+    const { api } = await renderWith({ get: vi.fn().mockResolvedValue(viewed), source })
+    expect(source).not.toHaveBeenCalled()
+    // The source belongs to revision 2: the pane checks again and shows the source with that record.
+    api.get.mockResolvedValue({ ...viewed, revision: 2, javascript: 'var a = 2' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Source' }))
+
+    expect(screen.getByText('Loading Canvas…')).toBeInTheDocument()
+    expect(await screen.findByLabelText('Canvas source')).toHaveValue('edited since')
+    expect(source.mock.calls).toEqual([['chat-1', 'report'], ['chat-1', 'report']])
+    expect(api.get).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows why the source could not be read where the source would be', async () => {
+    const { source: _source, ...viewed } = compiled
+    await renderWith({ get: vi.fn().mockResolvedValue(viewed), source: vi.fn().mockRejectedValue(new Error('fetch failed')) })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Source' }))
+
+    expect(await screen.findByText('fetch failed')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Canvas source')).toBeNull()
+  })
+
   it('asks the agent to fix a canvas that does not compile', async () => {
     const send = vi.fn().mockResolvedValue(true)
     fixture.state.sendPromptForSession = send

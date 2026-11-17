@@ -1936,8 +1936,14 @@ export class AgentServerClient {
     return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/canvases`)
   }
 
+  /** The record without its source, about half of the download. A server that predates the option sends the source too. */
   getCanvas(sessionId: string, name: string): Promise<CanvasRecord> {
-    return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}`, this.configuration, CANVAS_REQUEST_TIMEOUT_MS)
+    return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}?source=false`, this.configuration, CANVAS_REQUEST_TIMEOUT_MS)
+  }
+
+  /** The source, with the revision it belongs to, for a record that came without it. */
+  getCanvasSource(sessionId: string, name: string): Promise<{ source: string; revision: number }> {
+    return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}/source`, this.configuration, CANVAS_REQUEST_TIMEOUT_MS)
   }
 
   getCanvasState(sessionId: string, name: string): Promise<{ state: Record<string, unknown> }> {
@@ -1984,7 +1990,8 @@ export class AgentServerClient {
     const response = await fetch(configurationURL(configuration, `/api/canvas-runtime/${asset}`), {
       headers,
       redirect: 'error',
-      signal: combineAbortSignals(configuration.abortController.signal, AbortSignal.timeout(DEFAULT_REQUEST_TIMEOUT_MS))
+      // vendor.js is 277 KB gzipped, downloaded once per runtime version before a first canvas can show.
+      signal: combineAbortSignals(configuration.abortController.signal, AbortSignal.timeout(CANVAS_REQUEST_TIMEOUT_MS))
     })
     if (!response.ok) throw new Error(`Canvas runtime asset ${asset} is unavailable (${response.status}).`)
     return response.text()

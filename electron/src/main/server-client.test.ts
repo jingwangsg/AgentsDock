@@ -3821,17 +3821,26 @@ describe('AgentServerClient live stream', () => {
     expect(timeout).toHaveBeenCalledWith(210_000)
   })
 
-  it('allows a canvas record to outlast the default timeout over a slow link, down and up', async () => {
+  it('reads a canvas record without its source and the source on its own; these, a source save and the runtime may outlast the default timeout', async () => {
     const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation(() => new AbortController().signal)
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ name: 'report', revision: 1 }), {
+    const fetched = vi.fn(async (_url: string) => new Response(JSON.stringify({ name: 'report', revision: 1 }), {
       status: 200, headers: { 'Content-Type': 'application/json' }
-    })))
+    }))
+    vi.stubGlobal('fetch', fetched)
     const client = new AgentServerClient('http://example.test:7850', 'secret')
 
     await client.getCanvas('chat', 'report')
+    await client.getCanvasSource('chat', 'report')
     await client.putCanvasSource('chat', 'report', 'source', 1)
+    await client.canvasRuntimeAsset('vendor.js')
 
-    expect(timeout.mock.calls).toEqual([[180_000], [180_000]])
+    expect(fetched.mock.calls.map(([url]) => url)).toEqual([
+      'http://example.test:7850/api/sessions/chat/canvases/report?source=false',
+      'http://example.test:7850/api/sessions/chat/canvases/report/source',
+      'http://example.test:7850/api/sessions/chat/canvases/report/source',
+      'http://example.test:7850/api/canvas-runtime/vendor.js'
+    ])
+    expect(timeout.mock.calls).toEqual([[180_000], [180_000], [180_000], [180_000]])
   })
 
   it('bounds background subagent hydration with its dedicated short timeout', async () => {

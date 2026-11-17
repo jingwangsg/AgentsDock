@@ -3967,6 +3967,7 @@ interface FakeClientOptions {
   canvasRuntimeAsset?: (asset: string) => Promise<string>
   listCanvases?: AgentServerClient['listCanvases']
   getCanvas?: AgentServerClient['getCanvas']
+  getCanvasSource?: AgentServerClient['getCanvasSource']
   getCanvasState?: AgentServerClient['getCanvasState']
   putCanvasState?: AgentServerClient['putCanvasState']
   stream?: AgentServerClient['stream']
@@ -4158,6 +4159,7 @@ function fakeClient(options: FakeClientOptions = {}) {
     canvasRuntimeAsset: vi.fn(options.canvasRuntimeAsset ?? (async () => '')),
     listCanvases: vi.fn(options.listCanvases ?? (async () => ({ canvases: [] }))),
     getCanvas: vi.fn(options.getCanvas ?? (async () => { throw new Error('canvas not found') })),
+    getCanvasSource: vi.fn(options.getCanvasSource ?? (async () => { throw new Error('canvas not found') })),
     getCanvasState: vi.fn(options.getCanvasState ?? (async () => ({ state: {} }))),
     putCanvasState: vi.fn(options.putCanvasState ?? (async (_sessionId, _name, state) => ({ state }))),
     upload: vi.fn(options.upload ?? (async (_sessionId, path) => ({
@@ -12353,6 +12355,28 @@ describe('Canvas cache', () => {
     expect(second.getCanvasState).toHaveBeenCalledTimes(1)
     expect(second.getCanvas).not.toHaveBeenCalled()
     expect(second.canvasRuntimeAsset).not.toHaveBeenCalled()
+  })
+
+  it('checks a record that came without its source by the size the server gave, and keeps the source read later for the same revision', async () => {
+    // What a server that leaves the source out answers; 'source' would measure 6 bytes.
+    const { source: _source, ...withoutSource } = record()
+    const viewed: CanvasRecord = { ...withoutSource, size: 4096 }
+    const getCanvas = vi.fn(async () => viewed)
+    const getCanvasSource = vi.fn(async () => ({ source: 'edited since', revision: 2 }))
+    const getCanvasState = async () => ({ state: { filter: 'all' } })
+    const { service } = canvasService(fakeClient({ health: health(), getCanvas, getCanvasSource, getCanvasState, listCanvases: listed(1, 'v1', 4096) }), cacheRoot())
+    await service.getCanvas('chat', 'report')
+    getCanvas.mockClear()
+
+    await expect(service.getCanvas('chat', 'report')).resolves.toEqual(viewed)
+    expect(getCanvas).not.toHaveBeenCalled()
+
+    // A source of another revision does not belong to the cached record.
+    await expect(service.getCanvasSource('chat', 'report')).resolves.toEqual({ source: 'edited since', revision: 2 })
+    await expect(service.cachedCanvas('chat', 'report')).resolves.toEqual(viewed)
+    getCanvasSource.mockResolvedValue({ source: 'the source', revision: 1 })
+    await service.getCanvasSource('chat', 'report')
+    await expect(service.cachedCanvas('chat', 'report')).resolves.toEqual({ ...viewed, source: 'the source' })
   })
 
   it.each([
