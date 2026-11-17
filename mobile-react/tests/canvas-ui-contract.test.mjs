@@ -60,7 +60,8 @@ test('a canvas opened before renders from its cached copy and downloads the reco
   // src/lib/canvas-cache.test.ts covers the storage and the state comparison.
   assert.match(sheet, /const cached = identity \? await cachedCanvas\(identity, sessionId, name\) : null/)
   assert.match(sheet, /if \(cached && live\(\) && recordLive\.current\?\.name !== name\) \{/)
-  assert.match(sheet, /bundleCurrent = listed\?\.revision === cached\.revision && listed\.size === new TextEncoder\(\)\.encode\(cached\.source\)\.length/)
+  // A record that came without its source carries the size; one from a server without the option is measured.
+  assert.match(sheet, /bundleCurrent = listed\?\.revision === cached\.revision && listed\.size === \(cached\.size \?\? new TextEncoder\(\)\.encode\(cached\.source \?\? ''\)\.length\)/)
   assert.match(sheet, /current \?\?= await client\.getCanvas\(sessionId, name\)/)
   // A runtime is cached only under the version the server's runtime route serves.
   assert.match(sheet, /version === useAppStore\.getState\(\)\.health\?\.capabilities\?\.canvas_v1\?\.runtime_version/)
@@ -156,7 +157,31 @@ test('comments: pick an element, Ask or Edit it as a stored thread, and pin open
   assert.match(sheet, /case 'comment-open':\n\s*setCommentsOpen\(true\)\n\s*setActiveThread\(message\.id\)/)
   // A turn starting or ending refreshes the threads and reloads a canvas the agent changed.
   assert.match(sheet, /const running = useAppStore\(state => state\.activeSessionIds\.has\(sessionId\)\)/)
-  assert.match(sheet, /if \(current && current\.revision !== recordLive\.current\?\.revision\) setReloadToken/)
+  assert.match(sheet, /if \(current && \(current\.revision !== recordLive\.current\?\.revision \|\| error\)\) setReloadToken/, 'a failed check is repeated for the same revision')
+})
+
+test('a check that fails leaves the canvas on screen with the reason above it, unless the server no longer lists it', () => {
+  assert.match(sheet, /const deleted = await listing\?\.then\(listed => !listed\.canvases\.some\(canvas => canvas\.name === name\), \(\) => false\)/)
+  assert.match(sheet, /if \(deleted \|\| recordLive\.current\?\.name !== name\) setRecord\(null\)\n\s*setError\(errorText\(caught\)\)/)
+  assert.match(sheet, /\{error && record \? <Notice title="Could not check the canvas for a newer version; the one shown may be out of date" detail=\{error\} \/> : null\}/)
+  assert.match(sheet, /\{error && !record\n\s*\? <Notice title="The canvas could not be loaded" detail=\{error\} \/>/)
+  // A source save brings the server's current record: the notice of an earlier check goes.
+  assert.match(sheet, /show\(next\)\n\s*\/\/[^\n]*\n\s*setError\(null\)/)
+  // A check that runs behind a canvas on screen shows in the top bar.
+  assert.match(sheet, /\{checking && record \? <ActivityIndicator testID="canvas-checking" size="small" color=\{colors\.muted\} \/> : null\}/)
+  assert.match(sheet, /\} finally \{\n\s*if \(live\(\)\) setChecking\(false\)/)
+})
+
+test('the record is read without its source, and the source view reads the source for the revision on screen', () => {
+  assert.match(client, /canvases\/\$\{encodeURIComponent\(name\)\}\?source=false`, 180_000\)/)
+  assert.match(client, /getCanvasSource\(sessionId: string, name: string\): Promise<\{ source: string; revision: number \}> \{\n\s*return this\.get\(`\/api\/sessions\/\$\{encodeURIComponent\(sessionId\)\}\/canvases\/\$\{encodeURIComponent\(name\)\}\/source`, 180_000\)/)
+  // A source save carries the source up and the record down: it gets the download's time.
+  assert.match(client, /method: 'PUT', body: JSON\.stringify\(\{ source, base_revision: baseRevision \}\),\n\s*\}, 180_000\)/)
+  assert.match(types, /export interface CanvasRecord extends Omit<CanvasSummary, 'size'> \{\n[^\n]*\n  source\?: string\n[^\n]*\n  size\?: number\n/)
+  assert.match(sheet, /if \(!showSource \|\| record\?\.name !== name \|\| record\.source !== undefined\) return/)
+  assert.match(sheet, /if \(loaded\.revision !== record\.revision\) return setReloadToken\(token => token \+ 1\)\n\s*setRecord\(\{ \.\.\.record, source: loaded\.source \}\)/)
+  assert.match(sheet, /cacheCanvas\(identity, sessionId, name, \{ \.\.\.record, source: loaded\.source, state: stateRef\.current \}\)/)
+  assert.match(sheet, /\{record\.source === undefined\n\s*\? sourceError \? <Notice title="The canvas source could not be loaded" detail=\{sourceError\} \/> : <Loading label="Loading canvas source" \/>/)
 })
 
 test('source: edits save against the revision they started from and confirm before overwriting', () => {

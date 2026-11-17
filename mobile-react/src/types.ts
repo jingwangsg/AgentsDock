@@ -1552,7 +1552,10 @@ export interface CanvasSummary {
 }
 
 export interface CanvasRecord extends Omit<CanvasSummary, 'size'> {
-  source: string
+  /** Absent from a record read for viewing: the page needs the bundle only, and the source view reads the source. */
+  source?: string
+  /** The source's size in bytes, as the list gives it. A server that always sends the source does not send it. */
+  size?: number
   javascript: string
   diagnostics: string | null
   runtime_version: string | null
