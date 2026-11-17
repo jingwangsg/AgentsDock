@@ -1,5 +1,46 @@
 # Public development log
 
+## 2026-11-17 — Desktop Canvas: a large Canvas over a slow link no longer turns into a timeout error or stays on an earlier version (desktop 145, server)
+
+- Reported from a Mac that uses another Mac's hub over a slow link: a Canvas
+  being read turned into `Error invoking remote method 'canvas:get':
+  TimeoutError`, and the pane kept showing an earlier version of a report
+  that an agent was editing.
+- Cause, measured. A Canvas arrives as one record with its source and its
+  compiled bundle: 0.65 MiB gzipped for a 1.3 MiB report. That link carried
+  it in 12, 24 and 37 s, and after an edit the server began to answer 8 to
+  10 s late. The desktop ended the request at 30 s, its default for every
+  request. The pane then replaced the Canvas with the error text. The disk
+  cache kept the last revision whose download had finished within 30 s, so
+  each reopen showed that revision and then the error again.
+- The desktop now gives the Canvas download 180 s, as the phone app does.
+  Saving an edited source gets the same time: that request carries the
+  source up and the record down.
+- A check that fails while a Canvas is on screen leaves it there and shows
+  the reason below it. The chat's next turn checks again, and so does
+  Reload. With no copy on screen, or when the server no longer lists the
+  Canvas, the error shows in its place, as before.
+- The Reload button spins while a check with the server runs. During a slow
+  download the pane still shows the earlier revision; the spinning button
+  tells that a check is under way.
+- Server: the late answer after an edit came from the way the source reached
+  the compiler. Python fed the compiler's input pipe 512 bytes at a time on
+  macOS (4,096 on Linux) and waited for its interpreter lock between writes,
+  which takes long while other threads of the server are busy. The compiler
+  now reads the source from a temporary file. The compiled JavaScript is the
+  same, byte for byte.
+
+```text
+Change and expected user behavior: over a slow link a large Canvas opens and follows an agent's edits instead of ending in a timeout error; a failed check leaves the Canvas readable; on a busy server an edited Canvas compiles in seconds.
+Source commit / app build / server version: branch fix/canvas-slow-link-refresh; desktop 145; server 1.0.7-beta.11 plus the branch; Android unchanged.
+Test surface: unit tests of the desktop client and the Canvas pane; unit tests of the server's Canvas module; an isolated server behind a local TCP forwarder that limits server-to-client bytes for all connections together, with the built desktop app (main's build and the branch's build, each with an empty profile, window hidden) driven over CDP; the compile timed in a Python process with busy threads.
+Actions exercised and observed outcomes: (1) The report, measured on the reporting Mac's link: the record of the Canvas, 686,543 bytes gzipped, downloaded in 12.3, 23.9 and 37.4 s; the Canvas list, 504 bytes, in 1.1 s. That Mac's Canvas cache held no revision newer than the last download that had finished. (2) Reproduction with main's build: a synthetic Canvas with a 1.32 MB source (record 755,810 bytes gzipped) was opened over an unlimited link; then the link was limited to 20,000 bytes/s, the Canvas edited and the change signalled to the pane. 30 s later the pane showed the reported error text in place of the Canvas. Closed and reopened, the pane showed the cached first version within 2 s and the error again 30 s later; the cache files did not change. (3) The same steps with the branch's build: the first version stayed on screen with the Reload button spinning, and the second version replaced it 40 s after the signal, with no error. Reopened, the pane showed the second version within 2 s. (4) Link limited to 1,500 bytes/s and the Canvas edited again: after 179 s the notice appeared below the Canvas, which stayed on its second version. Limit removed and Reload pressed: third version within 2 s, notice gone. (5) Link limited to 1 byte/s, Canvas unchanged, Reload pressed: the list request ended at 30 s, the notice appeared and the Canvas stayed. Limit removed and a turn event signalled for the same revision: the notice went within 2 s. (6) A real Claude turn rewrote the Canvas file with a shell command while the pane showed it over the 20,000 bytes/s link: 39 s after the turn ended the pane showed the new version. (7) A copy of the reported Canvas on the isolated server, opened for the first time at 20,000 bytes/s: main's build showed "Loading Canvas…" for 30 s and then the error; the branch's build had the record after 34 s and the rendered page after 48 s, the runtime bundle being downloaded over the same link. (8) Compile of that copy in a Python process, main against the branch: alone 0.79 s against 0.78 to 0.85 s; with one other thread busy 17 to 47 s against 2.2 to 3.2 s; with two 64 to 83 s against 3.1 to 5.2 s. The compiled JavaScript has the same SHA-256 in every run. The record that a server with the change returned for the copy equals the record that a server without it returned, apart from revision, time and state.
+Real boundaries exercised; any mocked/stubbed boundaries: a real server process, HTTP through the forwarder, the built desktop app with its main process, disk cache and Canvas page protocol, and in (6) a real provider turn with its own events. In (2) to (5) a script raised in the page the window event that the app raises for a turn's events. The limit is a local forwarder with one byte budget for all connections, not the reported link: the reporting Mac was not updated, so the change was not exercised on that link. The rule for a Canvas the server no longer lists, the notice cleared by a source save and the time allowed for a source save ran only in unit tests. The busy threads in (8) were Python loops, not a hub's own load; no hub was restarted.
+Focused regression / typecheck / production build: CanvasPane.test.tsx and server-client.test.ts (each new test fails without its rule); the full desktop suite, 5,528 tests; tsc; electron-vite build; tests/test_agentsdock_canvas.py; all 8 server shards.
+Remaining limitations or blocked acceptance: 180 s limits the whole request. A link too slow for the record in that time still fails, now with the Canvas kept, and a connection that stops without closing is reported after 180 s instead of 30 s. The record still carries the source together with the bundle; the bundle alone is about half of it. The runtime bundle, 277 KB gzipped, is downloaded once per runtime version under the 30 s default. The phone app already allows 180 s but still replaces the Canvas with the error text when a check fails.
+Availability: desktop 145 built locally; the compile change is source only until the hub restarts and the remotes are redeployed.
+```
+
 ## 2026-11-15 — An agent can title a chat on another server (server)
 
 - An agent that hands work to a chat gives that chat a title with
