@@ -19,6 +19,19 @@ build, and an ad-hoc signed local Electron package. It installs the result at:
 dist/AgentsDock.app
 ```
 
+For an installer package instead of an app bundle, on an Apple-silicon Mac:
+
+```bash
+./scripts/build_electron_local_pkg.sh
+```
+
+The script takes the next build number in `electron/package.json`, runs the
+production build and writes
+`electron/dist/AgentsDock-<version>-<build>-mac-arm64.pkg`. The package is not
+signed with a Developer ID and not notarized; the script checks the signature
+and the build number of the app inside it. `--no-bump` builds the current
+number again. The script does not commit the build number.
+
 The local app contains an update-disable marker and cannot consume or replace a
 signed production release. Direct desktop releases are built and notarized in
 CI, then pass through a reviewed GitHub draft. See
