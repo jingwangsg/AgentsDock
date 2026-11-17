@@ -541,6 +541,16 @@ class CanvasCommentRouteTests(unittest.TestCase):
         assert saved.status_code == 200 and saved.headers["content-encoding"] == "gzip"
         assert saved.json()["javascript"] == plain.json()["javascript"]
 
+    @needs_node
+    def test_a_viewer_reads_the_record_without_its_source_and_the_source_on_its_own(self) -> None:
+        full = self.client.get(self.base).json()
+        viewed = self.client.get(self.base, params={"source": "false"}).json()
+        assert viewed == {key: value for key, value in full.items() if key != "source"}
+        assert full["source"] == VALID_SOURCE and full["size"] == self.path.stat().st_size
+        source = self.client.get(f"{self.base}/source", headers={"Accept-Encoding": "gzip"})
+        assert source.json() == {"source": VALID_SOURCE, "revision": full["revision"]}
+        assert source.headers["content-encoding"] == "gzip"
+
     def test_thread_lifecycle(self) -> None:
         response = self.client.post(f"{self.base}/comments", json={"anchor": ANCHOR, "mode": "ask", "body": "why?", "revision": 5, "client_capabilities": ["claude_sdk_interactive_v1"]})
         assert response.status_code == 200, response.text

@@ -469,6 +469,8 @@ def build(path: Path) -> dict[str, Any]:
         "diagnostics": cached.get("diagnostics"),
         "runtime_version": version,
         "revision": stat.st_mtime_ns,
+        # As in the list: a client holding a record without its source compares this with the listed size.
+        "size": stat.st_size,
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stat.st_mtime)),
         "state": read_state(path),
     }
@@ -573,13 +575,27 @@ def register_canvas_routes(
         return Response(content=body, media_type="application/json", headers=headers)
 
     @app.get("/api/sessions/{session_id}/canvases/{name}", response_class=Response)
-    async def get_session_canvas(session_id: str, name: str, accept_encoding: str = Header(default="")):
+    async def get_session_canvas(session_id: str, name: str, source: bool = True, accept_encoding: str = Header(default="")):
         _, path = resolve(session_id, name)
         try:
             built = await asyncio.to_thread(build, path)
         except ValueError as exc:
             raise HTTPException(status_code=413, detail=str(exc)) from None
+        # The page needs the bundle only, and the source is about half of the body: a viewer asks for
+        # the record without it and reads the source when its source view opens.
+        if not source:
+            del built["source"]
         return await asyncio.to_thread(built_canvas_response, built, accept_encoding)
+
+    @app.get("/api/sessions/{session_id}/canvases/{name}/source", response_class=Response)
+    async def get_session_canvas_source(session_id: str, name: str, accept_encoding: str = Header(default="")):
+        _, path = resolve(session_id, name)
+        try:
+            built = await asyncio.to_thread(build, path)
+        except ValueError as exc:
+            raise HTTPException(status_code=413, detail=str(exc)) from None
+        # The revision tells the viewer whether this source belongs to the record it shows.
+        return await asyncio.to_thread(built_canvas_response, {"source": built["source"], "revision": built["revision"]}, accept_encoding)
 
     @app.get("/api/sessions/{session_id}/canvases/{name}/state")
     async def get_session_canvas_state(session_id: str, name: str) -> dict[str, Any]:
