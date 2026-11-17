@@ -3967,6 +3967,7 @@ interface FakeClientOptions {
   canvasRuntimeAsset?: (asset: string) => Promise<string>
   listCanvases?: AgentServerClient['listCanvases']
   getCanvas?: AgentServerClient['getCanvas']
+  getCanvasSource?: AgentServerClient['getCanvasSource']
   getCanvasState?: AgentServerClient['getCanvasState']
   putCanvasState?: AgentServerClient['putCanvasState']
   stream?: AgentServerClient['stream']
@@ -4158,6 +4159,7 @@ function fakeClient(options: FakeClientOptions = {}) {
     canvasRuntimeAsset: vi.fn(options.canvasRuntimeAsset ?? (async () => '')),
     listCanvases: vi.fn(options.listCanvases ?? (async () => ({ canvases: [] }))),
     getCanvas: vi.fn(options.getCanvas ?? (async () => { throw new Error('canvas not found') })),
+    getCanvasSource: vi.fn(options.getCanvasSource ?? (async () => { throw new Error('canvas not found') })),
     getCanvasState: vi.fn(options.getCanvasState ?? (async () => ({ state: {} }))),
     putCanvasState: vi.fn(options.putCanvasState ?? (async (_sessionId, _name, state) => ({ state }))),
     upload: vi.fn(options.upload ?? (async (_sessionId, path) => ({
@@ -12353,6 +12355,31 @@ describe('Canvas cache', () => {
     expect(second.getCanvasState).toHaveBeenCalledTimes(1)
     expect(second.getCanvas).not.toHaveBeenCalled()
     expect(second.canvasRuntimeAsset).not.toHaveBeenCalled()
+  })
+
+  it('compares a cached copy without its source by the record\'s size, and adds a source of the same revision to the copy', async () => {
+    // 4096 is not the 6 bytes that 'source' measures: a match proves the record's size was compared.
+    const { source: _source, ...rest } = record()
+    const withoutSource: CanvasRecord = { ...rest, size: 4096 }
+    const getCanvas = vi.fn(async () => withoutSource)
+    const getCanvasSource = vi.fn(async () => ({ source: 'edited since', revision: 2 }))
+    const getCanvasState = async () => ({ state: { filter: 'all' } })
+    const root = cacheRoot()
+    const client = fakeClient({ health: health(), getCanvas, getCanvasSource, getCanvasState, listCanvases: listed(1, 'v1', 4096) })
+    const { service } = canvasService(client, root)
+    await service.getCanvas('chat', 'report')
+    getCanvas.mockClear()
+
+    await expect(service.getCanvas('chat', 'report')).resolves.toEqual(withoutSource)
+    expect(getCanvas).not.toHaveBeenCalled()
+
+    // A source of another revision does not belong to the cached copy.
+    await expect(service.getCanvasSource('chat', 'report')).resolves.toEqual({ source: 'edited since', revision: 2 })
+    await expect(service.cachedCanvas('chat', 'report')).resolves.toEqual(withoutSource)
+    getCanvasSource.mockResolvedValue({ source: 'the source', revision: 1 })
+    await service.getCanvasSource('chat', 'report')
+    // Read by another service from the same directory: the copy on disk has the source.
+    await expect(canvasService(client, root).service.cachedCanvas('chat', 'report')).resolves.toEqual({ ...withoutSource, source: 'the source' })
   })
 
   it.each([

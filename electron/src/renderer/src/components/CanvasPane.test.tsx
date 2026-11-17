@@ -367,6 +367,79 @@ describe('CanvasPane comments and source editing', () => {
     expect(screen.queryByRole('alert')).toBeNull()
   })
 
+  it('reads the source when the source view opens, and checks again when the source is of a newer revision', async () => {
+    const { source: _source, ...withoutSource } = compiled
+    const source = vi.fn().mockResolvedValue({ source: 'edited since', revision: 2 })
+    const { api } = await renderWith({ get: vi.fn().mockResolvedValue(withoutSource), source })
+    expect(source).not.toHaveBeenCalled()
+    // The source belongs to revision 2: the pane checks again and shows the source with that record.
+    api.get.mockResolvedValue({ ...withoutSource, revision: 2, javascript: 'var a = 2' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Source' }))
+
+    expect(screen.getByText('Loading Canvas source…')).toBeInTheDocument()
+    expect(await screen.findByLabelText('Canvas source')).toHaveValue('edited since')
+    expect(source.mock.calls).toEqual([['chat-1', 'report'], ['chat-1', 'report']])
+    expect(api.get).toHaveBeenCalledTimes(2)
+  })
+
+  it('waits for a running check before it reads the source, and reads it for the record the check brings', async () => {
+    const { source: _source, ...withoutSource } = compiled
+    const source = vi.fn().mockResolvedValue({ source: 'edited since', revision: 2 })
+    const { api } = await renderWith({ get: vi.fn().mockResolvedValue(withoutSource), source })
+    let answer = (_value: unknown) => {}
+    api.list.mockResolvedValue({ canvases: [{ name: 'report', path: compiled.path, revision: 2 }] })
+    api.get.mockImplementation(() => new Promise(resolve => { answer = resolve }))
+    window.dispatchEvent(new CustomEvent('agentsdock:canvases-changed', { detail: { sessionId: 'chat-1' } }))
+    await waitFor(() => expect(api.get).toHaveBeenCalledTimes(2))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Source' }))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(source).not.toHaveBeenCalled()
+
+    answer({ ...withoutSource, revision: 2, javascript: 'var a = 2' })
+    expect(await screen.findByLabelText('Canvas source')).toHaveValue('edited since')
+    expect(source).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows why the source could not be read where the source would be, and reads it again at Reload', async () => {
+    const { source: _source, ...withoutSource } = compiled
+    const source = vi.fn().mockRejectedValueOnce(new Error('fetch failed')).mockResolvedValue({ source: 'old', revision: 1 })
+    await renderWith({ get: vi.fn().mockResolvedValue(withoutSource), source })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Source' }))
+
+    expect(await screen.findByText('fetch failed')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Canvas source')).toBeNull()
+
+    fireEvent.click(screen.getByTitle('Reload'))
+
+    expect(await screen.findByLabelText('Canvas source')).toHaveValue('old')
+  })
+
+  it('keeps the editor and its draft when a check brings a record whose source is still to be read', async () => {
+    const { source: _source, ...withoutSource } = compiled
+    let answer = (_value: unknown) => {}
+    const source = vi.fn(() => new Promise(resolve => { answer = resolve }))
+    const { api } = await renderWith({ source })
+    fireEvent.click(screen.getByRole('button', { name: 'Source' }))
+    fireEvent.change(await screen.findByLabelText('Canvas source'), { target: { value: 'mine' } })
+    api.list.mockResolvedValue({ canvases: [{ name: 'report', path: compiled.path, revision: 2 }] })
+    api.get.mockResolvedValue({ ...withoutSource, revision: 2, javascript: 'var a = 2' })
+
+    window.dispatchEvent(new CustomEvent('agentsdock:canvases-changed', { detail: { sessionId: 'chat-1' } }))
+
+    // The record of revision 2 is on screen, without its source: the editor stays, with the typing.
+    expect(await screen.findByText('The Canvas changed after you started editing')).toBeInTheDocument()
+    await waitFor(() => expect(source).toHaveBeenCalledTimes(1))
+    expect(screen.getByLabelText('Canvas source')).toHaveValue('mine')
+    expect(screen.queryByText('Loading Canvas source…')).toBeNull()
+
+    answer({ source: 'theirs', revision: 2 })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(screen.getByLabelText('Canvas source')).toHaveValue('mine')
+  })
+
   it('asks the agent to fix a canvas that does not compile', async () => {
     const send = vi.fn().mockResolvedValue(true)
     fixture.state.sendPromptForSession = send

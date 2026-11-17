@@ -769,9 +769,14 @@ export class AgentServerClient {
   listCanvases(sessionId: string): Promise<{ canvases: CanvasSummary[]; capability?: { runtime_version?: string | null } }> {
     return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/canvases`)
   }
+  /** The record without its source, about half of the download. A server without the `source` option sends the source too. */
   getCanvas(sessionId: string, name: string): Promise<CanvasRecord> {
     // The server compiles the report on first read (agentsdock_canvas.COMPILE_TIMEOUT_SECONDS = 180).
-    return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}`, 180_000)
+    return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}?source=false`, 180_000)
+  }
+  /** The source, with the revision it belongs to, for a record that came without it. */
+  getCanvasSource(sessionId: string, name: string): Promise<{ source: string; revision: number }> {
+    return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}/source`, 180_000)
   }
   getCanvasState(sessionId: string, name: string): Promise<{ state: Record<string, unknown> }> {
     return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}/state`)
@@ -781,7 +786,10 @@ export class AgentServerClient {
   }
   /** Saves an edited source; the server answers 409 when the canvas changed after `baseRevision`. */
   putCanvasSource(sessionId: string, name: string, source: string, baseRevision: number): Promise<CanvasRecord> {
-    return this.put(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}/source`, { source, base_revision: baseRevision })
+    // A save sends the source and waits for the compiled record: the same limit as getCanvas.
+    return this.request(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}/source`, {
+      method: 'PUT', body: JSON.stringify({ source, base_revision: baseRevision }),
+    }, 180_000)
   }
   listCanvasComments(sessionId: string, name: string): Promise<{ threads: CanvasCommentThread[] }> {
     return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}/comments`)

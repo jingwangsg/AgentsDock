@@ -469,9 +469,20 @@ def build(path: Path) -> dict[str, Any]:
         "diagnostics": cached.get("diagnostics"),
         "runtime_version": version,
         "revision": stat.st_mtime_ns,
+        # As in the list: a client that holds a record without its source compares the two.
+        "size": stat.st_size,
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stat.st_mtime)),
         "state": read_state(path),
     }
+
+
+def read_source(path: Path) -> dict[str, Any]:
+    """The source with the revision it belongs to. It does not compile: a compile that the host
+    failed is not cached, so each read would run it again."""
+    stat = path.stat()
+    if stat.st_size > MAX_SOURCE_BYTES:
+        raise ValueError(SOURCE_TOO_LARGE)
+    return {"source": path.read_text(encoding="utf-8"), "revision": stat.st_mtime_ns}
 
 
 def list_canvases(directory: Path) -> list[dict[str, Any]]:
@@ -573,13 +584,27 @@ def register_canvas_routes(
         return Response(content=body, media_type="application/json", headers=headers)
 
     @app.get("/api/sessions/{session_id}/canvases/{name}", response_class=Response)
-    async def get_session_canvas(session_id: str, name: str, accept_encoding: str = Header(default="")):
+    async def get_session_canvas(session_id: str, name: str, source: bool = True, accept_encoding: str = Header(default="")):
         _, path = resolve(session_id, name)
         try:
             built = await asyncio.to_thread(build, path)
         except ValueError as exc:
             raise HTTPException(status_code=413, detail=str(exc)) from None
+        # The page needs the bundle only, and the source is about half of the body: a client asks for
+        # the record without it and reads the source when its source view opens.
+        if not source:
+            del built["source"]
         return await asyncio.to_thread(built_canvas_response, built, accept_encoding)
+
+    @app.get("/api/sessions/{session_id}/canvases/{name}/source", response_class=Response)
+    async def get_session_canvas_source(session_id: str, name: str, accept_encoding: str = Header(default="")):
+        _, path = resolve(session_id, name)
+        try:
+            # The revision tells the client whether this source belongs to the record it shows.
+            source = await asyncio.to_thread(read_source, path)
+        except ValueError as exc:
+            raise HTTPException(status_code=413, detail=str(exc)) from None
+        return await asyncio.to_thread(built_canvas_response, source, accept_encoding)
 
     @app.get("/api/sessions/{session_id}/canvases/{name}/state")
     async def get_session_canvas_state(session_id: str, name: str) -> dict[str, Any]:

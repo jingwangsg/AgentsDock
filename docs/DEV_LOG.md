@@ -1,5 +1,41 @@
 # Public development log
 
+## 2026-11-17 — Canvas: the download leaves out the source, half the bytes; the phone keeps a Canvas on screen when a check fails (server, desktop 146, Android 89)
+
+- A Canvas arrived as one record with its source and its compiled bundle.
+  The page needs the bundle only. For a 1.3 MiB report the record was
+  686,513 bytes gzipped; without the source it is 343,241.
+- The server can now leave the source out of the record (`?source=false`)
+  and serves the source on its own, with the revision it belongs to. The
+  record carries the source file's size, so a client that holds a record
+  without its source can still compare its copy with the list. A client
+  that does not ask for the option gets the record as before.
+- Desktop and phone read the record without its source. The source view
+  reads the source when it opens; on the phone that view opens from the
+  notice of a Canvas that did not compile or reported an error. A draft
+  stays in the editor while the source of a newer record is read. A server
+  without the option still sends the source in the record, and the clients
+  use it.
+- Phone: a check that fails while a Canvas is on screen now leaves it there
+  and shows the reason above it, as on the desktop since build 145. The
+  chat's next turn checks again, and so does Reload. A Canvas the server no
+  longer lists, and a Canvas whose runtime did not arrive, show the error
+  in their place. An indicator in the top bar shows a check that runs while
+  a Canvas is on screen.
+- Saving a source on the phone and the runtime download on the desktop get
+  180 s, like the record.
+
+```text
+Change and expected user behavior: a Canvas opens and follows edits in about half the time over a slow link; on the phone a failed check leaves the Canvas readable.
+Source commit / app build / server version: branch feat/canvas-smaller-download; desktop 146; Android 89; server 1.0.7-beta.11 plus the branch.
+Test surface: unit tests of the server's Canvas routes and of the desktop client, service and pane; the phone client's test and the phone's source-text contract tests; an isolated server behind a local forwarder that limits server-to-client bytes for all connections together, with the built desktop app (window hidden, driven over CDP) and with the phone app on an Android emulator (the branch's JavaScript in the build-88 package, driven with adb and uiautomator).
+Actions exercised and observed outcomes: (1) Sizes on the isolated server, gzipped: a copy of the reported Canvas 686,513 bytes with its source, 343,241 without, the source alone 342,992; a synthetic Canvas with a 1.32 MB source 755,825, 380,304 and 378,456. (2) Desktop at 20,000 bytes/s: after an edit the new version replaced the old one 20 s after the signal; the build before this change took 40 s. The cached copy on disk is 1.34 MB instead of 2.67 MB. (3) Desktop source view at 20,000 bytes/s: "Loading Canvas source…", then the source after 18 s; a typed line was saved and is in the file. A second typed line stayed in the editor while the Canvas was edited on the server and the check ran (18 s), with the note that the Canvas changed; Discard then showed the new version's source. The server's log shows the record read first and the source read after it. (4) The same desktop build against a server without the option: the record came with its source, the source view showed it at once and the save worked; that server answers 405 to a source read, which the app did not send. (5) Phone at 20,000 bytes/s: Reload after an edit showed the indicator with the old version on screen, and the new version after 23 s. (6) Phone at 1 byte/s: after 33 s the notice appeared above the Canvas, which stayed; with the limit removed, Reload cleared the notice within 2 s. (7) Phone, a Canvas that does not compile: "Show source" read the source and the editor showed it within 3 s; text typed there stayed in the editor after the file changed on the server and Reload ran a check. (8) Phone, a Canvas deleted on the server whose copy the phone held: the error replaced the copy within 3 s. No fatal exception in logcat.
+Real boundaries exercised; any mocked/stubbed boundaries: a real server process, HTTP through the forwarder, the built desktop app and the phone app on an emulator. The desktop's change signal was raised in the page by script, as in the entry below; the phone's checks were started with its Reload button. The phone ran the branch's JavaScript inside the build-88 package; build 89 itself was not driven. The phone's rule for a runtime that did not arrive is covered by no test that executes it. iOS was not built. The reporting Mac's link was not used.
+Focused regression / typecheck / production build: tests/test_agentsdock_canvas.py; CanvasPane.test.tsx, service.test.ts and server-client.test.ts; the full desktop suite, 5,533 tests; all 8 server shards; the phone's AgentServerClient, canvas-cache, canvas-page and chat-outputs tests and its 450 contract tests; tsc for desktop and phone; electron-vite build.
+Remaining limitations or blocked acceptance: from a hub that has not restarted, or a remote that has not been redeployed, the record still comes with its source and nothing is saved. A desktop older than 146 cannot check a Canvas whose cached copy a newer desktop wrote without the source; it shows the copy with the notice. The source view reads the source again for each new revision. A source save still sends the whole source and receives the whole record.
+Availability: desktop 146 and Android 89 built locally; the server part is source only until the hub restarts and the remotes are redeployed.
+```
+
 ## 2026-11-17 — Desktop Canvas: a large Canvas over a slow link no longer turns into a timeout error or stays on an earlier version (desktop 145, server)
 
 - Reported from a Mac that uses another Mac's hub over a slow link: a Canvas

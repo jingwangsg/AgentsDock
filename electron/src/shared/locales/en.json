@@ -129,6 +129,7 @@
   "canvas.selecting": "Click an element in the Canvas (shift-click for more)",
   "canvas.compileFailed": "The Canvas did not compile",
   "canvas.loading": "Loading Canvas…",
+  "canvas.loadingSource": "Loading Canvas source…",
   "canvas.pageError": "Canvas runtime error",
   "canvas.checkFailed": "Could not check the Canvas for a newer version; the one shown may be out of date",
   "canvas.resize": "Resize Canvas",

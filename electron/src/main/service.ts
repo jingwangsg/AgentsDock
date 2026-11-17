@@ -5066,8 +5066,9 @@ export class AppService {
       ])
       listed = list.canvases.find(canvas => canvas.name === name)
       // The revision is the file's mtime, which some file systems keep in whole seconds: the size catches most
-      // edits within one second. A source with CRLF line ends never matches and is downloaded each time.
-      bundleCurrent = listed?.revision === cached.revision && listed.size === Buffer.byteLength(cached.source)
+      // edits within one second. A copy from a server without the `source` option is measured by its source;
+      // there a source with CRLF line ends never matches and is downloaded each time.
+      bundleCurrent = listed?.revision === cached.revision && listed.size === (cached.size ?? Buffer.byteLength(cached.source ?? ''))
         && list.capability?.runtime_version === cached.runtime_version
       if (bundleCurrent) record = sameCanvasState(state, cached.state) ? cached : { ...cached, state }
     }
@@ -5092,6 +5093,17 @@ export class AppService {
       else await this.canvasCache.putRecord(scope.namespace, sessionId, name, record)
     }
     return record
+  }
+
+  /** The source of a canvas whose record came without it. The cached copy of the same revision keeps it. */
+  async getCanvasSource(sessionId: string, name: string): Promise<{ source: string; revision: number }> {
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    const loaded = await scope.client.getCanvasSource(sessionId, name)
+    this.assertCurrentScope(scope)
+    const cached = await this.canvasCache.record(scope.namespace, sessionId, name)
+    if (cached?.revision === loaded.revision) await this.canvasCache.putRecord(scope.namespace, sessionId, name, { ...cached, source: loaded.source })
+    return loaded
   }
 
   /** Aggregates the whole cached history so the panel is not limited to the renderer's event window. */

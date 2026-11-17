@@ -29,6 +29,7 @@ import type { CanvasCommentMode, CanvasCommentThread, CanvasRecord, CanvasSummar
 import { Text, TextInput } from './AppText'
 import { CanvasCommentSubmit, CanvasCommentThreads, canvasAnchorLabel } from './CanvasCommentThreads'
 import { ModalSafeArea } from './ModalSafeArea'
+import { ActivityIndicator } from './material/ActivityIndicator'
 import { IconButton, Loading, SheetCloseButton } from './ui'
 
 const STATE_SAVE_DELAY_MS = 400
@@ -87,8 +88,13 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
   const [canvases, setCanvases] = useState<CanvasSummary[]>([])
   const [record, setRecord] = useState<CanvasRecord | null>(null)
   const [runtime, setRuntime] = useState<{ version: string; shell: string; vendor: string } | null>(null)
+  /** Why the last check with the server, or the runtime download after it, failed. Shown in place of the canvas, or above the canvas when one is on screen, which stays. */
   const [error, setError] = useState<string | null>(null)
+  /** A check with the server is running. Over a slow link it takes tens of seconds, and until it ends the canvas on screen may be an earlier revision. */
+  const [checking, setChecking] = useState(false)
   const [pageError, setPageError] = useState<string | null>(null)
+  /** Why the source view could not read the source; shown where the source would be. */
+  const [sourceError, setSourceError] = useState<string | null>(null)
   const [showSource, setShowSource] = useState(false)
   const [reloadToken, setReloadToken] = useState(0)
   const [findOpen, setFindOpen] = useState(false)
@@ -171,6 +177,8 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
     }
     void (async () => {
       setError(null)
+      setChecking(true)
+      let listing: ReturnType<typeof client.listCanvases> | undefined
       try {
         // A reload must read back the last edit, not the state the server held before the pending PUT.
         await flushSave()
@@ -184,19 +192,21 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
         let list: Awaited<ReturnType<typeof client.listCanvases>>
         let current: CanvasRecord | null = null
         let bundleCurrent = false
+        listing = client.listCanvases(sessionId)
         if (cached) {
-          const [canvasList, { state }] = await Promise.all([client.listCanvases(sessionId), client.getCanvasState(sessionId, name)])
+          const [canvasList, { state }] = await Promise.all([listing, client.getCanvasState(sessionId, name)])
           list = canvasList
           const listed = canvasList.canvases.find(canvas => canvas.name === name)
           // A cached copy whose revision, size and runtime version the server still lists has the current bundle: then
           // only the list and the state, which the page saves without a new revision, are fetched. The revision is the
-          // file's mtime, which some file systems keep in whole seconds: the size catches most edits within one.
-          bundleCurrent = listed?.revision === cached.revision && listed.size === new TextEncoder().encode(cached.source).length
+          // file's mtime, which some file systems keep in whole seconds: the size catches most edits within one. A
+          // copy from a server without the `source` option is measured by its source.
+          bundleCurrent = listed?.revision === cached.revision && listed.size === (cached.size ?? new TextEncoder().encode(cached.source ?? '').length)
             && canvasList.capability?.runtime_version === cached.runtime_version
           if (bundleCurrent) current = sameCanvasState(state, cached.state) ? cached : { ...cached, state }
           current ??= await client.getCanvas(sessionId, name)
         } else {
-          [list, current] = await Promise.all([client.listCanvases(sessionId), client.getCanvas(sessionId, name)])
+          [list, current] = await Promise.all([listing, client.getCanvas(sessionId, name)])
         }
         if (!live()) return
         setCanvases(list.canvases)
@@ -208,12 +218,34 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
         }
         if (current.javascript) await showRuntime(identity, current.runtime_version)
       } catch (caught) {
+        // A canvas the server no longer lists was deleted; a list that did not arrive leaves that unknown.
+        const deleted = await listing?.then(listed => !listed.canvases.some(canvas => canvas.name === name), () => false)
         if (!live()) return
-        setRecord(null)
-        setError(caught instanceof Error ? caught.message : String(caught))
+        // Otherwise the canvas on screen stays: a failed check does not show it is outdated, and the user may be reading it.
+        if (deleted || recordLive.current?.name !== name) setRecord(null)
+        setError(errorText(caught))
+      } finally {
+        if (live()) setChecking(false)
       }
     })()
   }, [flushSave, name, reloadToken, sessionId, show])
+
+  // The record comes without its source, which the page does not need: the source view reads it, for a record the
+  // last check confirmed. It waits for a running check, which may bring another record; the end of a check, such as
+  // the one Reload starts, also repeats a read that failed.
+  useEffect(() => {
+    if (!showSource || checking || error || record?.name !== name || record.source !== undefined) return
+    let wanted = true
+    setSourceError(null)
+    void client.getCanvasSource(sessionId, name).then(loaded => {
+      // A source save can have put its record on screen since this read started.
+      if (!wanted || recordLive.current !== record) return
+      // Another revision is an edit made since the record arrived: the check brings that record, and this runs again for it.
+      if (loaded.revision === record.revision) setRecord({ ...record, source: loaded.source })
+      else setReloadToken(token => token + 1)
+    }, caught => { if (wanted) setSourceError(errorText(caught)) })
+    return () => { wanted = false }
+  }, [checking, error, name, record, sessionId, showSource])
 
   // A history rewind deletes the canvases it covers: re-list, and leave when the open one is gone.
   const rewoundSeq = useAppStore(state => lastRewindSeq(state.snapshots[sessionId]?.events ?? EMPTY_EVENTS))
@@ -246,8 +278,8 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
     void loadComments()
   }, [loadComments])
 
-  // A turn starting or ending can answer a comment or edit this canvas: refresh the threads,
-  // and reload only when the canvas has a new revision (a reload resets the page's own state).
+  // A turn starting or ending can answer a comment or edit this canvas: refresh the threads, and check
+  // again only when the canvas has a new revision or the last check failed (a new page resets its own state).
   const running = useAppStore(state => state.activeSessionIds.has(sessionId))
   const seenRunning = useRef(running)
   useEffect(() => {
@@ -256,9 +288,9 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
     void loadComments()
     void client.listCanvases(sessionId)
       .then(list => list.canvases.find(canvas => canvas.name === name))
-      .then(current => { if (current && current.revision !== recordLive.current?.revision) setReloadToken(token => token + 1) })
+      .then(current => { if (current && (current.revision !== recordLive.current?.revision || error)) setReloadToken(token => token + 1) })
       .catch(() => undefined)
-  }, [loadComments, name, running, sessionId])
+  }, [error, loadComments, name, running, sessionId])
 
   // Pins for the open threads, numbered like the list; re-injected whenever the page (re)loads.
   const pins = useMemo<CanvasCommentPin[]>(() => threads.flatMap((thread, index) => thread.status === 'open' ? [{
@@ -337,12 +369,16 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
     () => ({ background: colors.surface, foreground: colors.text, muted: colors.muted, border: colors.border, accent: colors.blue, kind: scheme }),
     [colors, scheme],
   )
+  /** What the source view shows. A draft keeps the editor through a new record whose source is still being read. */
+  const sourceText = sourceDraft?.text ?? record?.source
   const compiled = record && !record.diagnostics && record.javascript ? record : null
   const source = useMemo(() => {
     if (!compiled || !runtime || runtime.version !== compiled.runtime_version) return null
     // State is read at build time: a theme switch or reload keeps edits made after the record was fetched.
     return { html: buildCanvasPage({ shell: runtime.shell, vendor: runtime.vendor, javascript: compiled.javascript, state: stateRef.current, theme }), baseUrl: CANVAS_PAGE_BASE_URL }
   }, [compiled, runtime, theme])
+  // A compiled canvas whose page is not built, because its runtime did not arrive, has nothing on screen to keep.
+  const onScreen = record !== null && !(compiled && !source)
   // Availability belongs to the page on screen, a new one per page HTML (the WebView reloads only when it
   // changes) and per return from the source; a page that never reports (a load error) leaves the toggle off.
   useEffect(() => { setTocAvailable(false) }, [source?.html, showSource])
@@ -422,6 +458,8 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
       const base = overwrite ? (await client.getCanvas(sessionId, name)).revision : sourceDraft.baseRevision
       const next = await client.putCanvasSource(sessionId, name, sourceDraft.text, base)
       show(next)
+      // The saved record is the server's current one, whatever an earlier check could not find out.
+      setError(null)
       const identity = useAppStore.getState().health?.server_identity
       if (identity) cacheCanvas(identity, sessionId, name, next)
       setSourceDraft(null)
@@ -443,7 +481,7 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
   const discardSource = () => {
     setSourceDraft(null)
     setSaveError(null)
-    if (record) editorRef.current?.replaceDocument(record.source, { clean: true })
+    if (record?.source !== undefined) editorRef.current?.replaceDocument(record.source, { clean: true })
   }
   const fixWithAgent = () => {
     if (!record?.diagnostics) return
@@ -478,6 +516,7 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
         <MessageSquare size={16} color={commentsOpen ? colors.text : colors.muted} />
         {pins.length ? <Text style={[styles.commentCount, { color: colors.textOnAccent, backgroundColor: colors.blue }]}>{pins.length}</Text> : null}
       </Pressable> : null}
+      {checking && record ? <ActivityIndicator testID="canvas-checking" size="small" color={colors.muted} /> : null}
       <IconButton icon={RefreshCw} size={16} label="Reload canvas" testID="canvas-reload" onPress={() => { setPageError(null); setReloadToken(token => token + 1) }} />
       <SheetCloseButton onPress={onClose} label="Close canvas" testID="canvas-close" />
     </View>
@@ -512,8 +551,9 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
     {/* keyboard-controller follows the IME inside a Modal's own window (its ModalAttachedWatcher); React
         Native's KeyboardAvoidingView does nothing on edge-to-edge Android, where the keyboard hid the composer. */}
     <KeyboardAvoidingView behavior="padding" style={styles.fill}>
+    {error && onScreen ? <Notice title="Could not check the canvas for a newer version; the one shown may be out of date" detail={error} /> : null}
     <View style={styles.body}>
-      {error
+      {error && !onScreen
         ? <Notice title="The canvas could not be loaded" detail={error} />
         : !record
           ? <Loading label="Loading canvas" />
@@ -527,12 +567,12 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
               </View>
               {sourceDraft && sourceDraft.baseRevision !== record.revision ? <Text style={[styles.sourceNote, { color: colors.red }]}>The canvas changed after you started editing.</Text> : null}
               {saveError ? <Notice title="The canvas was not saved" detail={saveError} /> : null}
-              {sourceEditable
+              {sourceText === undefined ? (sourceError ? <Notice title="The canvas source could not be loaded" detail={sourceError} /> : <Loading label="Loading canvas source" />) : sourceEditable
                 ? <MobileCodeEditor
                   ref={editorRef}
                   testID="canvas-source-editor"
                   path={record.path}
-                  value={sourceDraft ? editorDocument.current : (editorDocument.current = record.source)}
+                  value={sourceDraft ? editorDocument.current : (editorDocument.current = sourceText)}
                   readOnly={saving}
                   autoFocus={false}
                   onChange={value => setSourceDraft(current => value === record.source ? null : { text: value, baseRevision: current?.baseRevision ?? record.revision })}
@@ -541,7 +581,7 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
                 />
                 : <ScrollView style={styles.fill} contentContainerStyle={styles.sourceContent}>
                   <ScrollView horizontal contentContainerStyle={styles.sourceRow}>
-                    <Text selectable testID="canvas-source" style={[styles.code, { color: colors.text }]}>{record.source}</Text>
+                    <Text selectable testID="canvas-source" style={[styles.code, { color: colors.text }]}>{sourceText}</Text>
                   </ScrollView>
                 </ScrollView>}
             </>
