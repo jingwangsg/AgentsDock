@@ -21,6 +21,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -215,16 +216,25 @@ def compile_source(source: str, timeout: float = COMPILE_TIMEOUT_SECONDS) -> tup
         return "", reason, False
     env = {key: value for key, value in os.environ.items() if key not in ("NODE_OPTIONS", "NODE_PATH")}
     try:
-        completed = subprocess.run(
-            [node_binary() or "node", str(RUNTIME_DIR / "compile.cjs")],
-            input=source.encode("utf-8"),
-            capture_output=True,
-            timeout=timeout,
-            env=env,
-            check=False,
-        )
+        # load-bearing: the compiler reads the source from a file, not from a pipe. subprocess feeds a pipe
+        # select.PIPE_BUF bytes at a time (512 on macOS, 4096 on Linux) and waits for the GIL between
+        # writes: with one other busy thread a 1.3 MB source took 17-47 s instead of 0.8 s.
+        with tempfile.TemporaryFile() as stdin:
+            stdin.write(source.encode("utf-8"))
+            stdin.seek(0)
+            completed = subprocess.run(
+                [node_binary() or "node", str(RUNTIME_DIR / "compile.cjs")],
+                stdin=stdin,
+                capture_output=True,
+                timeout=timeout,
+                env=env,
+                check=False,
+            )
     except subprocess.TimeoutExpired:
         return "", f"Canvas compiler timed out after {int(timeout)}s.", False
+    except OSError as exc:
+        # No room or no directory for the source file: the host's state, like a missing node.
+        return "", f"Canvas compiler could not run: {exc}", False
     if completed.returncode != 0:
         # compile.cjs exits 1 for every compile error; any other status means node itself died.
         ran = completed.returncode == 1

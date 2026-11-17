@@ -188,6 +188,11 @@ class CanvasTests(unittest.TestCase):
             assert "timed out" in canvas.build(path)["diagnostics"]
         assert not cache_file.exists()
 
+        # No room for the file the compiler reads the source from.
+        with patch.object(canvas.tempfile, "TemporaryFile", side_effect=OSError(28, "No space left on device")):
+            assert "No space left on device" in canvas.build(path)["diagnostics"]
+        assert not cache_file.exists()
+
         # node died (signal) instead of finishing.
         with patch.object(canvas.subprocess, "run", lambda *_a, **_k: subprocess.CompletedProcess(["node"], -9, b"", b"")):
             assert canvas.build(path)["diagnostics"] == "Canvas compiler failed."
@@ -197,6 +202,17 @@ class CanvasTests(unittest.TestCase):
         with patch.object(canvas.subprocess, "run", lambda *_a, **_k: subprocess.CompletedProcess(["node"], 1, b"", b"boom")):
             assert canvas.build(path)["diagnostics"] == "boom"
         assert json.loads(cache_file.read_text())["diagnostics"] == "boom"
+
+    def test_compiler_reads_the_source_from_a_file(self) -> None:
+        seen: list[bytes] = []
+
+        def compiled(_command, **options):
+            seen.append(options["stdin"].read())
+            return subprocess.CompletedProcess(["node"], 0, b"compiled", b"")
+
+        with patch.object(canvas, "node_binary", lambda: "/fake/node"), patch.object(canvas.subprocess, "run", compiled):
+            assert canvas.compile_source("源码 source") == ("compiled", None, True)
+        assert seen == ["源码 source".encode("utf-8")]
 
     @needs_node
     def test_check_cli_reports_forbidden_imports(self) -> None:

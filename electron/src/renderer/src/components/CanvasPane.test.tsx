@@ -351,6 +351,22 @@ describe('CanvasPane comments and source editing', () => {
     expect(await screen.findByText('Saved')).toBeInTheDocument()
   })
 
+  it('drops the notice of a failed check once a source save brought the current record', async () => {
+    const putSource = vi.fn().mockResolvedValue({ ...compiled, source: 'mine', revision: 3 })
+    const { api } = await renderWith({ putSource })
+    api.list.mockResolvedValue({ canvases: [{ name: 'report', path: compiled.path, revision: 2 }] })
+    api.get.mockRejectedValue(new Error('fetch failed'))
+    window.dispatchEvent(new CustomEvent('agentsdock:canvases-changed', { detail: { sessionId: 'chat-1' } }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('fetch failed')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Source' }))
+    fireEvent.change(await screen.findByLabelText('Canvas source'), { target: { value: 'mine' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    expect(await screen.findByText('Saved')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
   it('asks the agent to fix a canvas that does not compile', async () => {
     const send = vi.fn().mockResolvedValue(true)
     fixture.state.sendPromptForSession = send
@@ -448,6 +464,45 @@ describe('CanvasPane cached copy', () => {
 
     answer({ ...kept, revision: 2, javascript: 'var a = 2' })
     await waitFor(async () => expect(await pageAddress()).not.toBe(shown))
+  })
+
+  it('keeps the canvas on screen, with the reason below it, when a check fails, and checks again at the next turn', async () => {
+    let fail = (_reason: Error) => {}
+    renderKept(new Promise((_resolve, reject) => { fail = reject }))
+    const shown = await pageAddress()
+    const checkEnds = () => waitFor(() => expect(screen.getByTitle('Reload').querySelector('.spin')).toBeNull())
+    expect(screen.getByTitle('Reload').querySelector('.spin')).not.toBeNull()
+
+    fail(new Error('The operation was aborted due to timeout'))
+
+    const notice = await screen.findByRole('alert')
+    expect(notice).toHaveTextContent('Could not check the Canvas for a newer version; the one shown may be out of date')
+    expect(notice).toHaveTextContent('The operation was aborted due to timeout')
+    expect(await pageAddress()).toBe(shown)
+    await checkEnds()
+
+    // The list names the revision on screen: without the failed check this event would not ask for the canvas.
+    vi.mocked(window.agentsDock.canvas.get).mockResolvedValue(kept as never)
+    window.dispatchEvent(new CustomEvent('agentsdock:canvases-changed', { detail: { sessionId: 'chat-1' } }))
+
+    await waitFor(() => expect(window.agentsDock.canvas.get).toHaveBeenCalledTimes(2))
+    await checkEnds()
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(await pageAddress()).toBe(shown)
+  })
+
+  it('drops the copy of a canvas the server no longer lists', async () => {
+    vi.stubGlobal('agentsDock', { canvas: {
+      list: vi.fn().mockResolvedValue({ canvases: [] }),
+      get: vi.fn().mockRejectedValue(new Error('canvas not found')),
+      cached: vi.fn().mockResolvedValue(kept),
+      putState: vi.fn()
+    } })
+    renderCanvas()
+
+    expect(await screen.findByText('canvas not found')).toBeInTheDocument()
+    expect(screen.queryByTitle('Canvas report')).toBeNull()
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 
   it('replaces a failed compile with a successful compile of the same revision', async () => {

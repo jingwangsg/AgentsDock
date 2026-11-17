@@ -105,7 +105,10 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
   const [record, setRecord] = useState<CanvasRecord | null>(null)
   /** Counts the records put on screen; each gets a new page, also when it differs only in state or runtime version. */
   const [pageGeneration, setPageGeneration] = useState(0)
+  /** Why the last check with the server failed. Shown in place of the canvas, or below a copy of it that stays on screen. */
   const [error, setError] = useState<string | null>(null)
+  /** A check with the server is running. Over a slow link it takes tens of seconds, and until it ends the canvas on screen may be an earlier revision. */
+  const [checking, setChecking] = useState(false)
   const [pageError, setPageError] = useState<string | null>(null)
   const [view, setView] = useState<'preview' | 'source'>('preview')
   const [reloadToken, setReloadToken] = useState(0)
@@ -181,6 +184,8 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
     const generation = ++loadGeneration.current
     const live = () => generation === loadGeneration.current
     setError(null)
+    setChecking(true)
+    let listing: Promise<{ canvases: CanvasSummary[] }> | undefined
     try {
       // A reload must read back the last edit, not the state the server held before the pending PUT.
       await flushSave()
@@ -189,17 +194,20 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
         const cached = await window.agentsDock.canvas.cached(session.id, name)
         if (cached && live()) show(cached)
       }
-      const [list, current] = await Promise.all([
-        window.agentsDock.canvas.list(session.id),
-        window.agentsDock.canvas.get(session.id, name)
-      ])
+      listing = window.agentsDock.canvas.list(session.id)
+      const [list, current] = await Promise.all([listing, window.agentsDock.canvas.get(session.id, name)])
       if (!live()) return
       setCanvases(list.canvases)
       show(current)
     } catch (caught) {
+      // A canvas the server no longer lists was deleted; a list that did not arrive leaves that unknown.
+      const deleted = await listing?.then(list => !list.canvases.some(canvas => canvas.name === name), () => false)
       if (!live()) return
-      setRecord(null)
-      setError(caught instanceof Error ? caught.message : String(caught))
+      // Otherwise the copy on screen stays: a failed check does not show it is outdated, and the user may be reading it.
+      if (deleted || recordLive.current?.name !== name) setRecord(null)
+      setError(errorText(caught))
+    } finally {
+      if (live()) setChecking(false)
     }
   }, [flushSave, name, session.id, show])
 
@@ -240,12 +248,13 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
         .then(current => {
           if (current === null) onClose()
           // load(), not a new reloadToken: that would reload the page at once from the outdated cached copy.
-          else if (current === undefined || current.revision !== recordLive.current?.revision) void load()
+          // After a failed check the same revision is checked again.
+          else if (current === undefined || current.revision !== recordLive.current?.revision || error) void load()
         })
     }
     window.addEventListener('agentsdock:canvases-changed', changed)
     return () => window.removeEventListener('agentsdock:canvases-changed', changed)
-  }, [load, loadComments, name, onClose, session.id])
+  }, [error, load, loadComments, name, onClose, session.id])
 
   // Flush when the pane switches canvases and when it unmounts, so the last reported change is not dropped.
   useEffect(() => () => { void flushSave() }, [flushSave, name])
@@ -449,6 +458,8 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
       // Overwriting means saving over whatever revision is current now, after the user confirmed.
       const base = overwrite ? (await window.agentsDock.canvas.get(session.id, name)).revision : sourceDraft.baseRevision
       show(await window.agentsDock.canvas.putSource(session.id, name, sourceDraft.text, base))
+      // The saved record is the server's current one, whatever an earlier check could not find out.
+      setError(null)
       setSourceDraft(null)
     } catch (caught) {
       const message = errorText(caught)
@@ -582,7 +593,7 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
       {commentsAvailable && <button type="button" aria-pressed={commentsOpen} title={t('canvas.comments')} aria-label={t('canvas.comments')} onClick={() => setCommentsOpen(value => !value)}>
         <MessageSquare size={14} />{pins.length > 0 && <span className="canvas-pane-comment-count">{pins.length}</span>}
       </button>}
-      <button type="button" title={t('canvas.reload')} onClick={() => { setPageError(null); setReloadToken(token => token + 1) }}><RefreshCw size={14} /></button>
+      <button type="button" title={t('canvas.reload')} onClick={() => { setPageError(null); setReloadToken(token => token + 1) }}><RefreshCw size={14} className={checking ? 'spin' : undefined} /></button>
       <button type="button" disabled={!src} title={t('canvas.exportHtml')} aria-label={t('canvas.exportHtml')} onClick={() => {
         void window.agentsDock.canvas.exportHtml(session.id, name, hostTheme()).catch(error => useAppStore.getState().setError(errorText(error)))
       }}><FileDown size={14} /></button>
@@ -608,7 +619,7 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
         <button type="button" title={t('canvas.findNext')} aria-label={t('canvas.findNext')} disabled={findResult.total === 0} onClick={() => runFind(findQuery, { findNext: true, forward: true })}><ChevronDown size={14} /></button>
         <button type="button" title={t('canvas.close')} aria-label={t('canvas.close')} onClick={closeFind}><X size={14} /></button>
       </div>}
-      {error
+      {error && !record
         ? <div className="canvas-pane-notice error">{error}</div>
         : !record
           ? <div className="canvas-pane-notice">{t('canvas.loading')}</div>
@@ -642,6 +653,7 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
               </>}
       {pageError && view === 'preview' && <div className="canvas-pane-notice error"><strong>{t('canvas.pageError')}</strong><pre>{pageError}</pre></div>}
     </div>
+    {error && record && <div className="canvas-pane-notice error" role="alert"><strong>{t('canvas.checkFailed')}</strong><pre>{error}</pre></div>}
     {commentsAvailable && commentsOpen && <CanvasCommentThreads
       sessionId={session.id}
       threads={threads}
