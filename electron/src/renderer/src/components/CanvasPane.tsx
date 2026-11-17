@@ -106,6 +106,10 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
   /** Counts the records put on screen; each gets a new page, also when it differs only in state or runtime version. */
   const [pageGeneration, setPageGeneration] = useState(0)
   const [error, setError] = useState<string | null>(null)
+  /** Why the last check with the server failed while a canvas was on screen; that canvas stays. */
+  const [refreshError, setRefreshError] = useState<string | null>(null)
+  /** A check with the server is running; the reload button turns. Over a slow link it takes tens of seconds, and until it ends the canvas on screen may be an earlier revision. */
+  const [refreshing, setRefreshing] = useState(false)
   const [pageError, setPageError] = useState<string | null>(null)
   const [view, setView] = useState<'preview' | 'source'>('preview')
   const [reloadToken, setReloadToken] = useState(0)
@@ -181,6 +185,8 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
     const generation = ++loadGeneration.current
     const live = () => generation === loadGeneration.current
     setError(null)
+    setRefreshError(null)
+    setRefreshing(true)
     try {
       // A reload must read back the last edit, not the state the server held before the pending PUT.
       await flushSave()
@@ -198,8 +204,14 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
       show(current)
     } catch (caught) {
       if (!live()) return
-      setRecord(null)
-      setError(caught instanceof Error ? caught.message : String(caught))
+      // The canvas on screen stays: a failed check says nothing against it, and the user may be reading it.
+      if (recordLive.current?.name === name) setRefreshError(errorText(caught))
+      else {
+        setRecord(null)
+        setError(errorText(caught))
+      }
+    } finally {
+      if (live()) setRefreshing(false)
     }
   }, [flushSave, name, session.id, show])
 
@@ -582,7 +594,7 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
       {commentsAvailable && <button type="button" aria-pressed={commentsOpen} title={t('canvas.comments')} aria-label={t('canvas.comments')} onClick={() => setCommentsOpen(value => !value)}>
         <MessageSquare size={14} />{pins.length > 0 && <span className="canvas-pane-comment-count">{pins.length}</span>}
       </button>}
-      <button type="button" title={t('canvas.reload')} onClick={() => { setPageError(null); setReloadToken(token => token + 1) }}><RefreshCw size={14} /></button>
+      <button type="button" title={t('canvas.reload')} onClick={() => { setPageError(null); setReloadToken(token => token + 1) }}><RefreshCw size={14} className={refreshing ? 'spin' : undefined} /></button>
       <button type="button" disabled={!src} title={t('canvas.exportHtml')} aria-label={t('canvas.exportHtml')} onClick={() => {
         void window.agentsDock.canvas.exportHtml(session.id, name, hostTheme()).catch(error => useAppStore.getState().setError(errorText(error)))
       }}><FileDown size={14} /></button>
@@ -642,6 +654,7 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
               </>}
       {pageError && view === 'preview' && <div className="canvas-pane-notice error"><strong>{t('canvas.pageError')}</strong><pre>{pageError}</pre></div>}
     </div>
+    {refreshError && <div className="canvas-pane-notice error" role="alert"><strong>{t('canvas.refreshFailed')}</strong><pre>{refreshError}</pre></div>}
     {commentsAvailable && commentsOpen && <CanvasCommentThreads
       sessionId={session.id}
       threads={threads}

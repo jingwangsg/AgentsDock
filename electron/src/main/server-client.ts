@@ -156,6 +156,10 @@ const CHAT_SHARE_SNAPSHOT_TIMEOUT_MS = 40_000
 const DIGEST_PREVIEW_REQUEST_TIMEOUT_MS = 210_000
 const TIMELINE_REQUEST_TIMEOUT_MS = 120_000
 const SUBAGENT_SNAPSHOT_REQUEST_TIMEOUT_MS = 15_000
+// The server compiles an edited canvas before it answers (agentsdock_canvas.COMPILE_TIMEOUT_SECONDS = 180), and the
+// answer carries the source with its bundle: 0.7 MB gzipped for a 1.3 MB report, 12-37 s over a remote link measured
+// at 18-56 KB/s. The mobile client allows the same time.
+const CANVAS_REQUEST_TIMEOUT_MS = 180_000
 // Answers kept for revalidation (getRevalidated): the chat list, plus the subagent snapshots and files lists of the
 // chats opened last. A subagent snapshot can reach about 0.5 MB of JSON.
 const REVALIDATED_ANSWERS = 16
@@ -1933,7 +1937,7 @@ export class AgentServerClient {
   }
 
   getCanvas(sessionId: string, name: string): Promise<CanvasRecord> {
-    return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}`)
+    return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}`, this.configuration, CANVAS_REQUEST_TIMEOUT_MS)
   }
 
   getCanvasState(sessionId: string, name: string): Promise<{ state: Record<string, unknown> }> {

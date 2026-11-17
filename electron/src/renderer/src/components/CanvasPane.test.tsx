@@ -450,6 +450,40 @@ describe('CanvasPane cached copy', () => {
     await waitFor(async () => expect(await pageAddress()).not.toBe(shown))
   })
 
+  it('keeps the canvas on screen, with the reason beside it, when the check with the server fails', async () => {
+    let fail = (_reason: Error) => {}
+    renderKept(new Promise((_resolve, reject) => { fail = reject }))
+    const shown = await pageAddress()
+    // The reload button turns while the check runs.
+    expect(screen.getByTitle('Reload').querySelector('.spin')).not.toBeNull()
+
+    fail(new Error('The operation was aborted due to timeout'))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('This Canvas could not be refreshed; the version shown may be out of date.The operation was aborted due to timeout')
+    expect(await pageAddress()).toBe(shown)
+    expect(screen.getByTitle('Reload').querySelector('.spin')).toBeNull()
+
+    vi.mocked(window.agentsDock.canvas.get).mockResolvedValue({ ...kept, revision: 2, javascript: 'var a = 2' } as never)
+    fireEvent.click(screen.getByTitle('Reload'))
+
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
+    expect(await pageAddress()).not.toBe(shown)
+  })
+
+  it('shows the failure in place of the canvas when no copy of it is on screen', async () => {
+    vi.stubGlobal('agentsDock', { canvas: {
+      list: vi.fn().mockResolvedValue({ canvases: [] }),
+      get: vi.fn().mockRejectedValue(new Error('canvas not found')),
+      cached: vi.fn().mockResolvedValue(null),
+      putState: vi.fn()
+    } })
+    renderCanvas()
+
+    expect(await screen.findByText('canvas not found')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByTitle('Canvas report')).toBeNull()
+  })
+
   it('replaces a failed compile with a successful compile of the same revision', async () => {
     renderKept(Promise.resolve({ ...kept, javascript: '', diagnostics: 'Canvas compiler timed out after 180s.' }))
     expect(await screen.findByText('Canvas compiler timed out after 180s.')).toBeInTheDocument()

@@ -130,6 +130,7 @@
   "canvas.compileFailed": "这个 Canvas 没有编译通过",
   "canvas.loading": "正在加载 Canvas…",
   "canvas.pageError": "Canvas 运行时错误",
+  "canvas.refreshFailed": "这个 Canvas 刷新失败，当前显示的可能不是最新版本。",
   "canvas.resize": "调整 Canvas 宽度",
   "canvas.resizeHint": "拖动以调整大小 · 双击重置",
   "canvas.find": "在 Canvas 中查找",
