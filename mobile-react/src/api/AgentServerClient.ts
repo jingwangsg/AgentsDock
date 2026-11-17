@@ -769,7 +769,7 @@ export class AgentServerClient {
   listCanvases(sessionId: string): Promise<{ canvases: CanvasSummary[]; capability?: { runtime_version?: string | null } }> {
     return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/canvases`)
   }
-  /** The record without its source, about half of the download. A server that predates the option sends the source too. */
+  /** The record without its source, about half of the download. A server without the `source` option sends the source too. */
   getCanvas(sessionId: string, name: string): Promise<CanvasRecord> {
     // The server compiles the report on first read (agentsdock_canvas.COMPILE_TIMEOUT_SECONDS = 180).
     return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}?source=false`, 180_000)
@@ -786,7 +786,7 @@ export class AgentServerClient {
   }
   /** Saves an edited source; the server answers 409 when the canvas changed after `baseRevision`. */
   putCanvasSource(sessionId: string, name: string, source: string, baseRevision: number): Promise<CanvasRecord> {
-    // The request carries the source up and the record down: the time a download of the record gets.
+    // A save sends the source and waits for the compiled record: the same limit as getCanvas.
     return this.request(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}/source`, {
       method: 'PUT', body: JSON.stringify({ source, base_revision: baseRevision }),
     }, 180_000)

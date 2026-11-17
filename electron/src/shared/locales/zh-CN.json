@@ -129,6 +129,7 @@
   "canvas.selecting": "在 Canvas 里点选一个元素（按住 Shift 可多选）",
   "canvas.compileFailed": "这个 Canvas 没有编译通过",
   "canvas.loading": "正在加载 Canvas…",
+  "canvas.loadingSource": "正在加载 Canvas 源码…",
   "canvas.pageError": "Canvas 运行时错误",
   "canvas.checkFailed": "无法检查这个 Canvas 是否有新版本，当前显示的可能不是最新版本",
   "canvas.resize": "调整 Canvas 宽度",

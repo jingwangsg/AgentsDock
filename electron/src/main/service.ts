@@ -5066,8 +5066,8 @@ export class AppService {
       ])
       listed = list.canvases.find(canvas => canvas.name === name)
       // The revision is the file's mtime, which some file systems keep in whole seconds: the size catches most
-      // edits within one second. A record from a server that sends no size is measured by its source; there a
-      // source with CRLF line ends never matches and is downloaded each time.
+      // edits within one second. A copy from a server without the `source` option is measured by its source;
+      // there a source with CRLF line ends never matches and is downloaded each time.
       bundleCurrent = listed?.revision === cached.revision && listed.size === (cached.size ?? Buffer.byteLength(cached.source ?? ''))
         && list.capability?.runtime_version === cached.runtime_version
       if (bundleCurrent) record = sameCanvasState(state, cached.state) ? cached : { ...cached, state }
@@ -5095,7 +5095,7 @@ export class AppService {
     return record
   }
 
-  /** The source of a canvas whose record came without it. The cached record of the same revision keeps it. */
+  /** The source of a canvas whose record came without it. The cached copy of the same revision keeps it. */
   async getCanvasSource(sessionId: string, name: string): Promise<{ source: string; revision: number }> {
     const scope = this.captureScope()
     await this.ensureValidatedScope(scope)

@@ -105,7 +105,7 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
   const [record, setRecord] = useState<CanvasRecord | null>(null)
   /** Counts the records put on screen; each gets a new page, also when it differs only in state or runtime version. */
   const [pageGeneration, setPageGeneration] = useState(0)
-  /** Why the last check with the server failed. Shown in place of the canvas, or below a copy of it that stays on screen. */
+  /** Why the last check with the server failed. Shown in place of the canvas, or below the canvas when one is on screen, which stays. */
   const [error, setError] = useState<string | null>(null)
   /** A check with the server is running. Over a slow link it takes tens of seconds, and until it ends the canvas on screen may be an earlier revision. */
   const [checking, setChecking] = useState(false)
@@ -125,6 +125,8 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
   const [commentError, setCommentError] = useState<string | null>(null)
   /** Unsaved source edits and the revision they started from; null while the editor shows the saved source. */
   const [sourceDraft, setSourceDraft] = useState<{ text: string; baseRevision: number } | null>(null)
+  /** What the source view shows. A draft keeps the editor through a new record whose source is still being read. */
+  const sourceText = sourceDraft?.text ?? record?.source
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [findOpen, setFindOpen] = useState(false)
@@ -205,7 +207,7 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
       // A canvas the server no longer lists was deleted; a list that did not arrive leaves that unknown.
       const deleted = await listing?.then(list => !list.canvases.some(canvas => canvas.name === name), () => false)
       if (!live()) return
-      // Otherwise the copy on screen stays: a failed check does not show it is outdated, and the user may be reading it.
+      // Otherwise the canvas on screen stays: a failed check does not show it is outdated, and the user may be reading it.
       if (deleted || recordLive.current?.name !== name) setRecord(null)
       setError(errorText(caught))
     } finally {
@@ -215,19 +217,22 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
 
   useEffect(() => { void load() }, [load, reloadToken])
 
-  // The record comes without its source, which the page does not need: the source view reads it.
+  // The record comes without its source, which the page does not need: the source view reads it, for a record the
+  // last check confirmed. It waits for a running check, which may bring another record; the end of a check, such as
+  // the one Reload starts, also repeats a read that failed.
   useEffect(() => {
-    if (view !== 'source' || record?.name !== name || record.source !== undefined) return
+    if (view !== 'source' || checking || error || record?.name !== name || record.source !== undefined) return
     let wanted = true
     setSourceError(null)
     void window.agentsDock.canvas.source(session.id, name).then(loaded => {
-      if (!wanted) return
+      // A source save can have put its record on screen since this read started.
+      if (!wanted || recordLive.current !== record) return
       // Another revision is an edit made since the record arrived: the check brings that record, and this runs again for it.
       if (loaded.revision === record.revision) setRecord({ ...record, source: loaded.source })
       else void load()
     }, caught => { if (wanted) setSourceError(errorText(caught)) })
     return () => { wanted = false }
-  }, [load, name, record, session.id, view])
+  }, [checking, error, load, name, record, session.id, view])
 
   const loadComments = useCallback(async () => {
     if (!commentsAvailable) return
@@ -640,26 +645,24 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
         : !record
           ? <div className="canvas-pane-notice">{t('canvas.loading')}</div>
           : view === 'source'
-            ? record.source === undefined
-              ? <div className={sourceError ? 'canvas-pane-notice error' : 'canvas-pane-notice'}>{sourceError ?? t('canvas.loading')}</div>
-              : sourceEditable
-                ? <div className="canvas-pane-editor">
-                  <div className="canvas-pane-editor-bar">
-                    <span title={record.path}>{sourceDraft ? t('canvas.sourceUnsaved') : t('canvas.sourceSaved')}</span>
-                    {sourceDraft && sourceDraft.baseRevision !== record.revision && <span className="canvas-pane-editor-stale">{t('canvas.sourceChangedMeanwhile')}</span>}
-                    <button type="button" className="quiet-button" disabled={!sourceDraft || saving} onClick={() => { setSourceDraft(null); setSaveError(null) }}>{t('canvas.discard')}</button>
-                    <button type="button" className="primary-button" disabled={!sourceDraft || saving} onClick={() => void saveSource()}>{saving ? t('canvas.saving') : t('canvas.save')}</button>
-                  </div>
-                  {saveError && <div className="canvas-pane-notice error">{saveError}</div>}
-                  <CodeMirrorEditor
-                    path={record.path}
-                    value={sourceDraft?.text ?? record.source}
-                    readOnly={saving}
-                    ariaLabel={t('canvas.sourceEditor')}
-                    onChange={value => setSourceDraft(current => value === record.source ? null : { text: value, baseRevision: current?.baseRevision ?? record.revision })}
-                  />
+            ? sourceText === undefined ? <div className={sourceError ? 'canvas-pane-notice error' : 'canvas-pane-notice'}>{sourceError ?? t('canvas.loadingSource')}</div> : sourceEditable
+              ? <div className="canvas-pane-editor">
+                <div className="canvas-pane-editor-bar">
+                  <span title={record.path}>{sourceDraft ? t('canvas.sourceUnsaved') : t('canvas.sourceSaved')}</span>
+                  {sourceDraft && sourceDraft.baseRevision !== record.revision && <span className="canvas-pane-editor-stale">{t('canvas.sourceChangedMeanwhile')}</span>}
+                  <button type="button" className="quiet-button" disabled={!sourceDraft || saving} onClick={() => { setSourceDraft(null); setSaveError(null) }}>{t('canvas.discard')}</button>
+                  <button type="button" className="primary-button" disabled={!sourceDraft || saving} onClick={() => void saveSource()}>{saving ? t('canvas.saving') : t('canvas.save')}</button>
                 </div>
-                : <pre className="canvas-pane-source">{record.source}</pre>
+                {saveError && <div className="canvas-pane-notice error">{saveError}</div>}
+                <CodeMirrorEditor
+                  path={record.path}
+                  value={sourceText}
+                  readOnly={saving}
+                  ariaLabel={t('canvas.sourceEditor')}
+                  onChange={value => setSourceDraft(current => value === record.source ? null : { text: value, baseRevision: current?.baseRevision ?? record.revision })}
+                />
+              </div>
+              : <pre className="canvas-pane-source">{sourceText}</pre>
             : record.diagnostics || !record.javascript
               ? <div className="canvas-pane-notice error">
                 <strong>{t('canvas.compileFailed')}</strong><pre>{record.diagnostics ?? ''}</pre>

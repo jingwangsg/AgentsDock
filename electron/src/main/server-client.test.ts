@@ -3821,7 +3821,7 @@ describe('AgentServerClient live stream', () => {
     expect(timeout).toHaveBeenCalledWith(210_000)
   })
 
-  it('reads a canvas record without its source and the source on its own; these, a source save and the runtime may outlast the default timeout', async () => {
+  it('asks for a canvas record without its source and for the source on its own, and gives every canvas request the canvas timeout', async () => {
     const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation(() => new AbortController().signal)
     const fetched = vi.fn(async (_url: string) => new Response(JSON.stringify({ name: 'report', revision: 1 }), {
       status: 200, headers: { 'Content-Type': 'application/json' }

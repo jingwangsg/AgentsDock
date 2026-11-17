@@ -156,9 +156,9 @@ const CHAT_SHARE_SNAPSHOT_TIMEOUT_MS = 40_000
 const DIGEST_PREVIEW_REQUEST_TIMEOUT_MS = 210_000
 const TIMELINE_REQUEST_TIMEOUT_MS = 120_000
 const SUBAGENT_SNAPSHOT_REQUEST_TIMEOUT_MS = 15_000
-// A canvas travels as one record with its source and its bundle, after the server's compile of an edit. Measured
-// 2026-11-17: 0.65 MiB gzipped for a 1.3 MiB report took 12-37 s over a remote link. 180 s is what the mobile client
-// allows for the download.
+// For a canvas's record, its source, a source save and the runtime. The record follows the server's compile of an
+// edit. Measured 2026-11-17: the record of a 1.3 MiB report with its source, 0.65 MiB gzipped, took 12-37 s over a
+// remote link; without the source it is half of that. 180 s is what the mobile client allows for the record.
 const CANVAS_REQUEST_TIMEOUT_MS = 180_000
 // Answers kept for revalidation (getRevalidated): the chat list, plus the subagent snapshots and files lists of the
 // chats opened last. A subagent snapshot can reach about 0.5 MB of JSON.
@@ -1936,7 +1936,7 @@ export class AgentServerClient {
     return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/canvases`)
   }
 
-  /** The record without its source, about half of the download. A server that predates the option sends the source too. */
+  /** The record without its source, about half of the download. A server without the `source` option sends the source too. */
   getCanvas(sessionId: string, name: string): Promise<CanvasRecord> {
     return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/canvases/${encodeURIComponent(name)}?source=false`, this.configuration, CANVAS_REQUEST_TIMEOUT_MS)
   }
@@ -1990,7 +1990,7 @@ export class AgentServerClient {
     const response = await fetch(configurationURL(configuration, `/api/canvas-runtime/${asset}`), {
       headers,
       redirect: 'error',
-      // vendor.js is 277 KB gzipped, downloaded once per runtime version before a first canvas can show.
+      // The runtime is downloaded once per runtime version, before a first canvas can show.
       signal: combineAbortSignals(configuration.abortController.signal, AbortSignal.timeout(CANVAS_REQUEST_TIMEOUT_MS))
     })
     if (!response.ok) throw new Error(`Canvas runtime asset ${asset} is unavailable (${response.status}).`)

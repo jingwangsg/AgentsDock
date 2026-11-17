@@ -60,7 +60,7 @@ test('a canvas opened before renders from its cached copy and downloads the reco
   // src/lib/canvas-cache.test.ts covers the storage and the state comparison.
   assert.match(sheet, /const cached = identity \? await cachedCanvas\(identity, sessionId, name\) : null/)
   assert.match(sheet, /if \(cached && live\(\) && recordLive\.current\?\.name !== name\) \{/)
-  // A record that came without its source carries the size; one from a server without the option is measured.
+  // A copy that came without its source carries the size; one from a server without the `source` option is measured by its source.
   assert.match(sheet, /bundleCurrent = listed\?\.revision === cached\.revision && listed\.size === \(cached\.size \?\? new TextEncoder\(\)\.encode\(cached\.source \?\? ''\)\.length\)/)
   assert.match(sheet, /current \?\?= await client\.getCanvas\(sessionId, name\)/)
   // A runtime is cached only under the version the server's runtime route serves.
@@ -78,7 +78,7 @@ test('runtime messages persist state with a debounce and surface errors with a s
   assert.match(sheet, /case 'error':\s+setPageError\(message\.error\)/)
   assert.match(sheet, /<Notice title="The canvas reported an error" detail=\{pageError\} actions=\{\[showSourceAction\]\} \/>/)
   assert.match(sheet, /const showSourceAction = \{ label: 'Show source', onPress: \(\) => setShowSource\(true\) \}/)
-  assert.match(sheet, /<Text selectable testID="canvas-source" style=\{\[styles\.code, \{ color: colors\.text \}\]\}>\{record\.source\}<\/Text>/)
+  assert.match(sheet, /<Text selectable testID="canvas-source" style=\{\[styles\.code, \{ color: colors\.text \}\]\}>\{sourceText\}<\/Text>/)
   assert.match(sheet, /code: \{ fontFamily: fonts\.mono/)
   // A compile failure shows the diagnostics instead of an empty page.
   assert.match(sheet, /const compiled = record && !record\.diagnostics && record\.javascript \? record : null/)
@@ -162,33 +162,27 @@ test('comments: pick an element, Ask or Edit it as a stored thread, and pin open
 
 test('a check that fails leaves the canvas on screen with the reason above it, unless the server no longer lists it', () => {
   assert.match(sheet, /const deleted = await listing\?\.then\(listed => !listed\.canvases\.some\(canvas => canvas\.name === name\), \(\) => false\)/)
-  assert.match(sheet, /if \(deleted \|\| recordLive\.current\?\.name !== name\) setRecord\(null\)\n\s*setError\(errorText\(caught\)\)/)
-  assert.match(sheet, /\{error && record \? <Notice title="Could not check the canvas for a newer version; the one shown may be out of date" detail=\{error\} \/> : null\}/)
-  assert.match(sheet, /\{error && !record\n\s*\? <Notice title="The canvas could not be loaded" detail=\{error\} \/>/)
-  // A source save brings the server's current record: the notice of an earlier check goes.
-  assert.match(sheet, /show\(next\)\n\s*\/\/[^\n]*\n\s*setError\(null\)/)
-  // A check that runs behind a canvas on screen shows in the top bar.
-  assert.match(sheet, /\{checking && record \? <ActivityIndicator testID="canvas-checking" size="small" color=\{colors\.muted\} \/> : null\}/)
-  assert.match(sheet, /\} finally \{\n\s*if \(live\(\)\) setChecking\(false\)/)
+  assert.match(sheet, /if \(deleted \|\| recordLive\.current\?\.name !== name\) setRecord\(null\)/)
+  // A compiled canvas whose runtime did not arrive has no page to keep.
+  assert.match(sheet, /const onScreen = record !== null && !\(compiled && !source\)/)
+  assert.match(sheet, /\{error && onScreen \? <Notice /)
+  assert.match(sheet, /\{error && !onScreen\n\s*\? <Notice /)
 })
 
-test('the record is read without its source, and the source view reads the source for the revision on screen', () => {
-  assert.match(client, /canvases\/\$\{encodeURIComponent\(name\)\}\?source=false`, 180_000\)/)
-  assert.match(client, /getCanvasSource\(sessionId: string, name: string\): Promise<\{ source: string; revision: number \}> \{\n\s*return this\.get\(`\/api\/sessions\/\$\{encodeURIComponent\(sessionId\)\}\/canvases\/\$\{encodeURIComponent\(name\)\}\/source`, 180_000\)/)
-  // A source save carries the source up and the record down: it gets the download's time.
-  assert.match(client, /method: 'PUT', body: JSON\.stringify\(\{ source, base_revision: baseRevision \}\),\n\s*\}, 180_000\)/)
-  assert.match(types, /export interface CanvasRecord extends Omit<CanvasSummary, 'size'> \{\n[^\n]*\n  source\?: string\n[^\n]*\n  size\?: number\n/)
-  assert.match(sheet, /if \(!showSource \|\| record\?\.name !== name \|\| record\.source !== undefined\) return/)
-  assert.match(sheet, /if \(loaded\.revision !== record\.revision\) return setReloadToken\(token => token \+ 1\)\n\s*setRecord\(\{ \.\.\.record, source: loaded\.source \}\)/)
-  assert.match(sheet, /cacheCanvas\(identity, sessionId, name, \{ \.\.\.record, source: loaded\.source, state: stateRef\.current \}\)/)
-  assert.match(sheet, /\{record\.source === undefined\n\s*\? sourceError \? <Notice title="The canvas source could not be loaded" detail=\{sourceError\} \/> : <Loading label="Loading canvas source" \/>/)
+test('the source view reads the source for the record on screen, after a check and not after one that failed', () => {
+  assert.match(sheet, /if \(!showSource \|\| checking \|\| error \|\| record\?\.name !== name \|\| record\.source !== undefined\) return/)
+  assert.match(sheet, /if \(!wanted \|\| recordLive\.current !== record\) return/)
+  assert.match(sheet, /if \(loaded\.revision === record\.revision\) setRecord\(\{ \.\.\.record, source: loaded\.source \}\)\n\s*else setReloadToken\(token => token \+ 1\)/)
+  // A draft keeps the editor through a new record whose source is still being read.
+  assert.match(sheet, /const sourceText = sourceDraft\?\.text \?\? record\?\.source/)
+  assert.match(sheet, /\{sourceText === undefined \? /)
 })
 
 test('source: edits save against the revision they started from and confirm before overwriting', () => {
   assert.match(sheet, /const sourceEditable = canvasCapability\?\.source_edit === true/)
   assert.match(sheet, /<MobileCodeEditor\n\s*ref=\{editorRef\}\n\s*testID="canvas-source-editor"/)
   // A draft pins the editor's document so a reload after an agent edit cannot wipe the typing.
-  assert.match(sheet, /value=\{sourceDraft \? editorDocument\.current : \(editorDocument\.current = record\.source\)\}/)
+  assert.match(sheet, /value=\{sourceDraft \? editorDocument\.current : \(editorDocument\.current = sourceText\)\}/)
   assert.match(sheet, /client\.putCanvasSource\(sessionId, name, sourceDraft\.text, base\)/)
   assert.match(sheet, /const base = overwrite \? \(await client\.getCanvas\(sessionId, name\)\)\.revision : sourceDraft\.baseRevision/)
   assert.match(sheet, /if \(!overwrite && REVISION_CONFLICT\.test\(message\)\) \{\n\s*Alert\.alert\('The canvas changed'/)
