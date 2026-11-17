@@ -24,6 +24,21 @@ signed production release. Direct desktop releases are built and notarized in
 CI, then pass through a reviewed GitHub draft. See
 [`../docs/DIRECT_RELEASES.md`](../docs/DIRECT_RELEASES.md).
 
+For an installer package instead of an app bundle, on an Apple-silicon Mac:
+
+```bash
+./scripts/build_electron_local_pkg.sh
+```
+
+The script takes the next build number in `electron/package.json`, runs the
+production build and writes
+`electron/dist/AgentsDock-<version>-<build number>-mac-arm64.pkg`. The package
+is not notarized, and its app is signed ad hoc unless the keychain holds a
+Developer ID Application identity. Its app carries no update-disable marker.
+The script checks the signature and the build number of the app inside the
+package. `--no-bump` builds the current build number again. The script does not
+commit the build number.
+
 On Windows 10/11 x64, use PowerShell 7 from the repository root:
 
 ```powershell
