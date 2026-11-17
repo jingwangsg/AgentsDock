@@ -198,6 +198,19 @@ class CanvasTests(unittest.TestCase):
             assert canvas.build(path)["diagnostics"] == "boom"
         assert json.loads(cache_file.read_text())["diagnostics"] == "boom"
 
+    def test_compiler_reads_the_source_from_a_file(self) -> None:
+        # subprocess feeds a pipe select.PIPE_BUF bytes at a time, each write a wait for the interpreter lock.
+        seen: dict[str, object] = {}
+
+        def compiled(_command, **options):
+            seen["input"] = options.get("input")
+            seen["source"] = options["stdin"].read()
+            return subprocess.CompletedProcess(["node"], 0, b"compiled", b"")
+
+        with patch.object(canvas, "node_binary", lambda: "/fake/node"), patch.object(canvas.subprocess, "run", compiled):
+            assert canvas.compile_source("源码 source") == ("compiled", None, True)
+        assert seen == {"input": None, "source": "源码 source".encode("utf-8")}
+
     @needs_node
     def test_check_cli_reports_forbidden_imports(self) -> None:
         path = self.tmp_path / "bad.canvas.tsx"
