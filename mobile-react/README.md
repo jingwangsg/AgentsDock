@@ -66,9 +66,9 @@ installation. Do not edit it manually.
 
 ## Local Android sideload package
 
-On a Mac with a JDK 17 and the Android SDK, once
-`expo prebuild --platform android --no-install` has generated `android/`, from
-the repository root:
+On a Mac with Homebrew's `openjdk@17` and Android command-line tools, once
+`pnpm exec expo prebuild --platform android` has generated `android/`, from the
+repository root:
 
 ```bash
 ./scripts/build_android_sideload_apk.sh
@@ -77,8 +77,9 @@ the repository root:
 The script takes the next version code in `app.json` and in the two contract
 tests that pin it, builds the sideload release variant and writes
 `build/AgentsDock-<version>-<version code>-sideload.apk`, signed with the
-generated project's debug keystore. `--no-bump` builds the current code again.
-The script does not commit the version code.
+generated project's debug keystore. It checks the version and the version code
+inside the package. `--no-bump` builds the current version code again. The
+script does not commit the version code.
 
 ## Local build output
 

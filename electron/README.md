@@ -19,6 +19,11 @@ build, and an ad-hoc signed local Electron package. It installs the result at:
 dist/AgentsDock.app
 ```
 
+The local app contains an update-disable marker and cannot consume or replace a
+signed production release. Direct desktop releases are built and notarized in
+CI, then pass through a reviewed GitHub draft. See
+[`../docs/DIRECT_RELEASES.md`](../docs/DIRECT_RELEASES.md).
+
 For an installer package instead of an app bundle, on an Apple-silicon Mac:
 
 ```bash
@@ -27,15 +32,12 @@ For an installer package instead of an app bundle, on an Apple-silicon Mac:
 
 The script takes the next build number in `electron/package.json`, runs the
 production build and writes
-`electron/dist/AgentsDock-<version>-<build>-mac-arm64.pkg`. The package is not
-signed with a Developer ID and not notarized; the script checks the signature
-and the build number of the app inside it. `--no-bump` builds the current
-number again. The script does not commit the build number.
-
-The local app contains an update-disable marker and cannot consume or replace a
-signed production release. Direct desktop releases are built and notarized in
-CI, then pass through a reviewed GitHub draft. See
-[`../docs/DIRECT_RELEASES.md`](../docs/DIRECT_RELEASES.md).
+`electron/dist/AgentsDock-<version>-<build number>-mac-arm64.pkg`. The package
+is not notarized, and its app is signed ad hoc unless the keychain holds a
+Developer ID Application identity. Its app carries no update-disable marker.
+The script checks the signature and the build number of the app inside the
+package. `--no-bump` builds the current build number again. The script does not
+commit the build number.
 
 On Windows 10/11 x64, use PowerShell 7 from the repository root:
 
