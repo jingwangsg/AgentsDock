@@ -373,6 +373,18 @@ describe('ChatHeader', () => {
     expect(screen.queryByRole('status', { name: 'Syncing' })).not.toBeInTheDocument()
   })
 
+  it('lists the folders to move a chat to as the sidebar does, a subfolder after its parent', async () => {
+    const primary = { id: 'chat-1', title: 'Primary', backend: 'codex' as const, folder: 'General' }
+    const nested = { id: 'chat-2', title: 'Paper', backend: 'claude' as const, folder: 'Research/Papers' }
+    useAppStore.setState({ sessions: [primary, nested], selectedSessionId: primary.id, folderOrder: ['General', 'Zeta', 'Research/Papers'] })
+    const user = userEvent.setup()
+    render(<ChatHeader session={primary} onOpenSplit={() => undefined} />)
+
+    await user.click(screen.getByRole('button', { name: 'Folder: General' }))
+
+    expect((await screen.findAllByRole('menuitemcheckbox')).map(item => item.textContent)).toEqual(['General', 'Zeta', 'Research', 'Research/Papers'])
+  })
+
   it('moves a chat from its folder label and keeps that action out of the chat menu', async () => {
     const primary = { id: 'chat-1', title: 'Primary', backend: 'codex' as const, folder: 'General' }
     const candidate = { id: 'chat-2', title: 'Research chat', backend: 'claude' as const, folder: 'Research' }

@@ -246,7 +246,7 @@ test('chat search validates locally and dismisses its keyboard reliably', () => 
   assert.match(sidebar, /onScrollBeginDrag=\{\(\) => \{ noteUserScroll\(\); dismissSearchKeyboard\(\) \}\}/)
   assert.doesNotMatch(sidebar, /onTouchStart=\{dismissSearchKeyboard\}/)
   assert.match(sidebar, /icon=\{RefreshCw\}[\s\S]*?dismissSearchKeyboard\(\)/)
-  assert.match(sidebar, /const createFolder = \(\) => \{[\s\S]*?dismissSearchKeyboard\(\)[\s\S]*?promptText\(/)
+  assert.match(sidebar, /const createFolder = \(parent: string \| null\) => \{[\s\S]*?dismissSearchKeyboard\(\)[\s\S]*?promptText\(/)
   assert.match(dialogSearch, /returnKeyType="search"/)
   assert.match(dialogSearch, /submitBehavior="blurAndSubmit"/)
   assert.match(dialogSearch, /onSubmitEditing=\{dismissAppKeyboard\}/)

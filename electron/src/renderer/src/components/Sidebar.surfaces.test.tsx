@@ -100,6 +100,16 @@ describe('sidebar tabs', () => {
     expect(createSurface).toHaveBeenCalledWith('browser', 'Reading')
   })
 
+  it('offers no Move Folder Up or Down for a folder holding only tabs, which the folder order does not list', async () => {
+    render(<Sidebar />)
+
+    fireEvent.contextMenu(screen.getByText('Reading').closest('.section-header')!)
+
+    expect(await screen.findByRole('menuitem', { name: 'New Browser' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'Move Folder Up' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'Move Folder Down' })).not.toBeInTheDocument()
+  })
+
   it('renames or closes a tab from its context menu', async () => {
     const removeSurface = vi.fn().mockResolvedValue(undefined)
     useAppStore.setState({ removeSurface })

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Session } from '@shared/types'
-import { digestTargetSections, isUntouchedNewChat, rankMentionRows, rankSessionsForSearch, sessionNameMatchRank } from './sessions'
+import { digestTargetSections, isUntouchedNewChat, navigableSessions, orderedActiveSessions, rankMentionRows, rankSessionsForSearch, sessionNameMatchRank } from './sessions'
 
 const session = (id: string, title: string, patch: Partial<Session> = {}): Session => ({
   id,
@@ -101,6 +101,25 @@ describe('@ picker ranking', () => {
     expect(rank('fable')).toEqual(['OSMO 定制功能与负载均衡'])
     expect(rank('zzz')).toEqual([])
     expect(rank('')).toEqual(rows.map(row => row.title))
+  })
+})
+
+describe('chat order with nested folders', () => {
+  const sessions = [
+    session('lab', 'Lab', { folder: 'Lab' }),
+    session('old', 'Old', { folder: 'Work/Papers/2026' }),
+    session('work', 'Work', { folder: 'Work' }),
+    session('papers', 'Papers', { folder: 'Work/Papers' }),
+    session('pinned', 'Pinned', { folder: 'Work/Papers', pinned: true })
+  ]
+
+  it('follows the sidebar: a folder, then its subfolders', () => {
+    expect(orderedActiveSessions(sessions, ['Work', 'Lab']).map(item => item.id)).toEqual(['pinned', 'work', 'papers', 'old', 'lab'])
+  })
+
+  it('skips the chats of a collapsed folder and of its subfolders, but not pinned ones', () => {
+    expect(navigableSessions(sessions, ['Work', 'Lab'], new Set(['Work/Papers'])).map(item => item.id)).toEqual(['pinned', 'work', 'lab'])
+    expect(navigableSessions(sessions, ['Work', 'Lab'], new Set(['Work'])).map(item => item.id)).toEqual(['pinned', 'lab'])
   })
 })
 

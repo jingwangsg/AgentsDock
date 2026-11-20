@@ -8,7 +8,8 @@ import { Composer, inboundDeliveryInterruptionMessage } from './Composer'
 import { Sidebar } from './Sidebar'
 
 const rawTitle = 'Settings / New chat / Agent 会话'
-const rawFolder = 'Appearance / Team Network'
+// No "/": that would make it a subfolder.
+const rawFolder = 'Appearance + Team Network'
 
 beforeEach(async () => {
   disposeLanguage()

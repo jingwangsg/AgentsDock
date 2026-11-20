@@ -1308,6 +1308,79 @@ describe('folder deletion', () => {
     expect(setPreference).toHaveBeenCalledWith('collapsedFolders', [])
   })
 
+  it('deletes a subfolder with its subfolders and sends their chats to its parent', async () => {
+    const update = vi.fn(async (sessionId: string, patch: Partial<Session>) => ({ ...sessionFor(sessionId), ...patch }))
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { sessions: { update }, preferences: { set: vi.fn().mockResolvedValue(undefined) } } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      sessions: [
+        { ...sessionFor('papers'), folder: 'Work/Papers' },
+        { ...sessionFor('old'), folder: 'Work/Papers/2026' },
+        { ...sessionFor('papershop'), folder: 'Work/Papershop' },
+        { ...sessionFor('general'), folder: 'General' }
+      ],
+      snapshots: {},
+      folderOrder: ['Work', 'Work/Papers', 'Work/Papers/2026', 'Work/Papershop', 'General'],
+      collapsedFolders: new Set(['Work/Papers/2026', 'Work/Papershop']),
+      error: null
+    })
+
+    await useAppStore.getState().deleteFolder('Work/Papers')
+
+    expect(update.mock.calls).toEqual([['papers', { folder: 'Work' }], ['old', { folder: 'Work' }]])
+    expect(useAppStore.getState().sessions.map(session => session.folder)).toEqual(['Work', 'Work', 'Work/Papershop', 'General'])
+    expect(useAppStore.getState().folderOrder).toEqual(['Work', 'Work/Papershop', 'General'])
+    expect([...useAppStore.getState().collapsedFolders]).toEqual(['Work/Papershop'])
+  })
+
+  it('sends the chats to the parent as the list spells it, and keeps a parent this device\'s own order lists only in the deleted path', async () => {
+    const update = vi.fn(async (sessionId: string, patch: Partial<Session>) => ({ ...sessionFor(sessionId), ...patch }))
+    const setPreference = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { sessions: { update }, preferences: { set: setPreference } } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      sessions: [{ ...sessionFor('spaced'), folder: 'Lab / Runs' }, { ...sessionFor('old'), folder: 'Lab/Runs/Old' }],
+      snapshots: {},
+      folderOrder: ['Work/Papers', 'Lab / Runs', 'Lab/Runs/Old', 'General'],
+      sharedFolderOrder: false,
+      collapsedFolders: new Set(),
+      error: null
+    })
+
+    await useAppStore.getState().deleteFolder('Lab/Runs/Old')
+    // Not to "Lab/Runs", which would be a second folder beside the one stored as "Lab / Runs".
+    expect(update.mock.calls).toEqual([['old', { folder: 'Lab / Runs' }]])
+
+    await useAppStore.getState().deleteFolder('Work/Papers')
+    // Work stays where it was, before Lab.
+    expect(useAppStore.getState().folderOrder).toEqual(['Work', 'Lab', 'Lab / Runs', 'General'])
+  })
+
+  it('deletes a top-level folder with its subfolders and sends their chats to the first folder outside it', async () => {
+    const update = vi.fn(async (sessionId: string, patch: Partial<Session>) => ({ ...sessionFor(sessionId), ...patch }))
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { sessions: { update }, preferences: { set: vi.fn().mockResolvedValue(undefined) } } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      sessions: [{ ...sessionFor('work'), folder: 'Work' }, { ...sessionFor('papers'), folder: 'Work/Papers' }, { ...sessionFor('lab'), folder: 'Lab' }],
+      snapshots: {},
+      folderOrder: ['Work', 'Work/Papers', 'Lab'],
+      collapsedFolders: new Set(),
+      error: null
+    })
+
+    await useAppStore.getState().deleteFolder('Work')
+
+    // Not to Work/Papers, the next folder in the list: it is deleted too.
+    expect(update.mock.calls).toEqual([['work', { folder: 'Lab' }], ['papers', { folder: 'Lab' }]])
+    expect(useAppStore.getState().folderOrder).toEqual(['Lab'])
+  })
+
   it('deletes General by moving its chats, including chats without a folder, to the first other folder', async () => {
     const update = vi.fn(async (sessionId: string, patch: Partial<Session>) => ({ ...sessionFor(sessionId), ...patch }))
     const setPreference = vi.fn().mockResolvedValue(undefined)
@@ -1485,6 +1558,112 @@ describe('folder rename', () => {
 
     expect(update).not.toHaveBeenCalled()
     expect(useAppStore.getState().folderOrder).toEqual(['Research', 'Archive'])
+  })
+
+  it('renames a folder into another parent with its subfolders, their chats and their tabs', async () => {
+    const update = vi.fn(async (sessionId: string, patch: Partial<Session>) => ({ ...sessionFor(sessionId), ...patch }))
+    const updateSurface = vi.fn(async (surfaceId: string, patch: { folder: string }) => ({ id: surfaceId, kind: 'terminal', ...patch }))
+    const setPreference = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { sessions: { update }, surfaces: { update: updateSurface }, preferences: { set: setPreference } } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      sessions: [
+        { ...sessionFor('papers'), folder: 'Work/Papers' },
+        { ...sessionFor('old'), folder: 'Work/Papers/2026' },
+        { ...sessionFor('work'), folder: 'Work' },
+        { ...sessionFor('papershop'), folder: 'Work/Papershop' }
+      ],
+      surfaces: [{ id: 'tab', kind: 'terminal', folder: 'Work/Papers/2026' }, { id: 'other', kind: 'terminal', folder: 'Work' }] as never,
+      snapshots: {},
+      folderOrder: ['Work', 'Work/Papers', 'Work/Papers/2026', 'Work/Papershop', 'Lab', 'Lab/Runs', 'General'],
+      collapsedFolders: new Set(['Work/Papers/2026', 'Work']),
+      error: null
+    })
+
+    await expect(useAppStore.getState().renameFolder('Work/Papers', 'Lab/Papers')).resolves.toBe(true)
+
+    expect(update.mock.calls).toEqual([['papers', { folder: 'Lab/Papers' }], ['old', { folder: 'Lab/Papers/2026' }]])
+    expect(updateSurface.mock.calls).toEqual([['tab', { folder: 'Lab/Papers/2026' }]])
+    expect(useAppStore.getState().sessions.map(session => session.folder)).toEqual(['Lab/Papers', 'Lab/Papers/2026', 'Work', 'Work/Papershop'])
+    expect(useAppStore.getState().surfaces.map(surface => surface.folder)).toEqual(['Lab/Papers/2026', 'Work'])
+    // Last in its new folder.
+    expect(useAppStore.getState().folderOrder).toEqual(['Work', 'Work/Papershop', 'Lab', 'Lab/Runs', 'Lab/Papers', 'Lab/Papers/2026', 'General'])
+    expect([...useAppStore.getState().collapsedFolders]).toEqual(['Lab/Papers/2026', 'Work'])
+  })
+
+  it('sends the shared folder order first, with the folder last in its new parent, and expands a collapsed folder it goes into', async () => {
+    const calls: string[] = []
+    const update = vi.fn(async (sessionId: string, patch: Partial<Session>) => { calls.push(`chat ${sessionId}`); return { ...sessionFor(sessionId), ...patch } })
+    const setOrder = vi.fn(async (_scope: unknown, order: string[]) => { calls.push(`order ${order.join(',')}`) })
+    const profile = { ...profileFor('profile-a'), serverIdentity: 'server-a' }
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { sessions: { update }, folders: { setOrder }, preferences: { setScoped: vi.fn().mockResolvedValue(undefined) } } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      profiles: [profile], activeProfileId: profile.id, profileGeneration: 1, switchingProfileId: null,
+      sessions: [{ ...sessionFor('papers'), folder: 'Papers' }, { ...sessionFor('run'), folder: 'Lab/Runs' }],
+      surfaces: [], snapshots: {},
+      folderOrder: ['Papers', 'Lab', 'Lab/Runs', 'General'],
+      sharedFolderOrder: true,
+      collapsedFolders: new Set(['Lab', 'General']),
+      error: null
+    })
+
+    await expect(useAppStore.getState().renameFolder('Papers', 'Lab/Papers')).resolves.toBe(true)
+
+    expect(calls).toEqual(['order Lab,Lab/Runs,Lab/Papers,General', 'chat papers'])
+    expect([...useAppStore.getState().collapsedFolders]).toEqual(['General'])
+    useAppStore.setState({ profiles: [], activeProfileId: null, profileGeneration: 0, sharedFolderOrder: false })
+  })
+
+  it('renames the tabs of a folder with it, also of a folder holding only tabs, and reports a tab that could not be renamed', async () => {
+    const updateSurface = vi.fn(async (surfaceId: string, patch: { folder: string }) => ({ id: surfaceId, kind: 'terminal', ...patch }))
+    const list = vi.fn().mockResolvedValue([])
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { sessions: { update: vi.fn(), list: vi.fn().mockResolvedValue([]) }, surfaces: { update: updateSurface, list }, preferences: { set: vi.fn().mockResolvedValue(undefined) } } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      sessions: [], surfaces: [{ id: 'tab', kind: 'terminal', folder: 'Logs' }] as never, snapshots: {},
+      folderOrder: [], collapsedFolders: new Set(), error: null
+    })
+
+    await expect(useAppStore.getState().renameFolder('Logs', 'Shells')).resolves.toBe(true)
+    expect(updateSurface.mock.calls).toEqual([['tab', { folder: 'Shells' }]])
+    expect(useAppStore.getState().surfaces.map(surface => surface.folder)).toEqual(['Shells'])
+
+    updateSurface.mockRejectedValueOnce(new Error('tab update refused'))
+    await expect(useAppStore.getState().renameFolder('Shells', 'Logs')).resolves.toBe(false)
+    expect(useAppStore.getState().error).toBe('tab update refused')
+  })
+
+  it('refuses to rename a folder into itself or onto a folder that is only the parent of another', async () => {
+    const update = vi.fn()
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { sessions: { update }, preferences: { set: vi.fn() } } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      sessions: [{ ...sessionFor('papers'), folder: 'Papers' }, { ...sessionFor('deep'), folder: 'Lab/Papers/2026' }],
+      surfaces: [],
+      folderOrder: ['Papers', 'Lab/Papers/2026'],
+      collapsedFolders: new Set(),
+      error: null
+    })
+
+    await expect(useAppStore.getState().renameFolder('Papers', 'Papers/Old')).resolves.toBe(false)
+    expect(useAppStore.getState().error).toBe('A folder cannot be put inside itself.')
+    // The same path in another spelling is no rename, and no error.
+    useAppStore.setState({ error: null })
+    await expect(useAppStore.getState().renameFolder('Papers', ' Papers / ')).resolves.toBe(false)
+    expect(useAppStore.getState().error).toBeNull()
+    await expect(useAppStore.getState().renameFolder('Papers', 'Lab/Papers')).resolves.toBe(false)
+    expect(useAppStore.getState().error).toBe('A folder named Lab/Papers already exists.')
+
+    expect(update).not.toHaveBeenCalled()
   })
 })
 
@@ -5863,6 +6042,40 @@ describe('job run chats', () => {
 
 describe('emergency alert store integration', () => {
   afterEach(() => vi.restoreAllMocks())
+
+  it('expands the collapsed folders an alerted chat is within, and no others, at startup and when sessions arrive', async () => {
+    const profile = { ...profileFor('profile-emergency'), serverIdentity: 'server-emergency' }
+    const alerted = emergencySessionFor('paper', { folder: 'Work/Papers/2026' })
+    const collapsed = ['Work', 'Work/Papers', 'Workshop', 'Lab']
+    const handlers = new Map<string, (payload: any) => void>()
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        bootstrap: vi.fn().mockResolvedValue({ ...profileBootstrap(profile, [profile], 3, alerted), collapsedFolders: collapsed }),
+        timeline: {
+          cached: vi.fn(async (sessionId: string) => ({ ...snapshot(sessionId, []), session: sessionFor(sessionId), historyVerified: true })),
+          subscribe: vi.fn().mockResolvedValue(undefined),
+          open: vi.fn(),
+          unsubscribe: vi.fn().mockResolvedValue(undefined)
+        },
+        preferences: { get: vi.fn().mockResolvedValue(null), set: vi.fn().mockResolvedValue(undefined) },
+        native: { log: vi.fn().mockResolvedValue(undefined), setBadge: vi.fn().mockResolvedValue(undefined), notify: vi.fn().mockResolvedValue(undefined) },
+        events: { on: vi.fn((channel: string, handler: (payload: any) => void) => { handlers.set(channel, handler); return () => {} }) }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      initialized: false, profiles: [], activeProfileId: null, profileGeneration: 0,
+      sessions: [], selectedSessionId: null, chatPanes: { primary: null, secondary: null },
+      focusedChatPane: 'primary', snapshots: {}, collapsedFolders: new Set(), archivedCollapsed: false
+    })
+
+    await useAppStore.getState().initialize()
+    expect([...useAppStore.getState().collapsedFolders]).toEqual(['Workshop', 'Lab'])
+
+    useAppStore.setState({ collapsedFolders: new Set(collapsed) })
+    handlers.get('server:sessions')?.({ profileId: profile.id, profileGeneration: 3, sessions: [alerted] })
+    expect([...useAppStore.getState().collapsedFolders]).toEqual(['Workshop', 'Lab'])
+  })
 
   it('sends one reason-bearing emergency notification and suppresses the generic message duplicate', async () => {
     const profile = { ...profileFor('profile-emergency'), serverIdentity: 'server-emergency' }

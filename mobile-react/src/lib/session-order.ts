@@ -1,4 +1,5 @@
 import type { Health, Session } from '../types'
+import { folderIsWithin, folderParent, folderTree, reorderFolderList } from './folders'
 import { fuzzyScore } from './fuzzy'
 
 export interface SessionSection {
@@ -41,6 +42,7 @@ export function unreadCount(sessions: readonly Session[]): number {
 }
 
 /**
+ * The sections in display order: Pinned, the folders (each directly before its subfolders, see `folderTree`), Archived.
  * `tabFolders` are the folders terminal and browser tabs are filed under: one holding no chat is listed after the
  * chat folders unless `folderOrder` places it.
  */
@@ -74,7 +76,9 @@ export function orderedSessionSections(
       || (includeEmptyFolders && !['Pinned', 'Archived'].includes(folder) && folderOrder.includes(folder))
       || tabs.has(folder)
     ))
-  return orderedFolders.map(folder => ({ id: folder, title: folder, sessions: [...(groups.get(folder) ?? [])].sort(compareSessions) }))
+  // folderTree adds a parent missing from the list, so a subfolder is never shown without its parents, and keeps the
+  // order of top-level entries: Pinned stays first, Archived last.
+  return folderTree(orderedFolders).map(folder => ({ id: folder, title: folder, sessions: [...(groups.get(folder) ?? [])].sort(compareSessions) }))
 }
 
 /**
@@ -102,7 +106,8 @@ type SidebarDrop =
  * (`next`, dragged row at `to`) and `folders`, the current folder order.
  * Same section rules as the server's reorder endpoint: a chat joins the section
  * it lands under, may move into any folder, but never into Pinned or Archived from
- * outside; folder headers reorder folders only. A pinned chat dropped into a folder
+ * outside; a folder header reorders the folders of its own parent only, and its
+ * subfolders move with it. A pinned chat dropped into a folder
  * is unpinned, like Move to Folder here (the desktop keeps it pinned). null means
  * nothing changes. With `sharedOrder` the folders dropped leave out those holding only tabs that `folders`
  * does not list: as on the desktop, the shared folder order never takes them.
@@ -110,8 +115,26 @@ type SidebarDrop =
 export function resolveSidebarDrop(next: SidebarDropRow[], to: number, sessions: Session[], folders: string[], sharedOrder = false): SidebarDrop | null {
   const moved = next[to]
   if (moved.kind === 'header') {
-    const order = next.flatMap(row => row.kind === 'header' && !['Pinned', 'Archived'].includes(row.folder) && (!sharedOrder || folders.includes(row.folder)) ? [row.folder] : [])
-    return order.join('\n') === folders.join('\n') ? null : { kind: 'folder-order', order }
+    const headers = next.flatMap(row => row.kind === 'header' && !['Pinned', 'Archived'].includes(row.folder) && (!sharedOrder || folders.includes(row.folder)) ? [row.folder] : [])
+    // The order before the drop: `folders` has the subfolders of a collapsed folder, which have no header; the
+    // headers add the folders holding only tabs, which the sidebar lists in plain sort order.
+    const shown = folderTree([...folders, ...[...headers].sort()])
+    // Only the dragged header moved in `next`, so the headers next to it say where it was dropped:
+    // - the header below is a folder of the same parent: the dragged folder goes before that folder;
+    // - else the header above is a folder of the same parent, or one of that folder's subfolders, and the header
+    //   below is not within that folder: the dragged folder goes after that folder and its subfolders;
+    // - anywhere else (between the subfolders of another folder, or outside its parent) nothing changes.
+    const at = headers.indexOf(moved.folder)
+    const parent = folderParent(moved.folder)
+    const headerAbove = headers[at - 1]
+    const headerBelow = headers[at + 1]
+    const siblingAbove = headerAbove === undefined ? undefined : headers.find(folder => folderParent(folder) === parent && folderIsWithin(headerAbove, folder))
+    const order = headerBelow !== undefined && folderParent(headerBelow) === parent
+      ? reorderFolderList(shown, moved.folder, headerBelow, 'before')
+      : siblingAbove !== undefined && (headerBelow === undefined || !folderIsWithin(headerBelow, siblingAbove))
+        ? reorderFolderList(shown, moved.folder, siblingAbove, 'after')
+        : shown
+    return order.join('\n') === shown.join('\n') ? null : { kind: 'folder-order', order }
   }
   let index = to - 1
   while (index >= 0 && next[index].kind !== 'header') index -= 1

@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentsDockAPI } from '@shared/ipc'
@@ -183,7 +183,7 @@ describe('sidebar chat rename', () => {
     fireEvent.contextMenu(screen.getByText('General').closest('.section-header')!)
 
     const labels = (await screen.findAllByRole('menuitem')).map(item => item.textContent)
-    expect(labels).toEqual(['New Claude Chat', 'New Codex Chat', 'New Terminal', 'New Browser', 'Rename Folder…', 'Delete Folder'])
+    expect(labels).toEqual(['New Claude Chat', 'New Codex Chat', 'New Terminal', 'New Browser', 'New Subfolder…', 'Rename Folder…', 'Delete Folder'])
   })
 
   it('lists one New chat entry per ready backend and seeds it with the folder', async () => {
@@ -200,7 +200,7 @@ describe('sidebar chat rename', () => {
 
     fireEvent.contextMenu(screen.getByText('Research').closest('.section-header')!)
     const labels = (await screen.findAllByRole('menuitem')).map(item => item.textContent)
-    expect(labels).toEqual(['New Claude Chat', 'New Codex Chat', 'New Cursor Chat', 'New Terminal', 'New Browser', 'Rename Folder…', 'Delete Folder'])
+    expect(labels).toEqual(['New Claude Chat', 'New Codex Chat', 'New Cursor Chat', 'New Terminal', 'New Browser', 'New Subfolder…', 'Rename Folder…', 'Delete Folder'])
     await user.click(screen.getByRole('menuitem', { name: 'New Cursor Chat' }))
 
     expect(requestNewChat).toHaveBeenCalledWith({ folder: 'Research', backend: 'cursor' })
@@ -224,7 +224,92 @@ describe('sidebar chat rename', () => {
 
     fireEvent.contextMenu(screen.getByText('Research').closest('.section-header')!)
     const labels = (await screen.findAllByRole('menuitem')).map(item => item.textContent)
-    expect(labels).toEqual(['New Claude Chat', 'New Codex Chat', 'New Terminal', 'New Browser', 'Rename Folder…', 'Delete Folder'])
+    expect(labels).toEqual(['New Claude Chat', 'New Codex Chat', 'New Terminal', 'New Browser', 'New Subfolder…', 'Rename Folder…', 'Delete Folder'])
+  })
+
+  const nested: Session[] = [
+    { ...session, id: 'work', title: 'Work chat', folder: 'Work' },
+    { ...session, id: 'papers', title: 'Papers chat', folder: 'Work/Papers' },
+    { ...session, id: 'old', title: 'Old chat', folder: 'Work/Papers/2026' },
+    { ...session, id: 'lab', title: 'Lab chat', folder: 'Lab' }
+  ]
+  const headers = () => [...document.querySelectorAll('.section-header')].map(header => ({
+    name: header.querySelector('button > span:not(.status-dot)')!.textContent,
+    count: header.querySelector('small')!.textContent,
+    indent: (header.closest('.sidebar-section') as HTMLElement).style.paddingLeft
+  }))
+
+  it('lists a subfolder after its parent by its own name, indented by its depth', () => {
+    // The order has the subfolders after Lab: they still follow their parents.
+    useAppStore.setState({ sessions: nested, folderOrder: ['Work', 'Lab', 'Work/Papers/2026', 'Work/Papers'] })
+    render(<Sidebar />)
+
+    expect(headers()).toEqual([
+      { name: 'Work', count: '1', indent: '0px' },
+      { name: 'Papers', count: '1', indent: '12px' },
+      { name: '2026', count: '1', indent: '24px' },
+      { name: 'Lab', count: '1', indent: '0px' }
+    ])
+  })
+
+  it('hides the subfolders of a collapsed folder and counts their chats in its header', () => {
+    useAppStore.setState({ sessions: nested, folderOrder: ['Work', 'Work/Papers', 'Work/Papers/2026', 'Lab'], collapsedFolders: new Set(['Work/Papers']) })
+    render(<Sidebar />)
+
+    expect(headers()).toEqual([
+      { name: 'Work', count: '1', indent: '0px' },
+      { name: 'Papers', count: '2', indent: '12px' },
+      { name: 'Lab', count: '1', indent: '0px' }
+    ])
+    expect(screen.queryByText('Papers chat')).not.toBeInTheDocument()
+    expect(screen.queryByText('Old chat')).not.toBeInTheDocument()
+    expect(screen.getByText('Work chat')).toBeInTheDocument()
+  })
+
+  it('reorders a folder among the folders of its parent, with its subfolders', async () => {
+    useAppStore.setState({ sessions: nested, folderOrder: ['Work', 'Work/Papers', 'Work/Papers/2026', 'Lab'] })
+    const user = userEvent.setup()
+    render(<Sidebar />)
+
+    // Papers is the only folder directly in Work: no Move Folder Up or Down.
+    fireEvent.contextMenu(screen.getByText('Papers').closest('.section-header')!)
+    expect(await screen.findByRole('menuitem', { name: 'Rename Folder…' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'Move Folder Up' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'Move Folder Down' })).not.toBeInTheDocument()
+    await user.keyboard('{Escape}')
+
+    fireEvent.contextMenu(screen.getByText('Work').closest('.section-header')!)
+    await user.click(await screen.findByRole('menuitem', { name: 'Move Folder Down' }))
+    expect(useAppStore.getState().folderOrder).toEqual(['Lab', 'Work', 'Work/Papers', 'Work/Papers/2026'])
+  })
+
+  it('offers to move a folder to the top level and into every folder except its parent, itself and its subfolders', async () => {
+    const renameFolder = vi.fn().mockResolvedValue(true)
+    useAppStore.setState({ renameFolder, sessions: nested, folderOrder: ['Work', 'Work/Papers', 'Work/Papers/2026', 'Lab'] })
+    const user = userEvent.setup()
+    render(<Sidebar />)
+
+    fireEvent.contextMenu(screen.getByText('Papers').closest('.section-header')!)
+    await user.click(await screen.findByRole('menuitem', { name: 'Move Folder To' }))
+    const submenu = within((await screen.findByRole('menuitem', { name: 'Top Level' })).closest('[role="menu"]') as HTMLElement)
+    // Not Work, its parent, and not its own subfolder.
+    expect(submenu.getAllByRole('menuitem').map(item => item.textContent)).toEqual(['Top Level', 'Lab'])
+    fireEvent.click(submenu.getByRole('menuitem', { name: 'Lab' }))
+
+    expect(renameFolder).toHaveBeenCalledExactlyOnceWith('Work/Papers', 'Lab/Papers')
+  })
+
+  it('asks for a new subfolder from the folder context menu', async () => {
+    useAppStore.setState({ sessions: nested, folderOrder: ['Work', 'Lab'] })
+    const newFolder = vi.fn()
+    window.addEventListener('agentsdock:new-subfolder', newFolder, { once: true })
+    const user = userEvent.setup()
+    render(<Sidebar />)
+
+    fireEvent.contextMenu(screen.getByText('Papers').closest('.section-header')!)
+    await user.click(await screen.findByRole('menuitem', { name: 'New Subfolder…' }))
+
+    expect((newFolder.mock.calls[0][0] as CustomEvent<{ parent: string }>).detail).toEqual({ parent: 'Work/Papers' })
   })
 
   it('moves folders up and down from the context menu and hides the item at the edges', async () => {

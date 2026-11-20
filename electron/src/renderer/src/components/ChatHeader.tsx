@@ -1,4 +1,5 @@
 // Localized display strings use semantic catalog keys.
+import { folderTree } from '@shared/folders'
 import { t } from '@shared/i18n'
 import { useLocale } from '../lib/i18n'
 import { useEffect, useMemo, useState } from 'react'
@@ -67,11 +68,12 @@ export function ChatHeader({
   )
   const folders = useMemo(() => {
     const order = new Map(folderOrder.map((folder, index) => [folder, index]))
-    return [...new Set([
+    // As the sidebar lists them: each folder before its subfolders.
+    return folderTree([...new Set([
       ...folderOrder,
       ...sessions.filter(candidate => !candidate.archived && !candidate.pinned).map(candidate => candidate.folder?.trim() || 'General'),
       currentFolder
-    ])].sort((a, b) => (order.get(a) ?? Number.MAX_SAFE_INTEGER) - (order.get(b) ?? Number.MAX_SAFE_INTEGER) || a.localeCompare(b))
+    ])].sort((a, b) => (order.get(a) ?? Number.MAX_SAFE_INTEGER) - (order.get(b) ?? Number.MAX_SAFE_INTEGER) || a.localeCompare(b)))
   }, [currentFolder, folderOrder, sessions])
   const [title, setTitle] = useState(session?.title ?? '')
   const [sessionIdCopied, setSessionIdCopied] = useState(false)
