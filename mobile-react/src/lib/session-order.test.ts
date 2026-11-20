@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Session } from '../types'
-import { folderIsHidden } from './folders'
+import { folderIsWithin } from './folders'
 import { orderedSessionSections, rankMentionRows, rememberedFolderOrder, resolveSidebarDrop, sharesFolderOrder, sidebarFolderOrder, sidebarVisibleSessions, unreadCount, type SidebarDropRow } from './session-order'
 
 function session(id: string, folder = 'General'): Session {
@@ -70,7 +70,7 @@ test('a folder holding only tabs keeps its place in folderOrder, else follows th
   assert.deepEqual(sidebarFolderOrder([{ ...session('p', 'Work'), pinned: true }, ...sessions], ['Ops', 'Work']), ['Ops', 'Work', 'Zeta'])
 })
 
-test('a folder is listed directly before its subfolders, with a parent that only subfolders name', () => {
+test('a folder is listed directly before its subfolders, with a parent missing from the order', () => {
   const sessions = [session('p', 'Work/Papers'), session('g'), session('o', 'Ops'), session('r', 'Lab/Runs/Old'), { ...session('pin', 'Work/Code'), pinned: true }, { ...session('old', 'Work/Code'), archived: true }]
   // Work and Lab hold no chat and the order does not list them; Lab/Runs/Old follows the order alphabetically.
   assert.deepEqual(
@@ -117,7 +117,7 @@ test('remembered folder order keeps folders that only exist on sessions, General
 
 // As the sidebar draws it: a collapsed folder shows its header only, and none of its subfolders.
 function rowsOf(sessions: Session[], folderOrder: string[], collapsed: string[] = []): SidebarDropRow[] {
-  return orderedSessionSections(sessions, folderOrder, true, true).filter(section => !folderIsHidden(section.id, collapsed)).flatMap<SidebarDropRow>(section => [
+  return orderedSessionSections(sessions, folderOrder, true, true).filter(section => !collapsed.some(entry => entry !== section.id && folderIsWithin(section.id, entry))).flatMap<SidebarDropRow>(section => [
     { kind: 'header', folder: section.id },
     ...(collapsed.includes(section.id) ? [] : section.sessions.map(value => ({ kind: 'session' as const, session: value }))),
   ])
@@ -183,7 +183,7 @@ test('a dragged folder is reordered among the folders of its parent, and its sub
   const swapped = { kind: 'folder-order', order: ['Work', 'Work/Code', 'Work/Papers', 'Lab', 'General'] }
   assert.deepEqual(resolveSidebarDrop(dropped(rows, 4, 2), 2, nested, nestedFolders), swapped)
   assert.deepEqual(resolveSidebarDrop(dropped(rows, 2, 5), 5, nested, nestedFolders), swapped)
-  // A folder dragged past the last folder at the top goes after it and all of its subfolders.
+  // A folder dragged past the last top-level folder goes after it and all of its subfolders.
   const lastHasSubfolders = ['Lab', 'General', 'Work', 'Work/Papers', 'Work/Code']
   const lastRows = rowsOf(nested, lastHasSubfolders)
   assert.deepEqual(resolveSidebarDrop(dropped(lastRows, 0, lastRows.length - 1), lastRows.length - 1, nested, lastHasSubfolders), { kind: 'folder-order', order: ['General', 'Work', 'Work/Papers', 'Work/Code', 'Lab'] })

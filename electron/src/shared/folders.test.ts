@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { folderIn, folderIsHidden, folderIsWithin, folderLeaf, folderOrderAfterMove, folderParent, folderSegments, folderTree, movedFolder, rememberedFolderOrder, sidebarFolders } from './folders'
+import { folderIsWithin, folderOrderAfterRename, folderOwnName, folderParent, folderPath, folderPathIn, folderSegments, folderTree, rememberedFolderOrder, renamedFolder, sidebarFolders } from './folders'
 import type { Session } from './types'
 
 describe('rememberedFolderOrder', () => {
@@ -17,53 +17,49 @@ describe('rememberedFolderOrder', () => {
 })
 
 describe('nested folders', () => {
-  it('reads a name as a path', () => {
+  it('reads a name as a path, whatever the spaces and empty names in it', () => {
     expect(folderSegments(' Work / Papers ')).toEqual(['Work', 'Papers'])
+    expect([folderPath(' Work / Papers '), folderPath('Work//Papers/'), folderPath('Work')]).toEqual(['Work/Papers', 'Work/Papers', 'Work'])
     expect([folderParent('Work/Papers/2026'), folderParent('Work')]).toEqual(['Work/Papers', null])
-    expect([folderLeaf('Work/Papers'), folderLeaf('Work'), folderLeaf('/')]).toEqual(['Papers', 'Work', '/'])
-    expect([folderIn(null, 'Papers'), folderIn('Work', 'Papers'), folderIn('Work', 'Papers/2026')]).toEqual(['Papers', 'Work/Papers', 'Work/Papers/2026'])
+    expect([folderOwnName('Work/Papers'), folderOwnName('Work')]).toEqual(['Papers', 'Work'])
+    expect([folderPathIn(null, 'Papers'), folderPathIn('Work', 'Papers'), folderPathIn('Work', 'Papers/2026')]).toEqual(['Papers', 'Work/Papers', 'Work/Papers/2026'])
   })
 
-  it('tells a folder inside another from one whose name only starts alike', () => {
-    expect(folderIsWithin('Work/Papers', 'Work')).toBe(true)
-    expect(folderIsWithin('Work', 'Work')).toBe(true)
-    expect(folderIsWithin('Workshop', 'Work')).toBe(false)
-    expect(folderIsWithin('Work', 'Work/Papers')).toBe(false)
+  it('takes a name without an own name as it is, and no other folder is within it', () => {
+    expect(folderOwnName('/')).toEqual('/')
+    expect([folderIsWithin('/', '/'), folderIsWithin('Work', '/'), folderIsWithin('Work/Papers', ' / ')]).toEqual([true, false, false])
   })
 
-  it('hides a folder under a collapsed one, at any depth, but not the collapsed one itself', () => {
-    expect(folderIsHidden('Work/Papers/2026', ['Work'])).toBe(true)
-    expect(folderIsHidden('Work', ['Work'])).toBe(false)
-    expect(folderIsHidden('Workshop', ['Work'])).toBe(false)
+  it('tells a subfolder from a folder whose name only starts alike', () => {
+    expect([folderIsWithin('Work/Papers', 'Work'), folderIsWithin('Work/Papers/2026', 'Work'), folderIsWithin('Work', 'Work')]).toEqual([true, true, true])
+    expect([folderIsWithin('Workshop', 'Work'), folderIsWithin('Work', 'Work/Papers')]).toEqual([false, false])
   })
 
-  it('lists each folder before its subfolders and adds a parent only subfolders name', () => {
-    expect(folderTree(['Ops', 'Work/Papers', 'General', 'Work', 'Lab/Runs/Old', 'Work/Code'])).toEqual([
-      'Ops', 'Work', 'Work/Papers', 'Work/Code', 'General', 'Lab', 'Lab/Runs', 'Lab/Runs/Old'
-    ])
+  it('lists every folder once, directly before its subfolders, and adds a parent missing from the list', () => {
+    expect(folderTree(['Ops', 'Work/Papers', 'General', 'Work', 'Lab/Runs/Old', 'Work/Code', 'Ops'])).toEqual(['Ops', 'Work', 'Work/Papers', 'Work/Code', 'General', 'Lab', 'Lab/Runs', 'Lab/Runs/Old'])
   })
 
-  it('keeps a listed folder once when a name spells its path differently', () => {
+  it('does not add a parent again when the list spells its path with spaces', () => {
     expect(folderTree(['Work / Papers', 'Work', 'Work/Papers/2026'])).toEqual(['Work', 'Work / Papers', 'Work/Papers/2026'])
   })
 
-  it('gives a moved folder and its subfolders their new paths', () => {
-    expect(movedFolder('Work/Papers/2026', 'Work/Papers', 'Archive/Papers')).toBe('Archive/Papers/2026')
-    expect(movedFolder('Work/Papers', 'Work/Papers', 'Reading')).toBe('Reading')
+  it('gives a renamed folder and its subfolders their new paths', () => {
+    expect(renamedFolder('Work/Papers/2026', 'Work/Papers', 'Archive/Papers')).toEqual('Archive/Papers/2026')
+    expect(renamedFolder('Work/Papers', 'Work/Papers', 'Reading')).toEqual('Reading')
   })
 
-  it('renames in place and moves a folder to the end of its new parent', () => {
+  it("keeps a folder's place when only its own name changes, and puts it last in a new parent or at the top level", () => {
     const folders = ['Work', 'Work/Papers', 'Work/Papers/2026', 'Work/Code', 'Lab', 'Lab/Runs', 'General']
-    expect(folderOrderAfterMove(folders, 'Work/Papers', 'Work/Reading')).toEqual(['Work', 'Work/Reading', 'Work/Reading/2026', 'Work/Code', 'Lab', 'Lab/Runs', 'General'])
-    expect(folderOrderAfterMove(folders, 'Work/Papers', 'Lab/Papers')).toEqual(['Work', 'Work/Code', 'Lab', 'Lab/Runs', 'Lab/Papers', 'Lab/Papers/2026', 'General'])
-    expect(folderOrderAfterMove(folders, 'Work/Papers', 'Papers')).toEqual(['Work', 'Work/Code', 'Lab', 'Lab/Runs', 'General', 'Papers', 'Papers/2026'])
+    expect(folderOrderAfterRename(folders, 'Work/Papers', 'Work/Reading')).toEqual(['Work', 'Work/Reading', 'Work/Reading/2026', 'Work/Code', 'Lab', 'Lab/Runs', 'General'])
+    expect(folderOrderAfterRename(folders, 'Work/Papers', 'Lab/Papers')).toEqual(['Work', 'Work/Code', 'Lab', 'Lab/Runs', 'Lab/Papers', 'Lab/Papers/2026', 'General'])
+    expect(folderOrderAfterRename(folders, 'Work/Papers', 'Papers')).toEqual(['Work', 'Work/Code', 'Lab', 'Lab/Runs', 'General', 'Papers', 'Papers/2026'])
   })
 })
 
 describe('sidebarFolders', () => {
   const chat = (folder: string | null, extra: Partial<Session> = {}) => ({ folder, archived: false, pinned: false, ...extra }) as Session
 
-  it('orders by the folder order, then by name, with subfolders under their parent', () => {
+  it('orders by the folder order, then by name, each folder directly before its subfolders', () => {
     expect(sidebarFolders([chat('Work/Papers'), chat(null), chat('Alpha'), chat('Old', { archived: true })], ['Work', 'Lab/Runs'])).toEqual([
       'Work', 'Work/Papers', 'Lab', 'Lab/Runs', 'Alpha', 'General'
     ])

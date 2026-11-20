@@ -10,7 +10,7 @@ import type { TeamHubScope } from '@shared/team-hub'
 import { mailHintPending, type MailArrivalCursor, type MailboxCoverage, type MailHintProjection, type MailHintScope } from '@shared/team-mail-hints'
 import { bulletinHintPending, type BulletinHintRefresh } from '@shared/team-bulletin-hints'
 import { applyOpenCodeSessionEvent, openCodeProviderCommandsAvailable } from '@shared/opencode'
-import { folderIsWithin, folderOrderAfterMove, folderParent, folderTree, movedFolder } from '@shared/folders'
+import { folderIsWithin, folderOrderAfterRename, folderParent, folderPath, folderTree, renamedFolder } from '@shared/folders'
 import { t } from '@shared/i18n'
 import { runtimeSelectionError, selectableChatBackends } from '@shared/runtime-catalog'
 import { isAsyncCrossChatMessage, isNativeSteerEvent, isNativeSteerTransitionStop, timelineSemanticUnits } from '@shared/semantic-timeline'
@@ -291,7 +291,7 @@ interface AppState {
     options?: { allowDuringWorkspaceFlush?: boolean }
   ): Promise<void>
   deleteFolder(folder: string): Promise<void>
-  /** The folder `source` becomes `target`, a rename or a move into another folder: its chats, tabs and subfolders go with it. Resolves false (with `error` set) when refused. */
+  /** Gives the folder `source` the path `target`, a new own name or a new parent: its chats, tabs and subfolders are renamed with it. Resolves false (with `error` set, unless the path is the same) when refused. */
   renameFolder(source: string, target: string): Promise<boolean>
   forkSession(sessionId: string): Promise<void>
   exportSession(sessionId: string, format: SessionExportFormat): Promise<void>
@@ -866,9 +866,9 @@ export const useAppStore = create<AppState>((set, get) => ({
               .filter(session => activeEmergencyAlert(session) && !session.archived && !session.pinned && !session.scheduled_job_run)
               .map(session => session.folder || 'General')
           )
+          // A collapsed folder opens for an alert in it or in one of its subfolders.
           // Filtering only removes, so an unchanged size means unchanged members; keep the
           // reference so the sidebar selector does not re-render on every session poll.
-          // A collapsed folder opens for an alert in it or in one of its subfolders.
           const collapsedFolders = [...state.collapsedFolders].filter(folder => ![...emergencyFolders].some(alerted => folderIsWithin(alerted, folder)))
           return {
             sessions,
@@ -2297,13 +2297,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     const preferenceScope = captureWorkspaceScope(get())
     const source = folder.trim()
     if (!source) return
-    // A folder goes with its subfolders.
+    // Deleting a folder deletes its subfolders too.
     const sessionsToMove = get().sessions.filter(session => folderIsWithin(session.folder?.trim() || 'General', source))
     const others = sidebarFolders(get().sessions, get().folderOrder).filter(candidate => !folderIsWithin(candidate, source))
-    // The chats of a subfolder go to the folder it lies in. Those of a folder at the top fall back to General,
-    // then to the first remaining folder in sidebar order. General is only the label for chats without a
-    // folder, so with nothing else listed they have nowhere to go.
-    const destination = folderParent(source) ?? (others.includes('General') ? 'General' : others[0] ?? (source === 'General' ? null : 'General'))
+    // All their chats move to the deleted folder's parent, in the spelling the list has for it. A top-level
+    // folder has none: its chats fall back to General, then to the first remaining folder in sidebar order.
+    // General is only the label for chats without a folder, so with nothing else listed they have nowhere to go.
+    const parent = folderParent(source)
+    const destination = parent === null
+      ? others.includes('General') ? 'General' : others[0] ?? (source === 'General' ? null : 'General')
+      : others.find(candidate => folderPath(candidate) === parent) ?? parent
     if (destination === null && sessionsToMove.length) {
       set({ error: t('ui.sidebar.folderNeedsDestination', { folder: source }) })
       return
@@ -2316,8 +2319,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (!profileScopeMatches(scope, get())) return
       const movedById = new Map(movedSessions.map(session => [session.id, session]))
       const shared = get().sharedFolderOrder
-      // The shared folder order gets the sidebar's folder list without tab-only folders it does not list.
-      const folderOrder = (shared ? sidebarFolders(get().sessions.map(session => movedById.get(session.id) ?? session), get().folderOrder) : get().folderOrder)
+      // The shared folder order gets the sidebar's folder list without tab-only folders it does not list. This
+      // device's own order gets the parents it lists only in a subfolder's path, so that deleting the last
+      // subfolder leaves its parent in place.
+      const folderOrder = (shared ? sidebarFolders(get().sessions.map(session => movedById.get(session.id) ?? session), get().folderOrder) : folderTree(get().folderOrder))
         .filter(candidate => !folderIsWithin(candidate, source))
       const collapsedFolders = new Set([...get().collapsedFolders].filter(candidate => !folderIsWithin(candidate, source)))
       await Promise.all([
@@ -2352,39 +2357,46 @@ export const useAppStore = create<AppState>((set, get) => ({
     const preferenceScope = captureWorkspaceScope(get())
     const from = source.trim()
     const to = target.trim()
-    if (!from || !to || to === from) return false
+    // The same path, however it is spelled: nothing to rename.
+    if (!from || !to || folderPath(to) === folderPath(from)) return false
     if (folderIsWithin(to, from)) {
       set({ error: t('ui.sidebar.folderIntoItself') })
       return false
     }
-    // With the folders only subfolders name: moving onto one would merge the two.
+    // folderTree adds the parents that exist only in a subfolder's path ("Lab" from "Lab/Runs"): taking such a
+    // path would merge the two folders.
     const folders = folderTree([...get().folderOrder, ...get().sessions.map(session => session.folder?.trim() || 'General')])
     if (folders.some(folder => !folderIsWithin(folder, from) && folder.toLocaleLowerCase() === to.toLocaleLowerCase())) {
       set({ error: t('ui.sidebar.folderExists', { folder: to }) })
       return false
     }
-    // The folder's subfolders keep their place in it.
+    // The chats and tabs of the folder and of its subfolders.
     const sessionsToMove = get().sessions.filter(session => folderIsWithin(session.folder?.trim() || 'General', from))
     const surfacesToMove = get().surfaces.filter(surface => folderIsWithin(surface.folder, from))
     const shared = get().sharedFolderOrder
     try {
-      // The shared folder order takes the new name in the old one's place first: a chat filed under a name it
-      // does not list would add that name at the end, and other clients would see the folder jump.
+      // The shared folder order takes the new name first, in the old one's place or last in its new parent: a
+      // chat filed under a name it does not list would add that name at the end, and other clients would see
+      // the folder jump.
       if (shared) {
-        await saveFolderOrder(preferenceScope, folderOrderAfterMove(sidebarFolders(get().sessions, get().folderOrder), from, to), shared)
+        await saveFolderOrder(preferenceScope, folderOrderAfterRename(sidebarFolders(get().sessions, get().folderOrder), from, to), shared)
         if (!profileScopeMatches(scope, get())) return false
       }
       const movedSessions = await Promise.all(sessionsToMove.map(async session => {
-        const folder = movedFolder(session.folder?.trim() || 'General', from, to)
+        const folder = renamedFolder(session.folder?.trim() || 'General', from, to)
         return { ...(await window.agentsDock.sessions.update(session.id, { folder })), folder }
       }))
       if (!profileScopeMatches(scope, get())) return false
-      // The folder's tabs go with it: one left behind would keep the old folder listed.
-      await Promise.all(surfacesToMove.map(surface => get().updateSurface(surface.id, { folder: movedFolder(surface.folder, from, to) })))
+      // The folder's tabs are renamed with it: one left behind would keep the old folder listed.
+      const movedSurfaces = await Promise.all(surfacesToMove.map(surface => window.agentsDock.surfaces.update(surface.id, { folder: renamedFolder(surface.folder, from, to) })))
       if (!profileScopeMatches(scope, get())) return false
       const movedById = new Map(movedSessions.map(session => [session.id, session]))
-      const folderOrder = folderOrderAfterMove(get().folderOrder, from, to)
-      const collapsedFolders = new Set([...get().collapsedFolders].map(candidate => folderIsWithin(candidate, from) ? movedFolder(candidate, from, to) : candidate))
+      const movedSurfacesById = new Map(movedSurfaces.map(surface => [surface.id, surface]))
+      const folderOrder = folderOrderAfterRename(get().folderOrder, from, to)
+      // A collapsed folder the renamed one is now within is expanded, so the folder shows where it went.
+      const collapsedFolders = new Set([...get().collapsedFolders]
+        .map(candidate => folderIsWithin(candidate, from) ? renamedFolder(candidate, from, to) : candidate)
+        .filter(candidate => folderPath(candidate) === folderPath(to) || !folderIsWithin(to, candidate)))
       await Promise.all([
         shared ? undefined : setWorkspacePreference(preferenceScope, 'folderOrder', folderOrder),
         setWorkspacePreference(preferenceScope, 'collapsedFolders', [...collapsedFolders])
@@ -2397,6 +2409,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
         return {
           sessions: state.sessions.map(session => movedById.get(session.id) ?? session),
+          surfaces: state.surfaces.map(surface => movedSurfacesById.get(surface.id) ?? surface),
           snapshots,
           folderOrder,
           collapsedFolders
@@ -2405,7 +2418,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       return true
     } catch (error) {
       if (!profileScopeMatches(scope, get())) return false
-      await get().refreshSessions()
+      await Promise.all([get().refreshSessions(), get().refreshSurfaces()])
       if (!profileScopeMatches(scope, get())) return false
       set({ error: errorMessage(error) })
       return false
@@ -3381,7 +3394,8 @@ function workspaceStateFromBootstrap(
     surfaces: [],
     surfacesRevision: undefined,
     selectedSurfaceId: null,
-    collapsedFolders: new Set(payload.collapsedFolders.filter(folder => !emergencyFolders.has(folder))),
+    // As for the sessions the server sends later: a collapsed folder opens for an alert in it or in one of its subfolders.
+    collapsedFolders: new Set(payload.collapsedFolders.filter(folder => ![...emergencyFolders].some(alerted => folderIsWithin(alerted, folder)))),
     archivedCollapsed: payload.sessions.some(session => session.archived && !session.scheduled_job_run && activeEmergencyAlert(session))
       ? false
       : payload.archivedCollapsed,

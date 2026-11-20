@@ -1,5 +1,51 @@
 # Public development log
 
+## 2026-11-21 — Nested folders in the chat list (desktop 147, Android 90)
+
+- A folder can be in another folder. A folder's name is its path:
+  `Work/Papers` is the folder Papers in Work. The server keeps names only
+  (a chat's folder, a tab's folder, the folder order), so it is not changed
+  and needs no restart; every device still shows one folder order. An app
+  from before these builds lists `Work/Papers` as one folder of that name.
+- Both apps list every folder directly before its subfolders, under its own
+  name, indented by its depth. A parent that exists only in a subfolder's
+  path is listed too. A collapsed folder hides its chats, its tabs and its
+  subfolders; its header then counts the chats of the subfolders and shows
+  their status dots.
+- A folder's menu has New Subfolder and Move Folder To, which offers the top
+  level and every folder except the folder itself, its subfolders and its
+  parent. Rename Folder edits the folder's own name. A rename or a move
+  renames the subfolders, their chats and their terminal and browser tabs
+  with it; a collapsed folder the folder is moved into is expanded. Before
+  this, renaming a folder left its tabs under the old name.
+- Delete Folder deletes the subfolders too. Their chats go to the deleted
+  folder's parent; from a top-level folder they go to General, as before.
+  Tabs are not moved by Delete, as before: a deleted folder that holds a
+  tab stays listed.
+- Move Folder Up, Move Folder Down and dragging reorder a folder among the
+  folders of its parent, with its subfolders. A folder dropped anywhere
+  else stays where it was. On the desktop the drop line is drawn where the
+  folder lands, below the subfolders of the folder it is dropped after.
+- The desktop's chat header and both apps' chat menus list the folders to
+  move a chat to in the sidebar's order, by full path. The desktop's next
+  and previous chat skip chats hidden by a collapsed parent, and an
+  emergency alert expands the collapsed folders its chat is in.
+- A `/` in a folder name now separates a folder from its parent: a folder
+  that was named `A/B` before is listed as B in A, and A is listed as its
+  parent. Nothing is renamed on the server until the user renames, moves or
+  deletes that folder.
+
+```text
+Change and expected user behavior: folders can be nested on the desktop and on the phone; a folder is created in, moved into, renamed, reordered and deleted with its subfolders; every device shows the same tree.
+Source commit / app build / server version: branch feat/nested-folders; desktop 147; Android 90; server 1.0.7-beta.11, unchanged.
+Test surface: unit tests of the path functions (the same cases in both apps), of the desktop's sidebar, store, dialogs and chat header, of the phone's section order, drop rule and rendered sidebar; the built desktop app in a hidden window against an isolated server; the phone app on an Android emulator against an isolated server.
+Actions exercised and observed outcomes: (1) Desktop, real pointer and key events, 23 checks, each read from the page and from the server: New Subfolder from a folder's menu (dialog titled with the parent; listed under it, indented 12 px; added to the shared order); a chat moved into the subfolder from its menu; a subfolder of a subfolder with a browser tab opened from its menu; a collapsed folder hides subfolders, chats and tabs and counts the hidden chat; Move Folder Down moves a folder past its sibling with its subfolders; Move Folder To another folder renames the chat, the tab and the order on the server; Rename shows the own name and renames in the parent; Move Folder To Top Level; Delete of a top-level folder with a subfolder sends the chats to General; dragging a folder above a sibling, a subfolder above its sibling, a folder with its subfolders to the top; a subfolder dragged over a top-level folder shows no drop line and changes nothing; the line of a folder dropped after a folder with subfolders is under the last subfolder; a folder moved into a collapsed folder expands it. (2) Phone, taps, long presses and drags sent to the emulator, 13 checks on the final code, read from the screen and from the server: the tree built from names another client stored; collapse hides subfolders and counts 3 chats; the destinations Move Folder To offers; a folder moved into a collapsed folder expands it and renames two chats and the order; Rename shows the own name and renames in the parent; New Subfolder; Move Folder Up past a sibling and its subfolder; Delete of a subfolder sends its chat to the parent; Delete of a top-level folder with subfolders sends four chats to General; a top-level folder dragged below the last one; a subfolder dropped outside its parent stays; a subfolder dropped after its sibling moves. On the code before the review changes also: subfolders added by another client appear, and a browser tab opened in a subfolder follows a move to the top level. (3) Rules removed one at a time: each of 13 desktop rules and 5 phone rules makes a test fail.
+Real boundaries exercised; any mocked/stubbed boundaries: real server processes, the built desktop app, the phone app on an emulator. The phone package for the check was build 89 with this branch's JavaScript in place of its own; the native code is unchanged. iOS was not built or run; it shares the phone code. The clients' other devices in the phone check were API calls.
+Focused regression / typecheck / production build: tsc for both apps; the full desktop suite; every phone test file and the contract tests; the phone helper test added to CI.
+Remaining limitations or blocked acceptance: a folder name cannot contain "/" as an ordinary character any more. An app older than desktop 147 or Android 90 lists a subfolder as a flat folder named by its path, and its Rename and Delete act on that one name only. Delete Folder leaves tabs where they are. On the phone a move onto an existing path is refused without a message; the desktop shows one. A folder typed into a chat's folder field with spaces around "/" is stored as typed and listed as a second subfolder beside one stored without them.
+Availability: desktop 147 and Android 90 built locally.
+```
+
 ## 2026-11-20 — Browser tabs and port forwards through a hub: one tab's downloads no longer keep the other tabs from opening (server)
 
 - Reported: a desktop browser tab on a remote showed `Could not load

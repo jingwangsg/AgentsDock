@@ -239,8 +239,8 @@ describe('sidebar chat rename', () => {
     indent: (header.closest('.sidebar-section') as HTMLElement).style.paddingLeft
   }))
 
-  it('lists a subfolder under its parent by its own name, set in by its depth', () => {
-    // The order names the subfolders after Lab: they still follow their parents.
+  it('lists a subfolder after its parent by its own name, indented by its depth', () => {
+    // The order has the subfolders after Lab: they still follow their parents.
     useAppStore.setState({ sessions: nested, folderOrder: ['Work', 'Lab', 'Work/Papers/2026', 'Work/Papers'] })
     render(<Sidebar />)
 
@@ -266,12 +266,12 @@ describe('sidebar chat rename', () => {
     expect(screen.getByText('Work chat')).toBeInTheDocument()
   })
 
-  it('moves a folder among the folders of its parent, with its subfolders', async () => {
+  it('reorders a folder among the folders of its parent, with its subfolders', async () => {
     useAppStore.setState({ sessions: nested, folderOrder: ['Work', 'Work/Papers', 'Work/Papers/2026', 'Lab'] })
     const user = userEvent.setup()
     render(<Sidebar />)
 
-    // The only subfolder of Work has no place to move to.
+    // Papers is the only folder directly in Work: no Move Folder Up or Down.
     fireEvent.contextMenu(screen.getByText('Papers').closest('.section-header')!)
     expect(await screen.findByRole('menuitem', { name: 'Rename Folder…' })).toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: 'Move Folder Up' })).not.toBeInTheDocument()
@@ -283,7 +283,7 @@ describe('sidebar chat rename', () => {
     expect(useAppStore.getState().folderOrder).toEqual(['Lab', 'Work', 'Work/Papers', 'Work/Papers/2026'])
   })
 
-  it('offers to move a folder into every folder outside it except the one it lies in, and to the top', async () => {
+  it('offers to move a folder to the top level and into every folder except its parent, itself and its subfolders', async () => {
     const renameFolder = vi.fn().mockResolvedValue(true)
     useAppStore.setState({ renameFolder, sessions: nested, folderOrder: ['Work', 'Work/Papers', 'Work/Papers/2026', 'Lab'] })
     const user = userEvent.setup()
@@ -291,10 +291,10 @@ describe('sidebar chat rename', () => {
 
     fireEvent.contextMenu(screen.getByText('Papers').closest('.section-header')!)
     await user.click(await screen.findByRole('menuitem', { name: 'Move Folder To' }))
-    const destinations = within((await screen.findByRole('menuitem', { name: 'Top Level' })).closest('[role="menu"]') as HTMLElement)
-    // Not Work, where it lies, and not its own subfolder.
-    expect(destinations.getAllByRole('menuitem').map(item => item.textContent)).toEqual(['Top Level', 'Lab'])
-    fireEvent.click(destinations.getByRole('menuitem', { name: 'Lab' }))
+    const submenu = within((await screen.findByRole('menuitem', { name: 'Top Level' })).closest('[role="menu"]') as HTMLElement)
+    // Not Work, its parent, and not its own subfolder.
+    expect(submenu.getAllByRole('menuitem').map(item => item.textContent)).toEqual(['Top Level', 'Lab'])
+    fireEvent.click(submenu.getByRole('menuitem', { name: 'Lab' }))
 
     expect(renameFolder).toHaveBeenCalledExactlyOnceWith('Work/Papers', 'Lab/Papers')
   })
@@ -302,7 +302,7 @@ describe('sidebar chat rename', () => {
   it('asks for a new subfolder from the folder context menu', async () => {
     useAppStore.setState({ sessions: nested, folderOrder: ['Work', 'Lab'] })
     const newFolder = vi.fn()
-    window.addEventListener('agentsdock:new-folder', newFolder, { once: true })
+    window.addEventListener('agentsdock:new-subfolder', newFolder, { once: true })
     const user = userEvent.setup()
     render(<Sidebar />)
 

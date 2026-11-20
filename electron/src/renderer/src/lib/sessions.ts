@@ -1,4 +1,4 @@
-import { folderIsHidden, sidebarFolders } from '@shared/folders'
+import { folderIsWithin, sidebarFolders } from '@shared/folders'
 import { fuzzyScore } from '@shared/fuzzy'
 import type { Session } from '@shared/types'
 
@@ -151,8 +151,6 @@ export function digestTargetSections(
 }
 
 export function navigableSessions(sessions: Session[], folderOrder: string[], collapsedFolders: Set<string>): Session[] {
-  return orderedActiveSessions(sessions, folderOrder).filter(session => {
-    const folder = session.folder?.trim() || 'General'
-    return session.pinned || !(collapsedFolders.has(folder) || folderIsHidden(folder, collapsedFolders))
-  })
+  // A collapsed folder shows none of its chats or of its subfolders' chats.
+  return orderedActiveSessions(sessions, folderOrder).filter(session => session.pinned || ![...collapsedFolders].some(collapsed => folderIsWithin(session.folder?.trim() || 'General', collapsed)))
 }

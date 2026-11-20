@@ -243,7 +243,7 @@ test('renaming a folder edits its own name and moves the chats, tabs and collaps
   ])
 })
 
-test('Move Folder To puts a folder with all it holds last in the folder chosen, or at the top', async () => {
+test('Move Folder To puts a folder with its chats, tabs and subfolders last in the folder chosen, or last at the top level', async () => {
   const calls = await renderSidebar(sharedOrder, { shown: nested })
   await folderAction('Work/Papers', 'move-into:Lab')
   assert.deepEqual(calls, [
@@ -275,7 +275,7 @@ test('New Subfolder adds the folder to the order and expands a collapsed parent'
   assert.deepEqual(calls, [['order', [...nestedOrder, 'Work/Papers/Drafts']], ['collapsed', ['General']]])
 })
 
-test('deleting a folder removes its subfolders and sends their chats to its parent; at the top they go to General', async () => {
+test('deleting a folder removes its subfolders and sends their chats to its parent; from a top-level folder they go to General', async () => {
   const calls = await renderSidebar(sharedOrder, { shown: { ...nested, collapsedFolders: ['Work/Papers/2026', 'General'] } })
   await folderAction('Work/Papers', 'delete')
   // Tabs stay where they are, as before nesting.
@@ -312,4 +312,38 @@ test('a dragged subfolder is reordered inside its parent only; dropped elsewhere
   assert.deepEqual(shownKeys(), shown.map(row => row.key))
   await drop('header:Work/Code', 'header:Work/Papers')
   assert.deepEqual(calls, [['order', ['Work', 'Work/Code', 'Work/Papers', 'Work/Papers/2026', 'Lab', 'Lab/Runs', 'General']]])
+})
+
+test('a folder whose path starts with the name of the Archived section is listed while that section is collapsed', async () => {
+  await renderSidebar(sharedOrder, { shown: { sessions: [chat('a1', 'Archived/2024'), { ...chat('old', 'Work'), archived: true }], surfaces: [], folderOrder: ['Archived/2024'] } })
+  // Archived starts collapsed: its own chat is hidden, the folder and its chat are not.
+  assert.deepEqual(shownKeys().filter(key => key !== 'header:Archived'), ['header:Archived/2024', 'a1'])
+})
+
+test('a chat that was not renamed keeps this device\'s order and the collapsed folders as they were', async () => {
+  const calls = await renderSidebar({ ok: true }, { moved: id => id !== 'y1', shown: { ...nested, collapsedFolders: ['Work/Papers/2026'] } })
+  await folderAction('Work/Papers', 'move-into:Lab')
+  assert.deepEqual(calls, [
+    ['patch', 'p1', { folder: 'Lab/Papers' }],
+    ['patch', 'y1', { folder: 'Lab/Papers/2026' }],
+    ['tab', 'term_p', { folder: 'Lab/Papers' }],
+  ])
+})
+
+test('a folder moved into a collapsed folder expands it, and the collapsed folders are read when the chats have moved', async () => {
+  let collapseMeanwhile = true
+  const calls = await renderSidebar(sharedOrder, {
+    // The user collapses General while the chats are being renamed.
+    moved: () => { if (collapseMeanwhile) { collapseMeanwhile = false; useAppStore.setState({ collapsedFolders: ['Lab', 'Work/Papers/2026', 'General'] }) } return true },
+    shown: { ...nested, collapsedFolders: ['Lab', 'Work/Papers/2026'] },
+  })
+  await folderAction('Work/Papers', 'move-into:Lab')
+  assert.deepEqual(calls.at(-1), ['collapsed', ['Lab/Papers/2026', 'General']])
+})
+
+test('deleting a subfolder sends its chats to the parent as the list spells it', async () => {
+  const calls = await renderSidebar(sharedOrder, { shown: { sessions: [chat('r1', 'Lab / Runs'), chat('o1', 'Lab/Runs/Old')], surfaces: [], folderOrder: ['Lab / Runs', 'Lab/Runs/Old'] } })
+  await folderAction('Lab/Runs/Old', 'delete')
+  // Not to "Lab/Runs", which would be a second folder beside the one stored as "Lab / Runs".
+  assert.deepEqual(calls[0], ['patch', 'o1', { folder: 'Lab / Runs' }])
 })

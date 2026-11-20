@@ -23,12 +23,13 @@ describe('buildSections folders', () => {
     expect(buildSections([], ['Work', 'General', 'Ideas'], '').map(section => section.title)).toEqual(['Work', 'General', 'Ideas'])
   })
 
-  it('lists a subfolder after its parent, also one that only a tab or only a deeper folder names', () => {
+  it('lists a subfolder after its parent, also one holding only a tab and one that is only the parent of another', () => {
     const paper = { id: 'paper', title: 'Paper', backend: 'codex', folder: 'Work/Papers/2026' } as Session
     const tab = { id: 'tab', kind: 'terminal', folder: 'Lab/Shells' } as Surface
     const sections = buildSections([paper], ['Lab', 'General', 'Work'], '', undefined, [tab])
-    expect(sections.map(section => section.title)).toEqual(['Lab', 'Lab/Shells', 'General', 'Work', 'Work/Papers', 'Work/Papers/2026'])
-    expect(sections.map(section => [section.sessions.length, section.surfaces.length])).toEqual([[0, 0], [0, 1], [0, 0], [0, 0], [0, 0], [1, 0]])
+    expect(sections.map(section => [section.title, section.sessions.length, section.surfaces.length])).toEqual([
+      ['Lab', 0, 0], ['Lab/Shells', 0, 1], ['General', 0, 0], ['Work', 0, 0], ['Work/Papers', 0, 0], ['Work/Papers/2026', 1, 0]
+    ])
   })
 })
 
@@ -55,7 +56,7 @@ describe('folder ordering', () => {
     expect(reorderFolderList(folders, 'General', 'Lab', 'before')).toEqual(['Work', 'Work/Papers', 'Work/Papers/2026', 'General', 'Lab', 'Lab/Runs'])
   })
 
-  it('leaves the order alone when the two folders lie in different folders', () => {
+  it('leaves the order alone when the two folders have different parents', () => {
     const folders = ['Work', 'Work/Papers', 'Lab', 'Lab/Runs']
     expect(reorderFolderList(folders, 'Work/Papers', 'Lab', 'before')).toBe(folders)
     expect(reorderFolderList(folders, 'Work/Papers', 'Lab/Runs', 'after')).toBe(folders)
@@ -211,7 +212,7 @@ describe('sidebar drop resolution', () => {
     )).toEqual({ kind: 'reorder-folder', order: ['Jobs', 'General', 'Hidden'] })
   })
 
-  it('does nothing for a folder dropped beside a folder of another parent', () => {
+  it('does nothing for a folder dropped next to a folder of another parent', () => {
     expect(resolveSidebarDrop(
       'folder:Work/Papers',
       { type: 'folder' },

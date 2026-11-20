@@ -8,7 +8,8 @@ import { Composer, inboundDeliveryInterruptionMessage } from './Composer'
 import { Sidebar } from './Sidebar'
 
 const rawTitle = 'Settings / New chat / Agent 会话'
-const rawFolder = 'Appearance / Team Network'
+// No "/": that would make it a subfolder.
+const rawFolder = 'Appearance + Team Network'
 
 beforeEach(async () => {
   disposeLanguage()
@@ -91,8 +92,7 @@ it('switches sidebar and Team Network labels without translating user titles or 
   expect(screen.getByText('已置顶', { exact: true })).toBeInTheDocument()
   expect(screen.getByText('已归档', { exact: true })).toBeInTheDocument()
   expect(screen.getByText(rawTitle).closest('.session-row')).toBe(row)
-  // The names along the folder's path are the user's own and stay as typed: "Appearance" holds "Team Network".
-  expect([...document.querySelectorAll('.section-header button > span:not(.status-dot)')].map(node => node.textContent)).toEqual(['已置顶', 'Appearance', 'Team Network', '已归档'])
+  expect(screen.getByText(rawFolder, { exact: true })).toBeInTheDocument()
   expect(screen.getByRole('button', { name: '打开团队网络' })).toHaveTextContent('团队网络 测试版')
   expect(screen.getByRole('button', { name: '打开团队网络' })).toHaveAttribute('title', '打开团队网络（测试版）')
   expect(list.scrollTop).toBe(93)

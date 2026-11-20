@@ -67,30 +67,30 @@ test('every folder, General included, shows the same menu on both platforms', ()
   assert.doesNotMatch(source, /Move Folder (Up|Down)', image: '[^']*', attributes: \{ disabled/)
 })
 
-test('renaming or moving a folder moves the chats and tabs in it and renames the order and collapsed entries, subfolders included; a shared folder order gets the order first', () => {
+test('Rename Folder and Move Folder To rename the chats and tabs of the folder and of its subfolders, the order and the collapsed entries; a shared folder order gets the order first', () => {
   assert.match(source, /else if \(id === 'rename'\) onRename\(\)/)
   assert.match(source, /onRename=\{\(\) => renameFolder\(item\.folder\)\}/)
   // The prompt edits the folder's own name; the folder stays in its parent.
-  assert.match(source, /const renameFolder = \(folder: string\) => \{[\s\S]*?promptText\(\{[\s\S]*?title: 'Rename folder',[\s\S]*?initialValue: folderLeaf\(folder\),[\s\S]*?confirmLabel: 'Rename',[\s\S]*?\}\)\.then\(value => \{[\s\S]*?if \(profileScopeIsCurrent\(scope\) && folderSegments\(value \?\? ''\)\.length\) void relocateFolder\(scope, folder, folderIn\(folderParent\(folder\), value \?\? ''\)\)/)
-  // Move Folder To keeps the folder's own name in the folder chosen, or at the top.
+  assert.match(source, /const renameFolder = \(folder: string\) => \{[\s\S]*?promptText\(\{[\s\S]*?title: 'Rename folder',[\s\S]*?initialValue: folderOwnName\(folder\),[\s\S]*?confirmLabel: 'Rename',[\s\S]*?\}\)\.then\(value => \{[\s\S]*?if \(profileScopeIsCurrent\(scope\) && folderSegments\(value \?\? ''\)\.length\) void renameFolderTo\(scope, folder, folderPathIn\(folderParent\(folder\), value \?\? ''\)\)/)
+  // Move Folder To keeps the folder's own name in the folder chosen, or at the top level.
   assert.match(source, /else if \(id === 'move-top'\) onMoveTo\(null\)\s*else if \(id\.startsWith\('move-into:'\)\) onMoveTo\(decodeURIComponent\(id\.slice\(10\)\)\)/)
-  assert.match(source, /onMoveTo=\{destination => \{ void relocateFolder\(profileScope, item\.folder, folderIn\(destination, folderLeaf\(item\.folder\)\)\) \}\}/)
+  assert.match(source, /onMoveTo=\{destination => \{ void renameFolderTo\(profileScope, item\.folder, folderPathIn\(destination, folderOwnName\(item\.folder\)\)\) \}\}/)
   assert.match(source, /const destinations = folders\.filter\(folder => folder !== parent && !folderIsWithin\(folder, item\.folder\)\)/)
   // Both refuse an unchanged path, a path inside the folder and case-insensitive duplicates of another folder (Rename also a name without text); chats are matched by effective folder so General's empty-field chats move too.
   // The order of the steps is exercised in tests/sidebar-folder-order.test.tsx.
-  assert.match(source, /const relocateFolder = async \(scope: ProfileScope, from: string, to: string\) => \{[\s\S]*?const shown = sidebarFolderOrder\(state\.sessions, state\.folderOrder\)[\s\S]*?if \(folderIsWithin\(to, from\) \|\| shown\.some\(entry => !folderIsWithin\(entry, from\) && entry\.toLowerCase\(\) === to\.toLowerCase\(\)\)\) return[\s\S]*?const renamed = folderOrderAfterMove\(shown, from, to\)[\s\S]*?if \(shared && !await setFolderOrder\(renamed, scope\.profileGeneration\)\) return[\s\S]*?await Promise\.all\(\[\s*\.\.\.state\.sessions[\s\S]*?folderIsWithin\(session\.folder\?\.trim\(\) \|\| 'General', from\)\)[\s\S]*?updateSession\(session\.id, \{ folder: movedFolder\(session\.folder\?\.trim\(\) \|\| 'General', from, to\) \}, scope\.profileGeneration\)[\s\S]*?updateSurface\(surface\.id, \{ folder: movedFolder\(surface\.folder, from, to\) \}, scope\.profileGeneration\)[\s\S]*?if \(!profileScopeIsCurrent\(scope\)\) return[\s\S]*?\/\/ load-bearing: renamed first, the folder subscriber re-adds the old name from a chat not yet moved\.\n\s*if \(!shared\) void setFolderOrder\(renamed, scope\.profileGeneration\)[\s\S]*?setCollapsedFolders\(collapsedFolders\.map\(entry => folderIsWithin\(entry, from\) \? movedFolder\(entry, from, to\) : entry\), scope\.profileGeneration\)/)
+  assert.match(source, /const renameFolderTo = async \(scope: ProfileScope, from: string, to: string\) => \{[\s\S]*?const shown = sidebarFolderOrder\(state\.sessions, state\.folderOrder\)[\s\S]*?if \(folderIsWithin\(to, from\) \|\| shown\.some\(entry => !folderIsWithin\(entry, from\) && entry\.toLowerCase\(\) === to\.toLowerCase\(\)\)\) return[\s\S]*?const renamed = folderOrderAfterRename\(shown, from, to\)[\s\S]*?if \(shared && !await setFolderOrder\(renamed, scope\.profileGeneration\)\) return[\s\S]*?const chats = state\.sessions[\s\S]*?folderIsWithin\(session\.folder\?\.trim\(\) \|\| 'General', from\)\)[\s\S]*?updateSession\(session\.id, \{ folder: renamedFolder\(session\.folder\?\.trim\(\) \|\| 'General', from, to\) \}, scope\.profileGeneration\)[\s\S]*?updateSurface\(surface\.id, \{ folder: renamedFolder\(surface\.folder, from, to\) \}, scope\.profileGeneration\)[\s\S]*?const \[moved\] = await Promise\.all\(\[Promise\.all\(chats\), Promise\.all\(tabs\)\]\)[\s\S]*?if \(!profileScopeIsCurrent\(scope\) \|\| !moved\.every\(Boolean\)\) return[\s\S]*?\/\/ load-bearing: renamed first, the folder subscriber re-adds the old name from a chat not yet moved\.\n\s*if \(!shared\) void setFolderOrder\(renamed, scope\.profileGeneration\)[\s\S]*?const collapsedNow = useAppStore\.getState\(\)\.collapsedFolders[\s\S]*?\.map\(entry => folderIsWithin\(entry, from\) \? renamedFolder\(entry, from, to\) : entry\)[\s\S]*?setCollapsedFolders\(collapsedAfter, scope\.profileGeneration\)/)
 })
 
-test('deleting a folder removes its subfolders too and sends their chats to its parent, or from the top to General, else the first other folder, without a confirmation prompt', () => {
+test('deleting a folder removes its subfolders too and sends their chats to its parent, or from a top-level folder to General, else the first other folder, without a confirmation prompt', () => {
   assert.match(source, /else if \(id === 'delete'\) onDelete\(\)/)
   assert.match(source, /onDelete=\{\(\) => deleteFolder\(item\.folder\)\}/)
   const deleteFolder = source.match(/const deleteFolder = \(folder: string\) => \{([\s\S]*?)\n  \}\n/)?.[1] ?? ''
   assert.match(deleteFolder, /const others = folders\.filter\(entry => !folderIsWithin\(entry, folder\)\)/)
-  assert.match(deleteFolder, /const destination = folderParent\(folder\) \?\? \(others\.includes\('General'\) \? 'General' : others\.length \? others\[0\] : folder === 'General' \? null : 'General'\)/)
+  assert.match(deleteFolder, /const destination = parent === null\s*\? others\.includes\('General'\) \? 'General' : others\.length \? others\[0\] : folder === 'General' \? null : 'General'\s*: others\.find\(entry => folderPath\(entry\) === parent\) \?\? parent/)
   assert.match(deleteFolder, /const moving = sessions\.filter\(session => !isWelcomeSession\(session\.id\) && folderIsWithin\(session\.folder\?\.trim\(\) \|\| 'General', folder\)\)/)
   assert.match(deleteFolder, /if \(!destination && moving\.length\) \{\s*Alert\.alert\('Create another folder first', `The chats in “\$\{folder\}” need somewhere to go\.`\)\s*return\s*\}/)
   assert.match(deleteFolder, /updateSession\(session\.id, \{ folder: destination \}, scope\.profileGeneration\)/)
-  assert.match(deleteFolder, /setFolderOrder\(others, scope\.profileGeneration\)[\s\S]*?setCollapsedFolders\(collapsedFolders\.filter\(entry => !folderIsWithin\(entry, folder\)\), scope\.profileGeneration\)/)
+  assert.match(deleteFolder, /setFolderOrder\(others, scope\.profileGeneration\)[\s\S]*?setCollapsedFolders\(collapsedNow\.filter\(entry => !folderIsWithin\(entry, folder\)\), scope\.profileGeneration\)/)
   assert.doesNotMatch(deleteFolder, /promptText|Alert\.alert\('Delete/)
 })
 

@@ -79,6 +79,7 @@ jobs:
       - name: Verify the shared folder order in the store and the sidebar
         run: |
           node scripts/run-history-tests.mjs src/store/useAppStore.folder-order.test.ts --native-mocks
+          node scripts/run-history-tests.mjs src/lib/folders.test.ts
           node scripts/run-component-tests.mjs tests/sidebar-folder-order.test.tsx
         working-directory: mobile-react
       - name: Verify side chat, full-storage recovery, runtime labels, and the Android build contract

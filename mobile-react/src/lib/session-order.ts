@@ -76,8 +76,8 @@ export function orderedSessionSections(
       || (includeEmptyFolders && !['Pinned', 'Archived'].includes(folder) && folderOrder.includes(folder))
       || tabs.has(folder)
     ))
-  // A parent that only its subfolders name is listed too, so a subfolder is never shown without the folders it lies
-  // in. Pinned stays first and Archived last: folders at the top keep their order.
+  // folderTree adds a parent missing from the list, so a subfolder is never shown without its parents, and keeps the
+  // order of top-level entries: Pinned stays first, Archived last.
   return folderTree(orderedFolders).map(folder => ({ id: folder, title: folder, sessions: [...(groups.get(folder) ?? [])].sort(compareSessions) }))
 }
 
@@ -116,19 +116,23 @@ export function resolveSidebarDrop(next: SidebarDropRow[], to: number, sessions:
   const moved = next[to]
   if (moved.kind === 'header') {
     const headers = next.flatMap(row => row.kind === 'header' && !['Pinned', 'Archived'].includes(row.folder) && (!sharedOrder || folders.includes(row.folder)) ? [row.folder] : [])
-    // The order before the drop. The subfolders of a collapsed folder have no header: `folders` names them. The
+    // The order before the drop: `folders` has the subfolders of a collapsed folder, which have no header; the
     // headers add the folders holding only tabs, which the sidebar lists in plain sort order.
     const shown = folderTree([...folders, ...[...headers].sort()])
+    // Only the dragged header moved in `next`, so the headers next to it say where it was dropped:
+    // - the header below is a folder of the same parent: the dragged folder goes before that folder;
+    // - else the header above is a folder of the same parent, or one of that folder's subfolders, and the header
+    //   below is not within that folder: the dragged folder goes after that folder and its subfolders;
+    // - anywhere else (between the subfolders of another folder, or outside its parent) nothing changes.
     const at = headers.indexOf(moved.folder)
     const parent = folderParent(moved.folder)
-    const below = headers[at + 1]
-    // The folder of the same parent that the dragged one now follows: the header above it is that folder's or lies in it.
-    const above = at > 0 ? headers.find(folder => folderParent(folder) === parent && folderIsWithin(headers[at - 1], folder)) : undefined
-    // Dropped anywhere else, between the subfolders of another folder or outside its parent, the folder stays where it was.
-    const order = below !== undefined && folderParent(below) === parent
-      ? reorderFolderList(shown, moved.folder, below, 'before')
-      : above !== undefined && (below === undefined || !folderIsWithin(below, above))
-        ? reorderFolderList(shown, moved.folder, above, 'after')
+    const headerAbove = headers[at - 1]
+    const headerBelow = headers[at + 1]
+    const siblingAbove = headerAbove === undefined ? undefined : headers.find(folder => folderParent(folder) === parent && folderIsWithin(headerAbove, folder))
+    const order = headerBelow !== undefined && folderParent(headerBelow) === parent
+      ? reorderFolderList(shown, moved.folder, headerBelow, 'before')
+      : siblingAbove !== undefined && (headerBelow === undefined || !folderIsWithin(headerBelow, siblingAbove))
+        ? reorderFolderList(shown, moved.folder, siblingAbove, 'after')
         : shown
     return order.join('\n') === shown.join('\n') ? null : { kind: 'folder-order', order }
   }

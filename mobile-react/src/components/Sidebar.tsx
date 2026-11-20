@@ -10,7 +10,7 @@ import { radius, usePalette } from '../theme'
 import type { Backend, Session, Surface, SurfaceKind, TimelineSearchResult } from '../types'
 import { backendLabel, formatChatDateTime, isUnread, runtimeSummary } from '../lib/format'
 import { sidebarVisibleSessions, compareSessions, orderedSessionSections, resolveSidebarDrop, sessionSection, sharesFolderOrder, sidebarFolderOrder } from '../lib/session-order'
-import { folderIn, folderIsHidden, folderIsWithin, folderLeaf, folderOrderAfterMove, folderParent, folderSegments, movedFolder, reorderFolderList } from '../lib/folders'
+import { folderIsWithin, folderOrderAfterRename, folderOwnName, folderParent, folderPath, folderPathIn, folderSegments, renamedFolder, reorderFolderList } from '../lib/folders'
 import { readyChatBackends } from '../lib/runtime-catalog'
 import { promptSurfaceRename, surfaceSubline, surfaceTitle } from '../lib/surfaces'
 import { useTerminalStatus } from '../lib/terminalStatus'
@@ -28,6 +28,8 @@ import { ServerProfileSelector, type ServerProfileListItem } from './ServerProfi
 import { TEAM_NETWORK_UI_ENABLED } from '../lib/team-network-ui'
 
 type FolderStatusKind = 'waiting' | 'running' | 'unread'
+/** Pixels a subfolder's header and rows are indented for each level below the top level. */
+const SUBFOLDER_INDENT = 14
 type Row = { kind: 'header'; key: string; title: string; folder: string; count: number; sessions: Session[] } | { kind: 'session'; key: string; session: Session; searchResult?: TimelineSearchResult } | { kind: 'surface'; key: string; surface: Surface }
 
 type ProfileScope = {
@@ -182,15 +184,17 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
     const sections = orderedSessionSections(filtered, folderOrder, true, !clean, clean ? [] : surfaces.map(surface => surface.folder))
     return sections.flatMap<Row>(section => {
       const folder = section.id
-      // A collapsed folder hides its subfolders along with its chats and tabs. A search lists every match.
-      if (!clean && folderIsHidden(folder, collapsed)) return []
-      const closed = collapsed.has(folder) && !clean
-      // Its header then stands for all of them: the count and the status dots cover the subfolders too.
-      const values = closed ? sections.flatMap(inner => folderIsWithin(inner.id, folder) ? inner.sessions : []) : section.sessions
-      const tabs = clean ? [] : surfaces.filter(surface => closed ? folderIsWithin(surface.folder, folder) : surface.folder === folder)
+      // A collapsed folder hides its subfolders with its chats and tabs; its own header stays. A search lists every
+      // match. Pinned and Archived are sections, not folders: a folder whose path starts with their name is not
+      // theirs to hide.
+      if (!clean && [...collapsed].some(entry => entry !== folder && entry !== 'Pinned' && entry !== 'Archived' && folderIsWithin(folder, entry))) return []
+      const folderCollapsed = collapsed.has(folder) && !clean
+      // The header of a collapsed folder also counts and marks the chats and tabs of the subfolders it hides.
+      const values = folderCollapsed ? sections.flatMap(inner => folderIsWithin(inner.id, folder) ? inner.sessions : []) : section.sessions
+      const tabs = clean ? [] : surfaces.filter(surface => folderCollapsed ? folderIsWithin(surface.folder, folder) : surface.folder === folder)
       return [
-        { kind: 'header', key: `header:${folder}`, title: folderLeaf(folder), folder, count: values.length + tabs.length, sessions: values },
-        ...((closed ? [] : [
+        { kind: 'header', key: `header:${folder}`, title: folderOwnName(folder), folder, count: values.length + tabs.length, sessions: values },
+        ...((folderCollapsed ? [] : [
           ...values.map(session => ({
             kind: 'session' as const,
             key: session.id,
@@ -281,7 +285,7 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
   // Pinned is a virtual section, not a folder.
   const folders = useMemo(() => sidebarFolderOrder(sessions, folderOrder), [folderOrder, sessions])
   const chatBackends = useMemo(() => readyChatBackends(health, runtime), [health, runtime])
-  // New folder at the top, or New Subfolder in `parent`.
+  // New folder at the top level, or New Subfolder in `parent`.
   const createFolder = (parent: string | null) => {
     const scope = profileScope
     if (!profileScopeIsCurrent(scope)) return
@@ -292,16 +296,16 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
       confirmLabel: 'Create',
       placeholder: 'Folder name',
     }).then(value => {
-      // Without a name of its own the path would be the parent's.
+      // Without an own name the path would be the parent's.
       if (!profileScopeIsCurrent(scope) || !folderSegments(value ?? '').length) return
-      const name = folderIn(parent, value ?? '')
+      const name = folderPathIn(parent, value ?? '')
       // Read now, not when the prompt opened: another device may have changed the shared folder order meanwhile.
       const state = useAppStore.getState()
       const shown = sidebarFolderOrder(state.sessions, state.folderOrder)
       if (shown.includes(name)) return
       void setFolderOrder([...shown, name], scope.profileGeneration)
-      // A collapsed folder would hide the subfolder just created in it.
-      if (parent !== null && collapsed.has(parent)) setCollapsedFolders(collapsedFolders.filter(entry => entry !== parent), scope.profileGeneration)
+      // A collapsed folder would hide the subfolder just created in it. Read now: the prompt was open meanwhile.
+      if (parent !== null && state.collapsedFolders.includes(parent)) setCollapsedFolders(state.collapsedFolders.filter(entry => entry !== parent), scope.profileGeneration)
     })
   }
   // Move Folder Up/Down act among the folders of one parent: the previous or next of them, if any.
@@ -313,34 +317,42 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
   const moveFolder = (folder: string, direction: 'up' | 'down') => {
     if (!profileScopeIsCurrent(profileScope)) return
     const neighbor = folderNeighbor(folder, direction)
-    // The folder passes its neighbour, each with its subfolders.
+    // The folder passes its neighbor, each with its subfolders.
     if (neighbor) void setFolderOrder(reorderFolderList(folders, folder, neighbor, direction === 'up' ? 'before' : 'after'), profileScope.profileGeneration)
   }
-  // Rename Folder and Move Folder To are one change: the folder `from` becomes `to`, and what lies in it follows.
-  const relocateFolder = async (scope: ProfileScope, from: string, to: string) => {
-    // Read now, not when the prompt opened: another device may have changed the shared folder order meanwhile.
+  // Rename Folder and Move Folder To both give the folder a new path: `from` gets the path `to`, and its chats,
+  // tabs and subfolders are renamed with it.
+  const renameFolderTo = async (scope: ProfileScope, from: string, to: string) => {
+    // Read now, not when a prompt opened: another device may have changed the shared folder order meanwhile.
     const state = useAppStore.getState()
     const shown = sidebarFolderOrder(state.sessions, state.folderOrder)
-    // Refused: the folder's own path or one inside it, and the path of another folder.
+    // Refused: `to` is `from`'s path or within it, or another folder already has that path.
     if (folderIsWithin(to, from) || shown.some(entry => !folderIsWithin(entry, from) && entry.toLowerCase() === to.toLowerCase())) return
-    const renamed = folderOrderAfterMove(shown, from, to)
+    const renamed = folderOrderAfterRename(shown, from, to)
     // The shared folder order takes the new name first, in the old one's place or last in its new parent: a chat
     // moved there before would add it at the end, and other devices would see the folder jump.
     const shared = sharesFolderOrder(state.health)
     if (shared && !await setFolderOrder(renamed, scope.profileGeneration)) return
-    await Promise.all([
-      ...state.sessions
-        // The welcome chat is local-only; the server has no record to update.
-        .filter(session => !isWelcomeSession(session.id) && folderIsWithin(session.folder?.trim() || 'General', from))
-        .map(session => updateSession(session.id, { folder: movedFolder(session.folder?.trim() || 'General', from, to) }, scope.profileGeneration)),
-      ...state.surfaces
-        .filter(surface => folderIsWithin(surface.folder, from))
-        .map(surface => updateSurface(surface.id, { folder: movedFolder(surface.folder, from, to) }, scope.profileGeneration)),
-    ])
-    if (!profileScopeIsCurrent(scope)) return
+    const chats = state.sessions
+      // The welcome chat is local-only; the server has no record to update.
+      .filter(session => !isWelcomeSession(session.id) && folderIsWithin(session.folder?.trim() || 'General', from))
+      .map(session => updateSession(session.id, { folder: renamedFolder(session.folder?.trim() || 'General', from, to) }, scope.profileGeneration))
+    const tabs = state.surfaces
+      .filter(surface => folderIsWithin(surface.folder, from))
+      .map(surface => updateSurface(surface.id, { folder: renamedFolder(surface.folder, from, to) }, scope.profileGeneration))
+    const [moved] = await Promise.all([Promise.all(chats), Promise.all(tabs)])
+    // A chat that was not renamed still holds the old folder, so this device's order and the collapsed folders
+    // keep it; updateSession has shown the error.
+    if (!profileScopeIsCurrent(scope) || !moved.every(Boolean)) return
     // load-bearing: renamed first, the folder subscriber re-adds the old name from a chat not yet moved.
     if (!shared) void setFolderOrder(renamed, scope.profileGeneration)
-    if (collapsedFolders.some(entry => folderIsWithin(entry, from))) setCollapsedFolders(collapsedFolders.map(entry => folderIsWithin(entry, from) ? movedFolder(entry, from, to) : entry), scope.profileGeneration)
+    // Read now: the chats were being renamed meanwhile. A collapsed folder the renamed one is now within is
+    // expanded, so the folder shows where it went.
+    const collapsedNow = useAppStore.getState().collapsedFolders
+    const collapsedAfter = collapsedNow
+      .map(entry => folderIsWithin(entry, from) ? renamedFolder(entry, from, to) : entry)
+      .filter(entry => folderPath(entry) === folderPath(to) || !folderIsWithin(to, entry))
+    if (collapsedAfter.join('\n') !== collapsedNow.join('\n')) setCollapsedFolders(collapsedAfter, scope.profileGeneration)
   }
   const renameFolder = (folder: string) => {
     const scope = profileScope
@@ -349,22 +361,26 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
     void promptText({
       title: 'Rename folder',
       message: `Chats in “${folder}” move to the new name.`,
-      initialValue: folderLeaf(folder),
+      initialValue: folderOwnName(folder),
       confirmLabel: 'Rename',
       placeholder: 'Folder name',
     }).then(value => {
-      // The prompt edits the folder's own name; the folder stays where it lies.
-      if (profileScopeIsCurrent(scope) && folderSegments(value ?? '').length) void relocateFolder(scope, folder, folderIn(folderParent(folder), value ?? ''))
+      // The prompt edits the folder's own name; its parent stays.
+      if (profileScopeIsCurrent(scope) && folderSegments(value ?? '').length) void renameFolderTo(scope, folder, folderPathIn(folderParent(folder), value ?? ''))
     })
   }
   const deleteFolder = (folder: string) => {
     const scope = profileScope
     if (!profileScopeIsCurrent(scope)) return
-    // The folder goes together with its subfolders.
+    // Deleting a folder deletes its subfolders too.
     const others = folders.filter(entry => !folderIsWithin(entry, folder))
-    // Their chats go to the folder it lies in. From a folder at the top they fall back to General, then to the
-    // first remaining folder. Deleting General while it is the only folder leaves its chats nowhere to go.
-    const destination = folderParent(folder) ?? (others.includes('General') ? 'General' : others.length ? others[0] : folder === 'General' ? null : 'General')
+    // All their chats move to the deleted folder's parent, in the spelling the list has for it. A top-level folder
+    // has none: its chats fall back to General, then to the first remaining folder. Deleting General while it is
+    // the only folder leaves its chats nowhere to go.
+    const parent = folderParent(folder)
+    const destination = parent === null
+      ? others.includes('General') ? 'General' : others.length ? others[0] : folder === 'General' ? null : 'General'
+      : others.find(entry => folderPath(entry) === parent) ?? parent
     const moving = sessions.filter(session => !isWelcomeSession(session.id) && folderIsWithin(session.folder?.trim() || 'General', folder))
     if (!destination && moving.length) {
       Alert.alert('Create another folder first', `The chats in “${folder}” need somewhere to go.`)
@@ -374,7 +390,9 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
       // A chat that did not move still holds the folder, so the order keeps it; updateSession has shown the error.
       if (!profileScopeIsCurrent(scope) || !moved.every(Boolean)) return
       void setFolderOrder(others, scope.profileGeneration)
-      if (collapsedFolders.some(entry => folderIsWithin(entry, folder))) setCollapsedFolders(collapsedFolders.filter(entry => !folderIsWithin(entry, folder)), scope.profileGeneration)
+      // Read now: the chats were being moved meanwhile.
+      const collapsedNow = useAppStore.getState().collapsedFolders
+      if (collapsedNow.some(entry => folderIsWithin(entry, folder))) setCollapsedFolders(collapsedNow.filter(entry => !folderIsWithin(entry, folder)), scope.profileGeneration)
     })
   }
   // A long press lifts a row for dragging; letting go where it started opens its
@@ -525,8 +543,10 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
         alwaysBounceVertical={Platform.OS === 'ios'}
         onScrollBeginDrag={() => { noteUserScroll(); dismissSearchKeyboard() }}
         contentContainerStyle={styles.list}
-        // A nested folder's header, chats and tabs are indented by its depth; Pinned and Archived are at the top.
-        renderItem={({ item, drag }) => <ScaleDecorator activeScale={1.03}><View style={{ marginLeft: 14 * Math.max(0, folderSegments(item.kind === 'header' ? item.folder : item.kind === 'surface' ? item.surface.folder : sessionSection(item.session)).length - 1) }}>{item.kind === 'header' ? <FolderHeader
+        renderItem={({ item, drag }) => {
+          // A subfolder's header, chats and tabs are indented by its depth. Pinned and Archived are top-level sections.
+          const folder = item.kind === 'header' ? item.folder : item.kind === 'surface' ? item.surface.folder : sessionSection(item.session)
+          return <ScaleDecorator activeScale={1.03}><View style={{ marginLeft: SUBFOLDER_INDENT * folderSegments(folder).slice(1).length }}>{item.kind === 'header' ? <FolderHeader
           item={item}
           status={query.trim() ? [] : folderStatusKinds(item.sessions, active)}
           profileScope={profileScope}
@@ -551,7 +571,7 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
           onNewSurface={kind => onNewSurfaceIn(item.folder, kind)}
           onNewSubfolder={() => createFolder(item.folder)}
           onRename={() => renameFolder(item.folder)}
-          onMoveTo={destination => { void relocateFolder(profileScope, item.folder, folderIn(destination, folderLeaf(item.folder))) }}
+          onMoveTo={destination => { void renameFolderTo(profileScope, item.folder, folderPathIn(destination, folderOwnName(item.folder))) }}
           onDelete={() => deleteFolder(item.folder)}
         /> : item.kind === 'surface' ? <SurfaceRow
           surface={item.surface}
@@ -588,7 +608,8 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
             }}
             promptText={promptText}
           />
-        })()}</View></ScaleDecorator>}
+        })()}</View></ScaleDecorator>
+        }}
       />
       <View style={[styles.footer, { borderColor: colors.border, minHeight: 34 + insets.bottom, paddingBottom: insets.bottom }]}>
         <Text style={{ color: colors.muted, fontSize: 10 }}>{chatCount} {chatCount === 1 ? 'chat' : 'chats'}</Text>
@@ -636,7 +657,7 @@ function FolderHeader({ item, status, profileScope, collapsed, backends, folders
   onNewSurface: (kind: SurfaceKind) => void
   onNewSubfolder: () => void
   onRename: () => void
-  /** null: to the top. */
+  /** null: to the top level. */
   onMoveTo: (destination: string | null) => void
   onDelete: () => void
 }) {
@@ -658,7 +679,7 @@ function FolderHeader({ item, status, profileScope, collapsed, backends, folders
     else if (id === 'move-down') onMove('down')
     else if (id === 'delete') onDelete()
   }
-  // Move Folder To offers the folders this one can go into: not itself or one in it, and not the one it lies in already.
+  // Move Folder To offers every folder except the folder, its subfolders and its parent, where it already is.
   const parent = folderParent(item.folder)
   const destinations = folders.filter(folder => folder !== parent && !folderIsWithin(folder, item.folder))
   // Move is hidden at the edges, not disabled.
