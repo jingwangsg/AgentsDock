@@ -2552,6 +2552,56 @@ time.sleep(30)
 
         asyncio.run(main())
 
+    def test_a_port_tunnel_is_acknowledged_to_a_remote_that_announces_flow_control(self) -> None:
+        seen: dict[str, list[str]] = {"queries": [], "acknowledgements": []}
+        tunnel_remote = FastAPI()
+
+        @tunnel_remote.websocket("/api/sessions/{session}/ports/{port}/tunnel/ws")
+        async def tunnel(ws: WebSocket, session: str, port: str) -> None:
+            await ws.accept()
+            seen["queries"].append(ws.url.query)
+            if session != "browser_before_flow_control":
+                await ws.send_text(rs.PORT_TUNNEL_FLOW_CONTROL)
+            await ws.send_bytes(b"12345")
+            await ws.send_bytes(b"1234567")
+            if session == "browser_reads_acknowledgements":
+                seen["acknowledgements"] += [await ws.receive_text(), await ws.receive_text()]
+            await ws.close()
+
+        async def main() -> None:
+            manager, remote, _dead, hub_port, close = await hub_with_fake(self.tmp_path)
+            tunnel_server, tunnel_task, tunnel_port = await serve(tunnel_remote)
+            # Never started: only its port matters here.
+            manager.surface_tunnels[remote.id] = rs.Tunnel(remote.model_copy(update={"local_port": tunnel_port}), None, role="surface")
+            base = f"ws://127.0.0.1:{hub_port}/api/remote/{remote.id}/api/sessions"
+
+            async def frames(path: str) -> list:
+                async def read() -> list:
+                    async with websocket_connect(f"{base}/{path}", additional_headers={"X-AgentsDock-Token": HUB_TOKEN}) as ws:
+                        return [message async for message in ws]
+                # A remote that waits for an acknowledgement the hub does not send would wait for ever.
+                return await asyncio.wait_for(read(), 5)
+
+            try:
+                # The client gets the bytes and not the announcement; the remote gets one acknowledgement a frame.
+                assert await frames("browser_reads_acknowledgements/ports/20003/tunnel/ws?host=example.org") == [b"12345", b"1234567"]
+                assert seen["acknowledgements"] == ['{"type": "ack", "bytes": 5}', '{"type": "ack", "bytes": 7}']
+                # A remote that closed the tunnel takes no acknowledgement; its last frames still reach the client.
+                for _ in range(20):
+                    assert await frames("browser_closes_at_once/ports/20003/tunnel/ws") == [b"12345", b"1234567"]
+                # A remote from before flow control announces nothing, and a text frame would end its tunnel.
+                assert await frames("browser_before_flow_control/ports/20003/tunnel/ws") == [b"12345", b"1234567"]
+                assert seen["queries"] == ["host=example.org&flow_control=1", *["flow_control=1"] * 21]
+                assert len(seen["acknowledgements"]) == 2
+                # Only a port tunnel is opened with flow control.
+                async with websocket_connect(f"ws://127.0.0.1:{hub_port}/api/remote/{remote.id}/ws", additional_headers={"X-AgentsDock-Token": HUB_TOKEN}) as ws:
+                    assert json.loads(await ws.recv())["query"] == ""
+            finally:
+                await close()
+                await stop(tunnel_server, tunnel_task)
+
+        asyncio.run(main())
+
     def test_a_remote_gets_a_bulk_tunnel_on_its_own_unpersisted_port(self) -> None:
         script = self.tmp_path / "ssh"
         calls = self.tmp_path / "tunnel-calls.jsonl"

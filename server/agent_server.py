@@ -1375,6 +1375,17 @@ MANAGED_UPDATE_CGROUP_SETTLE_INTERVAL_SECONDS = max(
     ),
 )
 PORT_TUNNEL_READ_CHUNK_BYTES = 64 * 1024
+# Flow control, for a hub: it opens a tunnel with flow_control=1 and acknowledges the bytes it has passed on.
+# A hub reaches this server through one ssh connection, which delivers what the tunnels wrote in the order they
+# wrote it: megabytes one tunnel has put in arrive before another tunnel's first byte. Measured 2026-11-20 on a
+# link of about 200 KiB/s: while one browser tab loaded six videos, a request of another tab had no answer for
+# 58 s, and a hub gives a tunnel 10 s to open. The tunnels with unacknowledged bytes therefore share this window
+# equally. A round trip took 0.48 s on that link: a window per round trip is 533 KiB/s, above what the link
+# carried (100 to 410 KiB/s), so the window does not slow a download down.
+PORT_TUNNEL_WINDOW_BYTES = 256 * 1024
+# One frame of a flow-controlled tunnel, which a tunnel with nothing unacknowledged may always send: with one
+# frame each on the way, 16 tunnels fill the window.
+PORT_TUNNEL_WINDOW_FRAME_BYTES = 16 * 1024
 PORT_TUNNEL_MAX_CLIENT_FRAME_BYTES = 1024 * 1024
 PORT_TUNNEL_CLOSE_INVALID_REQUEST = 4400
 PORT_TUNNEL_CLOSE_UNAUTHORIZED = 4401
@@ -101550,18 +101561,44 @@ async def run_job(job_id: str) -> dict[str, Any]:
     return await JOBS.request_manual_run(job_id)
 
 
+# Flow-controlled tunnels with bytes their hub has not acknowledged, and the tunnels waiting for room in the
+# window. Futures of the running loop, not an asyncio.Condition: that one stays bound to the first loop it waited in.
+PORT_TUNNEL_UNACKED: dict[WebSocket, int] = {}
+PORT_TUNNEL_WINDOW_WAITERS: set[asyncio.Future[None]] = set()
+
+
 async def bridge_port_tunnel(
     ws: WebSocket,
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
+    flow_control: bool = False,
 ) -> tuple[int, str] | None:
     """Copy unmodified bytes until either side closes the tunnel."""
 
+    def window_changed() -> None:
+        for waiter in PORT_TUNNEL_WINDOW_WAITERS:
+            if not waiter.done():
+                waiter.set_result(None)
+
     async def remote_to_websocket() -> tuple[int, str]:
+        loop = asyncio.get_running_loop()
         while True:
-            data = await reader.read(PORT_TUNNEL_READ_CHUNK_BYTES)
+            data = await reader.read(PORT_TUNNEL_WINDOW_FRAME_BYTES if flow_control else PORT_TUNNEL_READ_CHUNK_BYTES)
             if not data:
                 return (1000, "Loopback service closed the connection")
+            if flow_control:
+                # As long as the send below: a hub whose client stopped reading does not acknowledge.
+                deadline = loop.time() + PORT_TUNNEL_IO_TIMEOUT_SECONDS
+                while (unacked := PORT_TUNNEL_UNACKED.get(ws, 0)) and (
+                    unacked + len(data) > PORT_TUNNEL_WINDOW_BYTES // len(PORT_TUNNEL_UNACKED)
+                ):
+                    waiter = loop.create_future()
+                    PORT_TUNNEL_WINDOW_WAITERS.add(waiter)
+                    try:
+                        await asyncio.wait_for(waiter, deadline - loop.time())
+                    finally:
+                        PORT_TUNNEL_WINDOW_WAITERS.discard(waiter)
+                PORT_TUNNEL_UNACKED[ws] = unacked + len(data)
             await asyncio.wait_for(
                 ws.send_bytes(data),
                 timeout=PORT_TUNNEL_IO_TIMEOUT_SECONDS,
@@ -101585,7 +101622,28 @@ async def bridge_port_tunnel(
                     timeout=PORT_TUNNEL_IO_TIMEOUT_SECONDS,
                 )
                 continue
-            if message.get("text") is not None:
+            text = message.get("text")
+            if text is not None and flow_control:
+                # {"type": "ack", "bytes": n}: n more of the bytes sent have reached the hub's client.
+                unacked = PORT_TUNNEL_UNACKED.get(ws, 0)
+                try:
+                    count = json.loads(text)["bytes"]
+                except (ValueError, TypeError, KeyError):
+                    count = None
+                # `type` rather than isinstance keeps out JSON true/false. More than was sent would make room
+                # that is not there.
+                if type(count) is not int or not 0 < count <= unacked:
+                    return (
+                        PORT_TUNNEL_CLOSE_INVALID_REQUEST,
+                        "Port tunnel acknowledgement does not match the bytes sent",
+                    )
+                if count < unacked:
+                    PORT_TUNNEL_UNACKED[ws] = unacked - count
+                else:
+                    del PORT_TUNNEL_UNACKED[ws]
+                window_changed()
+                continue
+            if text is not None:
                 return (
                     PORT_TUNNEL_CLOSE_PROTOCOL_REQUIRED,
                     "Port tunnels accept binary WebSocket frames only",
@@ -101611,6 +101669,9 @@ async def bridge_port_tunnel(
             if not task.done():
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        # A tunnel that ended with bytes on the way no longer takes a share of the window.
+        if PORT_TUNNEL_UNACKED.pop(ws, None):
+            window_changed()
 
 
 @app.websocket("/api/sessions/{session_id}/ports/{port}/tunnel/ws")
@@ -101619,6 +101680,8 @@ async def session_port_tunnel(
     port: str,
     ws: WebSocket,
     host: str | None = None,
+    # A hub only: it acknowledges the bytes it has passed on (see PORT_TUNNEL_WINDOW_BYTES).
+    flow_control: bool = False,
 ) -> None:
     """Run an authenticated TCP proxy owned by a chat or browser tab.
 
@@ -101765,12 +101828,17 @@ async def session_port_tunnel(
         proxy_opened = True
         logger.info(
             "authenticated session-lifecycle-scoped proxy opened "
-            "session=%r host=%r port=%d",
+            "session=%r host=%r port=%d flow_control=%d",
             session_id,
             target_host,
             target_port,
+            flow_control,
         )
-        result = await bridge_port_tunnel(ws, reader, writer)
+        if flow_control:
+            # Tells the hub that this server counts acknowledgements: one that predates them closes the
+            # tunnel at a text frame.
+            await ws.send_text(remote_servers.PORT_TUNNEL_FLOW_CONTROL)
+        result = await bridge_port_tunnel(ws, reader, writer, flow_control)
         if result is not None:
             await close_once(*result)
     except WebSocketDisconnect:
