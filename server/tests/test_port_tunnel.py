@@ -1,9 +1,11 @@
 import asyncio
 import base64
+import json
 import unittest
 from unittest.mock import AsyncMock, patch
 
 import agent_server
+import remote_servers
 
 
 def token_protocol(token: str = "server-token") -> str:
@@ -85,6 +87,39 @@ class TextWebSocket(RecordingWebSocket):
 
     async def send_bytes(self, _data: bytes) -> None:
         raise AssertionError("the idle reader must not produce bytes")
+
+
+class HubWebSocket(RecordingWebSocket):
+    """The server's end of a tunnel a hub opened: the test feeds what the hub sends and reads what it gets."""
+
+    def __init__(self) -> None:
+        super().__init__(authenticated_protocols())
+        self.from_hub: asyncio.Queue[dict] = asyncio.Queue()
+        self.frames: list[bytes | str] = []
+
+    async def receive(self) -> dict:
+        return await self.from_hub.get()
+
+    async def send_bytes(self, data: bytes) -> None:
+        self.frames.append(data)
+
+    async def send_text(self, text: str) -> None:
+        self.frames.append(text)
+
+    def acknowledge(self, count: object) -> None:
+        self.from_hub.put_nowait({"type": "websocket.receive", "text": json.dumps({"type": "ack", "bytes": count})})
+
+    def sent(self) -> int:
+        return sum(len(frame) for frame in self.frames if isinstance(frame, bytes))
+
+
+async def settled(websocket: HubWebSocket) -> int:
+    """The bytes a tunnel has sent once it sends no more."""
+    sent = -1
+    while sent != websocket.sent():
+        sent = websocket.sent()
+        await asyncio.sleep(0.02)
+    return sent
 
 
 class IdleReader:
@@ -429,6 +464,123 @@ class PortTunnelTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result[0], 4400)
         self.assertEqual(writer.buffer, b"")
+
+    async def test_flow_controlled_tunnel_stops_at_the_window_until_the_hub_acknowledges(self) -> None:
+        window, frame = agent_server.PORT_TUNNEL_WINDOW_BYTES, agent_server.PORT_TUNNEL_WINDOW_FRAME_BYTES
+        websocket = HubWebSocket()
+        reader = asyncio.StreamReader()
+        reader.feed_data(b"x" * (window + 3 * frame))
+        reader.feed_eof()
+        bridge = asyncio.create_task(agent_server.bridge_port_tunnel(
+            websocket,  # type: ignore[arg-type]
+            reader,
+            MemoryWriter(),  # type: ignore[arg-type]
+            True,
+        ))
+
+        self.assertEqual(await settled(websocket), window)
+        self.assertEqual({len(data) for data in websocket.frames}, {frame})
+        websocket.acknowledge(frame)
+        self.assertEqual(await settled(websocket), window + frame)
+        websocket.acknowledge(window)
+        self.assertEqual(await asyncio.wait_for(bridge, 5), (1000, "Loopback service closed the connection"))
+        self.assertEqual(websocket.sent(), window + 3 * frame)
+        # The tunnel ended with bytes on the way: it keeps no share of the window.
+        self.assertEqual(agent_server.PORT_TUNNEL_UNACKED, {})
+
+    async def test_flow_controlled_tunnels_share_the_window_equally(self) -> None:
+        window, frame = agent_server.PORT_TUNNEL_WINDOW_BYTES, agent_server.PORT_TUNNEL_WINDOW_FRAME_BYTES
+        tunnels = []
+        for _ in range(2):
+            websocket = HubWebSocket()
+            reader = asyncio.StreamReader()
+            reader.feed_data(b"x" * (2 * window))
+            tunnels.append((websocket, asyncio.create_task(agent_server.bridge_port_tunnel(
+                websocket,  # type: ignore[arg-type]
+                reader,
+                MemoryWriter(),  # type: ignore[arg-type]
+                True,
+            ))))
+            await settled(websocket)
+        (first, first_bridge), (second, second_bridge) = tunnels
+        try:
+            # The first had the window to itself; the second gets half, and the first waits until it is down to half.
+            self.assertEqual((first.sent(), second.sent()), (window, window // 2))
+            first.acknowledge(window // 2 + frame)
+            self.assertEqual(await settled(first), window + frame)
+            # A tunnel with nothing on the way sends a frame whatever the others hold.
+            second.acknowledge(window // 2)
+            self.assertEqual(await settled(second), window)
+            # The second tunnel ends: the first has the window to itself again.
+            second.from_hub.put_nowait({"type": "websocket.disconnect"})
+            self.assertIsNone(await asyncio.wait_for(second_bridge, 5))
+            self.assertEqual(await settled(first), window + frame + window // 2)
+        finally:
+            first_bridge.cancel()
+            second_bridge.cancel()
+            await asyncio.gather(first_bridge, second_bridge, return_exceptions=True)
+        self.assertEqual(agent_server.PORT_TUNNEL_UNACKED, {})
+
+    async def test_flow_controlled_tunnel_closes_at_an_acknowledgement_for_bytes_it_did_not_send(self) -> None:
+        for count in (agent_server.PORT_TUNNEL_WINDOW_FRAME_BYTES + 1, 0, -1, True, "1", None):
+            websocket = HubWebSocket()
+            reader = asyncio.StreamReader()
+            reader.feed_data(b"x" * agent_server.PORT_TUNNEL_WINDOW_FRAME_BYTES)
+            bridge = asyncio.create_task(agent_server.bridge_port_tunnel(
+                websocket,  # type: ignore[arg-type]
+                reader,
+                MemoryWriter(),  # type: ignore[arg-type]
+                True,
+            ))
+            await settled(websocket)
+            websocket.acknowledge(count)
+            self.assertEqual((await asyncio.wait_for(bridge, 5))[0], 4400, count)
+            self.assertEqual(agent_server.PORT_TUNNEL_UNACKED, {})
+
+    async def test_flow_controlled_tunnel_ends_when_no_acknowledgement_makes_room_in_time(self) -> None:
+        websocket = HubWebSocket()
+        reader = asyncio.StreamReader()
+        reader.feed_data(b"x" * (2 * agent_server.PORT_TUNNEL_WINDOW_BYTES))
+        with patch.object(agent_server, "PORT_TUNNEL_IO_TIMEOUT_SECONDS", 0.05):
+            bridge = asyncio.create_task(agent_server.bridge_port_tunnel(
+                websocket,  # type: ignore[arg-type]
+                reader,
+                MemoryWriter(),  # type: ignore[arg-type]
+                True,
+            ))
+            # By itself: the test does not cancel it.
+            await asyncio.wait({bridge}, timeout=5)
+        self.assertTrue(bridge.done())
+        self.assertIsInstance(bridge.exception(), asyncio.TimeoutError)
+        self.assertEqual((agent_server.PORT_TUNNEL_UNACKED, agent_server.PORT_TUNNEL_WINDOW_WAITERS), ({}, set()))
+
+    async def test_flow_control_is_announced_before_the_first_bytes_and_only_when_asked(self) -> None:
+        async def handler(_reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            writer.write(b"page")
+            await writer.drain()
+            writer.close()
+
+        server = await asyncio.start_server(handler, host="127.0.0.1", port=0)
+        target_port = str(server.sockets[0].getsockname()[1])
+        frames: dict[bool, list[bytes | str]] = {}
+        try:
+            for flow_control in (True, False):
+                websocket = HubWebSocket()
+                with patch.object(agent_server, "PORT_TUNNELS", agent_server.PortTunnelRegistry()), \
+                     patch.object(agent_server, "AGENT_TOKEN", "server-token"), \
+                     patch.dict(agent_server.STORE.sessions, {"chat-1": {"id": "chat-1", "archived": False}}, clear=True):
+                    await asyncio.wait_for(agent_server.session_port_tunnel(
+                        "chat-1",
+                        target_port,
+                        websocket,  # type: ignore[arg-type]
+                        flow_control=flow_control,
+                    ), 5)
+                frames[flow_control] = websocket.frames
+        finally:
+            server.close()
+            await server.wait_closed()
+
+        self.assertEqual(frames, {True: [remote_servers.PORT_TUNNEL_FLOW_CONTROL, b"page"], False: [b"page"]})
 
     async def test_bridge_cancellation_joins_both_directional_pumps(self) -> None:
         websocket = CancellationTrackingWebSocket()

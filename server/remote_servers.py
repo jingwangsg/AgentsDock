@@ -1506,6 +1506,9 @@ DOWNLOAD_PATH_RE = re.compile(
 STREAM_PATH_RE = re.compile(r"api/sessions/[^/]+/events|api/session-summaries/events|api/emergency-alerts/events")
 # Browser-surface port tunnels (dashboards, web apps) take the surface tunnel; see _ensure_tunnel.
 PORT_TUNNEL_PATH_RE = re.compile(r"api/sessions/[^/]+/ports/\d+/tunnel/ws")
+# The first frame of a port tunnel a hub opened with flow_control=1, from a remote that then expects the hub's
+# acknowledgements (agent_server.PORT_TUNNEL_WINDOW_BYTES).
+PORT_TUNNEL_FLOW_CONTROL = '{"type": "flow_control"}'
 
 
 def upstream_headers(raw_headers: list[tuple[bytes, bytes]], token: str, *, drop: set[str] = frozenset()) -> list[tuple[str, str]]:
@@ -2593,8 +2596,12 @@ def register_remote_server_routes(
         protocols, echo = upstream_ws_protocols(offered_protocols(ws), server.token)
         headers = upstream_headers(ws.scope.get("headers", []), server.token, drop=WS_HANDSHAKE_HEADERS)
         query = swap_token_query(ws.url.query, server.token)
+        port_tunnel = PORT_TUNNEL_PATH_RE.fullmatch(path) is not None
+        if port_tunnel:
+            # A remote that predates flow control ignores this.
+            query = f"{query}&flow_control=1" if query else "flow_control=1"
         port = (manager.stream_port(server) if STREAM_PATH_RE.fullmatch(path)
-                else manager.surface_port(server) if PORT_TUNNEL_PATH_RE.fullmatch(path) else server.local_port)
+                else manager.surface_port(server) if port_tunnel else server.local_port)
         # websockets connects without manager.http and its down-tunnel check.
         if manager.tunnel_down_on(port) is not None:
             await ws.close(code=1011, reason="remote server unreachable")
@@ -2620,9 +2627,18 @@ def register_remote_server_routes(
             return
 
         async def pump_down() -> None:
+            flow_control = False
             async for message in upstream:
                 if isinstance(message, bytes):
                     await ws.send_bytes(message)
+                    if flow_control:
+                        # After the client took the bytes: one that reads slowly then slows its own tunnel.
+                        # load-bearing: a remote that has closed the tunnel takes no acknowledgement, and the
+                        # frames it sent before closing are still to be passed on.
+                        with suppress(websockets.exceptions.ConnectionClosed):
+                            await upstream.send(json.dumps({"type": "ack", "bytes": len(message)}))
+                elif port_tunnel and message == PORT_TUNNEL_FLOW_CONTROL:
+                    flow_control = True
                 else:
                     await ws.send_text(message)
 
