@@ -1,5 +1,44 @@
 # Public development log
 
+## 2026-11-20 — Browser tabs and port forwards through a hub: one tab's downloads no longer keep the other tabs from opening (server)
+
+- Reported: a desktop browser tab on a remote showed `Could not load
+  http://localhost:…/: ERR_EMPTY_RESPONSE` although the page's server
+  answered on the remote.
+- Cause, measured. All port tunnels of a remote, the browser tabs and the
+  port forwards of every device, go from the hub to the remote through one
+  ssh connection. It delivers bytes in the order they were written, and
+  megabytes can be queued in it. Another tab on the same remote showed about
+  125 videos and fetched them again whenever its list changed. While it did,
+  a request through that connection had no answer for 58 s; the hub's other
+  connection to the same remote answered in 1.0 s (median). The hub gives a
+  tunnel 10 s to open and then refuses it, and the tab shows the error. That
+  day the hub refused 617 of 975 tunnels to the video page's port and 7 of
+  65 to the reported page's port.
+- A hub now opens a tunnel with `flow_control=1`. A remote that knows the
+  option answers with one text frame before the first bytes, and from then
+  on the hub acknowledges each frame it has handed to its client. The remote
+  holds a tunnel back while its unacknowledged bytes would exceed its share
+  of a 256 KiB window: the window divided by the number of tunnels that have
+  unacknowledged bytes. A tunnel with none always sends one frame of 16 KiB.
+  A new tab's first bytes then wait behind about one window instead of
+  megabytes.
+- A hub with a remote from before the change, and a remote with a hub from
+  before it, run without the limit, as before. The apps are unchanged: the
+  two new frames stay between hub and remote.
+- A tunnel that gets no room for 30 s ends, as one whose send takes 30 s.
+
+```text
+Change and expected user behavior: while one tab on a remote downloads continuously, other tabs and port forwards of that remote open in seconds instead of failing with ERR_EMPTY_RESPONSE; the download keeps its rate.
+Source commit / app build / server version: branch fix/port-tunnel-pacing; server 1.0.7-beta.11 plus the branch; no app change.
+Test surface: unit tests of the remote's tunnel bridge and of the hub's proxy; an isolated hub and remote joined by a stand-in for the ssh connection (one queue for all connections, 200 KiB/s, 2 MiB per connection, 0.48 s round trip); the same code over a real link of that kind (a hub on the test machine, a second server instance on the remote host with its own port and state); the built desktop app in a hidden window against the isolated hub.
+Actions exercised and observed outcomes: (1) Stand-in link, 80 s. A heavy tab kept six connections downloading 1 MiB files; a light tab asked for a small page on a new connection every 2 s and gave the tunnel 10 s to open. Before: 2 of 37 pages, 35 not opened in 10 s, heavy tab 139 KiB/s, 6 tunnels refused. After: 37 of 37, median 1.92 s, slowest 3.06 s, heavy tab 195 KiB/s, none refused, every file's SHA-256 correct. (2) Real link, 90 s, the same two tabs. Before: 4 of 42 pages, heavy tab 132 KiB/s, 6 tunnels refused. After: 42 of 42, median 3.67 s, slowest 11.43 s, heavy tab 169 KiB/s, none refused; the light page alone took 1.91 s (median); all 48 tunnels ran with flow control. (3) Desktop app on the stand-in link, two browser tabs on the remote, Reload of the light tab pressed 12 times while the heavy tab downloaded. Before: 11 of 12 showed "Could not load …: ERR_EMPTY_RESPONSE" after 10 s. After: 12 of 12 showed the page, median 2.02 s, slowest 2.92 s; heavy tab 185 and 195 KiB/s. (4) Mixed versions on the stand-in link, a new hub with an old remote and an old hub with a new remote: 2 of 27 pages each and heavy tab 173 KiB/s, as before the change, no error. (5) Without a rate limit (loopback): heavy tab 34,389 and 29,946 KiB/s before, 27,797 and 26,601 after; light page 0.24 to 0.28 s before, 0.05 s after.
+Real boundaries exercised; any mocked/stubbed boundaries: real server processes and the hub's WebSocket proxy in every run; real ssh to a real remote host in (2); the built desktop app with its per-tab proxy in (3). The ssh connection in (1), (3), (4) and (5) is a stand-in process; the tabs in (1), (2), (4) and (5) are WebSocket clients, not browsers. The phone app was not run: its code is unchanged and it uses the same route.
+Focused regression / typecheck / production build: tests/test_port_tunnel.py, 31 tests; the port tunnel cases of tests/test_remote_servers.py; all 8 server shards.
+Remaining limitations or blocked acceptance: merged with these review findings open. (a) Acknowledgements travel with uploads, which are not limited: on the stand-in link with both directions modelled, one tab uploading and one downloading, the download ran at 77 KiB/s before and 23 KiB/s after; other tabs failed to open in both (11 of 27 pages). (b) A service that stops reading while it cannot write (a blocking echo), with megabytes of upload on the way: the download waits for an acknowledgement queued behind the upload, and the tunnel ends after 30 s; without flow control it completed (reproduced by a reviewer on loopback). (c) When the remote closes a tunnel, its last frames can reach the client up to 10 s late; no bytes are lost (reproduced by a reviewer). (d) A tunnel cancelled a second time while it ends keeps its share of the window until the server restarts (reproduced by a reviewer). (e) The hub's send to its client does not wait, so the hub acknowledges frames its client has not read yet and a client that reads slowly does not slow its tunnel; two code comments say otherwise. (f) Tunnels that start together can hold more than one window between them until acknowledgements arrive: 2.45 windows for six. (g) Four rules have no test that fails without them: acknowledging only after the announcement, the frame a tunnel with nothing unacknowledged may send when a share is smaller than a frame, the 30 s limit across several waits, the wake-up when a tunnel ends. Needs both ends on this code: nothing changes until the hub restarts and a remote is redeployed.
+Availability: server source only.
+```
+
 ## 2026-11-17 — Canvas: the download leaves out the source, half the bytes; the phone keeps a Canvas on screen when a check fails (server, desktop 146, Android 89)
 
 - A Canvas arrived as one record with its source and its compiled bundle.
