@@ -1,4 +1,5 @@
 import type { Health, Session } from '../types'
+import { folderIsWithin, folderParent, folderTree, reorderFolderList } from './folders'
 import { fuzzyScore } from './fuzzy'
 
 export interface SessionSection {
@@ -41,6 +42,7 @@ export function unreadCount(sessions: readonly Session[]): number {
 }
 
 /**
+ * The sections in display order: Pinned, the folders (each directly before its subfolders, see `folderTree`), Archived.
  * `tabFolders` are the folders terminal and browser tabs are filed under: one holding no chat is listed after the
  * chat folders unless `folderOrder` places it.
  */
@@ -74,7 +76,9 @@ export function orderedSessionSections(
       || (includeEmptyFolders && !['Pinned', 'Archived'].includes(folder) && folderOrder.includes(folder))
       || tabs.has(folder)
     ))
-  return orderedFolders.map(folder => ({ id: folder, title: folder, sessions: [...(groups.get(folder) ?? [])].sort(compareSessions) }))
+  // A parent that only its subfolders name is listed too, so a subfolder is never shown without the folders it lies
+  // in. Pinned stays first and Archived last: folders at the top keep their order.
+  return folderTree(orderedFolders).map(folder => ({ id: folder, title: folder, sessions: [...(groups.get(folder) ?? [])].sort(compareSessions) }))
 }
 
 /**
@@ -102,7 +106,8 @@ type SidebarDrop =
  * (`next`, dragged row at `to`) and `folders`, the current folder order.
  * Same section rules as the server's reorder endpoint: a chat joins the section
  * it lands under, may move into any folder, but never into Pinned or Archived from
- * outside; folder headers reorder folders only. A pinned chat dropped into a folder
+ * outside; a folder header reorders the folders of its own parent only, and its
+ * subfolders move with it. A pinned chat dropped into a folder
  * is unpinned, like Move to Folder here (the desktop keeps it pinned). null means
  * nothing changes. With `sharedOrder` the folders dropped leave out those holding only tabs that `folders`
  * does not list: as on the desktop, the shared folder order never takes them.
@@ -110,8 +115,22 @@ type SidebarDrop =
 export function resolveSidebarDrop(next: SidebarDropRow[], to: number, sessions: Session[], folders: string[], sharedOrder = false): SidebarDrop | null {
   const moved = next[to]
   if (moved.kind === 'header') {
-    const order = next.flatMap(row => row.kind === 'header' && !['Pinned', 'Archived'].includes(row.folder) && (!sharedOrder || folders.includes(row.folder)) ? [row.folder] : [])
-    return order.join('\n') === folders.join('\n') ? null : { kind: 'folder-order', order }
+    const headers = next.flatMap(row => row.kind === 'header' && !['Pinned', 'Archived'].includes(row.folder) && (!sharedOrder || folders.includes(row.folder)) ? [row.folder] : [])
+    // The order before the drop. The subfolders of a collapsed folder have no header: `folders` names them. The
+    // headers add the folders holding only tabs, which the sidebar lists in plain sort order.
+    const shown = folderTree([...folders, ...[...headers].sort()])
+    const at = headers.indexOf(moved.folder)
+    const parent = folderParent(moved.folder)
+    const below = headers[at + 1]
+    // The folder of the same parent that the dragged one now follows: the header above it is that folder's or lies in it.
+    const above = at > 0 ? headers.find(folder => folderParent(folder) === parent && folderIsWithin(headers[at - 1], folder)) : undefined
+    // Dropped anywhere else, between the subfolders of another folder or outside its parent, the folder stays where it was.
+    const order = below !== undefined && folderParent(below) === parent
+      ? reorderFolderList(shown, moved.folder, below, 'before')
+      : above !== undefined && (below === undefined || !folderIsWithin(below, above))
+        ? reorderFolderList(shown, moved.folder, above, 'after')
+        : shown
+    return order.join('\n') === shown.join('\n') ? null : { kind: 'folder-order', order }
   }
   let index = to - 1
   while (index >= 0 && next[index].kind !== 'header') index -= 1

@@ -16,7 +16,8 @@ const tab = { id: 'term_1', kind: 'terminal', name: null, folder: 'Tabs', cwd: n
 const sharedOrder: Health = { ok: true, capabilities: { folder_order_v1: { available: true, version: 1, path: '/api/folders/order', stream_protocol: 'agentsdock-session-summaries-v2' } } }
 let tree: ReturnType<typeof create> | null = null
 
-async function renderSidebar(health: Health, { answer = async () => true, moved = () => true }: { answer?: () => Promise<boolean>; moved?: (id: string) => boolean } = {}) {
+type Shown = { sessions?: Session[]; surfaces?: Surface[]; folderOrder?: string[]; collapsedFolders?: string[] }
+async function renderSidebar(health: Health, { answer = async () => true, moved = () => true, shown = {} }: { answer?: () => Promise<boolean>; moved?: (id: string) => boolean; shown?: Shown } = {}) {
   const calls: unknown[][] = []
   resetComponentStore({
     switchingProfileId: null,
@@ -31,9 +32,11 @@ async function renderSidebar(health: Health, { answer = async () => true, moved 
     searchResults: [],
     clearSearch: () => {},
     search: async () => {},
-    setCollapsedFolders: () => {},
+    setCollapsedFolders: (folders: string[]) => { calls.push(['collapsed', folders]) },
     setFolderOrder: (order: string[]) => { calls.push(['order', order]); return answer() },
     updateSession: async (id: string, patch: Partial<Session>) => { calls.push(['patch', id, patch]); return moved(id) },
+    updateSurface: async (id: string, patch: Partial<Surface>) => { calls.push(['tab', id, patch]) },
+    ...shown,
   } as never)
   await act(async () => {
     tree = create(<Sidebar
@@ -158,4 +161,155 @@ test('a dragged folder sends the order it was dropped in; a refused order is dra
   assert.deepEqual(keys(lists.at(-1)!.data), keys(dropped))
   await act(async () => { refuse(false) })
   assert.deepEqual(keys(lists.at(-1)!.data), keys(shown))
+})
+
+// Nested folders: a folder's name is its path, "Work/Papers" is Papers in Work. Lab is named by its subfolder only.
+const nested: Shown = {
+  sessions: [chat('w1', 'Work'), chat('p1', 'Work/Papers'), chat('y1', 'Work/Papers/2026'), chat('c1', 'Work/Code'), chat('l1', 'Lab/Runs'), chat('g1', 'General')],
+  surfaces: [{ ...tab, id: 'term_p', folder: 'Work/Papers' }],
+  folderOrder: ['Work', 'Work/Papers', 'Work/Papers/2026', 'Work/Code', 'Lab/Runs', 'General'],
+}
+const nestedOrder = ['Work', 'Work/Papers', 'Work/Papers/2026', 'Work/Code', 'Lab', 'Lab/Runs', 'General']
+type ShownRow = { key: string; title?: string; count?: number; sessions?: Session[] }
+const shownRows = () => lists.at(-1)!.data as ShownRow[]
+const shownKeys = () => shownRows().map(row => row.key)
+const header = (folder: string) => shownRows().find(row => row.key === `header:${folder}`)!
+
+test('a subfolder is listed under its parent by its own name, and its rows are indented with it', async () => {
+  await renderSidebar(sharedOrder, { shown: nested })
+  assert.deepEqual(shownKeys(), [
+    'header:Work', 'w1', 'header:Work/Papers', 'p1', 'term_p', 'header:Work/Papers/2026', 'y1', 'header:Work/Code', 'c1',
+    'header:Lab', 'header:Lab/Runs', 'l1', 'header:General', 'g1',
+  ])
+  assert.deepEqual(['Work', 'Work/Papers', 'Work/Papers/2026', 'Lab'].map(folder => [header(folder).title, header(folder).count]), [['Work', 1], ['Papers', 2], ['2026', 1], ['Lab', 0]])
+  const indent = (testID: string) => {
+    let node = tree!.root.findAll(candidate => candidate.props.testID === testID)[0]
+    while (node.props.style?.marginLeft === undefined) node = node.parent!
+    return node.props.style.marginLeft
+  }
+  assert.deepEqual(
+    ['chat-row-w1', 'folder-actions-Work/Papers', 'chat-row-p1', 'tab-row-term_p', 'folder-actions-Work/Papers/2026', 'chat-row-y1', 'folder-actions-General'].map(indent),
+    [0, 14, 14, 14, 28, 28, 0],
+  )
+})
+
+test('a collapsed folder hides its subfolders, and its header counts and marks the chats and tabs in them', async () => {
+  await renderSidebar(sharedOrder, { shown: { ...nested, collapsedFolders: ['Work/Papers'] } })
+  assert.deepEqual(shownKeys(), ['header:Work', 'w1', 'header:Work/Papers', 'header:Work/Code', 'c1', 'header:Lab', 'header:Lab/Runs', 'l1', 'header:General', 'g1'])
+  // p1, y1 and the terminal; the expanded Work above it counts its own chat only.
+  assert.deepEqual([header('Work/Papers').count, header('Work').count], [3, 1])
+  const labels = () => tree!.root.findAll(node => typeof node.props.accessibilityLabel === 'string' && / (Work|Papers)(,|$)/.test(node.props.accessibilityLabel)).map(node => node.props.accessibilityLabel)
+  await act(async () => { useAppStore.setState({ activeSessionIds: new Set(['y1']) }) })
+  assert.deepEqual(labels(), ['Collapse Work', 'Expand Papers, agent running'])
+
+  await act(async () => { useAppStore.setState({ collapsedFolders: ['Work'] }) })
+  assert.deepEqual(shownKeys(), ['header:Work', 'header:Lab', 'header:Lab/Runs', 'l1', 'header:General', 'g1'])
+  assert.equal(header('Work').count, 5)
+  assert.deepEqual(labels(), ['Expand Work, agent running'])
+})
+
+test('a folder menu offers a subfolder, the folders it can move into, and Up and Down among the folders of its parent', async () => {
+  await renderSidebar(sharedOrder, { shown: nested })
+  const ids = (folder: string) => actionIds(menu(`folder-actions-${folder}`).props.actions).filter(id => !id.startsWith('new:') && !['new-terminal', 'new-browser', 'rename', 'delete'].includes(id))
+  assert.deepEqual(ids('Work'), ['new-subfolder', 'move-to', 'move-into:Lab', 'move-into:Lab%2FRuns', 'move-into:General', 'move-down'])
+  assert.deepEqual(ids('Work/Papers'), ['new-subfolder', 'move-to', 'move-top', 'move-into:Work%2FCode', 'move-into:Lab', 'move-into:Lab%2FRuns', 'move-into:General', 'move-down'])
+  assert.deepEqual(ids('Work/Code'), ['new-subfolder', 'move-to', 'move-top', 'move-into:Work%2FPapers', 'move-into:Work%2FPapers%2F2026', 'move-into:Lab', 'move-into:Lab%2FRuns', 'move-into:General', 'move-up'])
+  assert.deepEqual(ids('Work/Papers/2026'), ['new-subfolder', 'move-to', 'move-top', 'move-into:Work', 'move-into:Work%2FCode', 'move-into:Lab', 'move-into:Lab%2FRuns', 'move-into:General'])
+  // A chat's Move to Folder lists the same folders by path, each before its subfolders.
+  assert.deepEqual(actionIds(menu('chat-actions-g1').props.actions).filter(id => id.startsWith('folder:')).map(id => decodeURIComponent(id.slice(7))), nestedOrder)
+})
+
+test('Move Folder Up and Down pass the neighbour in the same parent, each with its subfolders', async () => {
+  const calls = await renderSidebar(sharedOrder, { shown: nested })
+  await folderAction('Work/Code', 'move-up')
+  await folderAction('Work', 'move-down')
+  assert.deepEqual(calls, [
+    ['order', ['Work', 'Work/Code', 'Work/Papers', 'Work/Papers/2026', 'Lab', 'Lab/Runs', 'General']],
+    ['order', ['Lab', 'Lab/Runs', 'Work', 'Work/Papers', 'Work/Papers/2026', 'Work/Code', 'General']],
+  ])
+})
+
+test('renaming a folder edits its own name and moves the chats, tabs and collapsed entries of its subfolders too', async () => {
+  const calls = await renderSidebar(sharedOrder, { shown: { ...nested, collapsedFolders: ['Work/Papers/2026', 'General'] } })
+  await folderAction('Work/Papers', 'rename')
+  assert.equal(tree!.root.findAll(node => node.props.testID === 'text-prompt-input' && typeof node.props.onChangeText === 'function')[0].props.value, 'Papers')
+  await answerPrompt('Reading')
+  assert.deepEqual(calls, [
+    ['order', ['Work', 'Work/Reading', 'Work/Reading/2026', 'Work/Code', 'Lab', 'Lab/Runs', 'General']],
+    ['patch', 'p1', { folder: 'Work/Reading' }],
+    ['patch', 'y1', { folder: 'Work/Reading/2026' }],
+    ['tab', 'term_p', { folder: 'Work/Reading' }],
+    ['collapsed', ['Work/Reading/2026', 'General']],
+  ])
+})
+
+test('Move Folder To puts a folder with all it holds last in the folder chosen, or at the top', async () => {
+  const calls = await renderSidebar(sharedOrder, { shown: nested })
+  await folderAction('Work/Papers', 'move-into:Lab')
+  assert.deepEqual(calls, [
+    ['order', ['Work', 'Work/Code', 'Lab', 'Lab/Runs', 'Lab/Papers', 'Lab/Papers/2026', 'General']],
+    ['patch', 'p1', { folder: 'Lab/Papers' }],
+    ['patch', 'y1', { folder: 'Lab/Papers/2026' }],
+    ['tab', 'term_p', { folder: 'Lab/Papers' }],
+  ])
+  calls.length = 0
+  await folderAction('Work/Papers', 'move-top')
+  assert.deepEqual(calls[0], ['order', ['Work', 'Work/Code', 'Lab', 'Lab/Runs', 'General', 'Papers', 'Papers/2026']])
+  assert.deepEqual(calls[2], ['patch', 'y1', { folder: 'Papers/2026' }])
+})
+
+test('a folder is not moved or renamed onto another folder, whatever the case, and no subfolder takes an existing path', async () => {
+  const calls = await renderSidebar(sharedOrder, { shown: { ...nested, sessions: [...nested.sessions!, chat('x1', 'Lab/papers')] } })
+  await folderAction('Work/Papers', 'move-into:Lab')
+  await folderAction('Work/Code', 'rename')
+  await answerPrompt('PAPERS')
+  await folderAction('Work/Papers', 'new-subfolder')
+  await answerPrompt(' 2026 ')
+  assert.deepEqual(calls, [])
+})
+
+test('New Subfolder adds the folder to the order and expands a collapsed parent', async () => {
+  const calls = await renderSidebar(sharedOrder, { shown: { ...nested, collapsedFolders: ['Work/Papers', 'General'] } })
+  await folderAction('Work/Papers', 'new-subfolder')
+  await answerPrompt('Drafts')
+  assert.deepEqual(calls, [['order', [...nestedOrder, 'Work/Papers/Drafts']], ['collapsed', ['General']]])
+})
+
+test('deleting a folder removes its subfolders and sends their chats to its parent; at the top they go to General', async () => {
+  const calls = await renderSidebar(sharedOrder, { shown: { ...nested, collapsedFolders: ['Work/Papers/2026', 'General'] } })
+  await folderAction('Work/Papers', 'delete')
+  // Tabs stay where they are, as before nesting.
+  assert.deepEqual(calls, [
+    ['patch', 'p1', { folder: 'Work' }],
+    ['patch', 'y1', { folder: 'Work' }],
+    ['order', ['Work', 'Work/Code', 'Lab', 'Lab/Runs', 'General']],
+    ['collapsed', ['General']],
+  ])
+  calls.length = 0
+  await folderAction('Work', 'delete')
+  assert.deepEqual(calls, [
+    ...['w1', 'p1', 'y1', 'c1'].map(id => ['patch', id, { folder: 'General' }]),
+    ['order', ['Lab', 'Lab/Runs', 'General']],
+    ['collapsed', ['General']],
+  ])
+})
+
+test('a dragged subfolder is reordered inside its parent only; dropped elsewhere it is drawn back', async () => {
+  const calls = await renderSidebar(sharedOrder, { shown: nested })
+  const shown = shownRows()
+  // draggable-flatlist reports the list with only the header moved, here to just above the row `before`.
+  const drop = async (key: string, before: string) => {
+    const from = shown.findIndex(row => row.key === key)
+    const data = [...shown]
+    const [moved] = data.splice(from, 1)
+    const to = data.findIndex(row => row.key === before)
+    data.splice(to, 0, moved)
+    await act(async () => { lists.at(-1)!.onDragEnd({ data, from, to }) })
+  }
+  await drop('header:Work/Papers', 'header:Work')
+  await drop('header:Work/Papers', 'header:General')
+  assert.deepEqual(calls, [])
+  assert.deepEqual(shownKeys(), shown.map(row => row.key))
+  await drop('header:Work/Code', 'header:Work/Papers')
+  assert.deepEqual(calls, [['order', ['Work', 'Work/Code', 'Work/Papers', 'Work/Papers/2026', 'Lab', 'Lab/Runs', 'General']]])
 })

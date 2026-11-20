@@ -8,6 +8,7 @@ import * as Dialog from '@radix-ui/react-dialog'
 import { ArrowRight, Check, ChevronDown, ChevronRight, CircleAlert, Clock3, Copy, Download, FileText, FolderOpen, GitFork, Import, KeyRound, LoaderCircle, RefreshCw, RotateCcw, Search, Server, Sparkles, X } from 'lucide-react'
 import type { AgentFile, AppUpdateStatus, AppUpdateTrack, Backend, BulkImportSessionItem, BulkImportSessionResult, ChatReference, ChatReferenceAction, CoordinatedServerUpdate, CreateJobInput, Health, Job, JobContextMode, JobScheduleKind, LocalSessionCandidate, ServerRestartBlockerSnapshot, ServerSetupCapabilities, ServerSetupProgress, ServerUpdateStatus, ServerUpdateTrack, Session, TeamReference, UpdateJobInput, WorkspaceProfileScope } from '@shared/types'
 import { isHiddenRunChat } from '@shared/chat-visibility'
+import { folderIn, folderLeaf, folderParent, folderSegments } from '@shared/folders'
 import { fuzzyScore } from '@shared/fuzzy'
 import { LOCAL_SESSION_IMPORT_HARD_LIST_LIMIT, cursorLocalSessionImportSupported, localSessionImportCapability, localSessionImportKey, localSessionImportListLimit, localSessionImportSupported } from '@shared/local-session-import'
 import { DEFAULT_SERVER_URL } from '@shared/server-url'
@@ -1082,11 +1083,22 @@ export function FolderDialog() {
   const folderOrder = useAppStore(state => state.folderOrder)
   const sharedFolderOrder = useAppStore(state => state.sharedFolderOrder)
   const [name, setName] = useState('')
-  useEffect(() => { if (open) setName('') }, [open])
+  // The folder the new one is created in: New Subfolder of a folder's menu sets it; null from the sidebar's button.
+  const [parent, setParent] = useState<string | null>(null)
+  useEffect(() => {
+    const openIn = (event: Event) => {
+      setParent((event as CustomEvent<{ parent: string }>).detail.parent)
+      useAppStore.getState().setModal('folder', true)
+    }
+    window.addEventListener('agentsdock:new-folder', openIn)
+    return () => window.removeEventListener('agentsdock:new-folder', openIn)
+  }, [])
+  useEffect(() => { if (open) setName(''); else setParent(null) }, [open])
   const submit = (event: FormEvent) => {
     event.preventDefault()
-    const clean = name.trim()
-    if (!clean) return
+    // Without a name of its own the path would be the parent's.
+    if (!folderSegments(name).length) return
+    const clean = folderIn(parent, name)
     const existing = new Set([...folderOrder, ...sessions.map(session => session.folder?.trim() || 'General')].map(folder => folder.toLocaleLowerCase()))
     if (existing.has(clean.toLocaleLowerCase())) {
       useAppStore.getState().setError(`Folder “${clean}” already exists.`)
@@ -1094,10 +1106,12 @@ export function FolderDialog() {
     }
     // The shared folder order gets the sidebar's folder list (without tab-only folders it does not list), the new one last.
     useAppStore.getState().setFolderOrder([...(sharedFolderOrder ? sidebarFolders(sessions, folderOrder) : folderOrder), clean])
+    // A collapsed folder would hide the subfolder just created in it.
+    if (parent !== null && useAppStore.getState().collapsedFolders.has(parent)) useAppStore.getState().toggleFolder(parent)
     trackEvent('folder_created')
     useAppStore.getState().setModal('folder', false)
   }
-  return <DialogShell open={open} onOpenChange={value => useAppStore.getState().setModal('folder', value)} title={t("ui.Dialogs.FolderDialog.new_folder_cf28f49")} description={t("ui.Dialogs.FolderDialog.create_an_empty_chat_folder_then_drag_or_m_b438439")}>
+  return <DialogShell open={open} onOpenChange={value => useAppStore.getState().setModal('folder', value)} title={parent === null ? t("ui.Dialogs.FolderDialog.new_folder_cf28f49") : t('ui.Dialogs.FolderDialog.newFolderIn', { folder: parent })} description={t("ui.Dialogs.FolderDialog.create_an_empty_chat_folder_then_drag_or_m_b438439")}>
     <form onSubmit={submit} className="dialog-form">
       <label><span>{t("ui.Dialogs.FolderDialog.folder_name_14d34ed")}</span><input autoFocus value={name} onChange={event => setName(event.target.value)} /></label>
       <footer><button type="button" className="quiet-button" onClick={() => useAppStore.getState().setModal('folder', false)}>{t("ui.Dialogs.FolderDialog.cancel_19766ed")}</button><button className="primary-button" disabled={!name.trim()}>{t("ui.Dialogs.FolderDialog.create_folder_82b9e1e")}</button></footer>
@@ -1185,7 +1199,8 @@ export function RenameFolderDialog() {
       if (savingRef.current) return
       const next = (event as CustomEvent<{ folder: string }>).detail.folder
       setFolder(next)
-      setName(next)
+      // A folder's own name: the folder it lies in stays.
+      setName(folderLeaf(next))
       savingRef.current = false
       setSaving(false)
     }
@@ -1199,8 +1214,8 @@ export function RenameFolderDialog() {
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     if (folder === null || savingRef.current) return
-    const clean = name.trim()
-    if (!clean) return
+    if (!folderSegments(name).length) return
+    const clean = folderIn(folderParent(folder), name)
     if (clean === folder) {
       setFolder(null)
       return

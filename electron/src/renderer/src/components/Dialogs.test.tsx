@@ -93,6 +93,36 @@ describe('RenameFolderDialog', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Rename folder' })).not.toBeInTheDocument())
     expect(useAppStore.getState().folderOrder).toEqual(['Papers', 'General'])
   })
+
+  it('shows a subfolder by its own name and renames it where it lies, with its subfolders', async () => {
+    const update = vi.fn(async (sessionId: string, patch: Partial<Session>) => ({ id: sessionId, title: sessionId, backend: 'codex' as const, ...patch }))
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { sessions: { update }, preferences: { set: vi.fn().mockResolvedValue(undefined) } } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      sessions: [{ id: 'chat-1', title: 'Paper', backend: 'codex', folder: 'Work/Papers' }, { id: 'chat-2', title: 'Old', backend: 'codex', folder: 'Work/Papers/2026' }],
+      surfaces: [],
+      folderOrder: ['Work', 'Work/Papers', 'Work/Papers/2026', 'General'],
+      collapsedFolders: new Set(),
+      switchingProfileId: null,
+      error: null
+    })
+    const user = userEvent.setup()
+    render(<RenameFolderDialog />)
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('agentsdock:rename-folder', { detail: { folder: 'Work/Papers' } }))
+    })
+    const input = screen.getByRole('textbox', { name: 'Folder name' })
+    expect(input).toHaveValue('Papers')
+    await user.clear(input)
+    await user.type(input, 'Reading{Enter}')
+
+    await waitFor(() => expect(update.mock.calls).toEqual([['chat-1', { folder: 'Work/Reading' }], ['chat-2', { folder: 'Work/Reading/2026' }]]))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Rename folder' })).not.toBeInTheDocument())
+    expect(useAppStore.getState().folderOrder).toEqual(['Work', 'Work/Reading', 'Work/Reading/2026', 'General'])
+  })
 })
 
 describe('FolderDialog', () => {
@@ -131,6 +161,30 @@ describe('FolderDialog', () => {
     expect(useAppStore.getState().folderOrder).toEqual(saved)
     expect(setOrder.mock.calls).toEqual(shared ? [[scope, saved]] : [])
     expect(setScoped.mock.calls).toEqual(shared ? [] : [[scope, 'folderOrder', saved]])
+    expect(useAppStore.getState().modals.folder).toBe(false)
+  })
+
+  it('creates a subfolder in the folder whose menu asked for it, and opens that folder', async () => {
+    const setScoped = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(window, 'agentsDock', { configurable: true, value: { preferences: { setScoped } } as unknown as AgentsDockAPI })
+    useAppStore.setState({
+      profiles: [profile], activeProfileId: profile.id, profileGeneration: 1, switchingProfileId: null,
+      sessions: [{ id: 'chat-1', title: 'Paper', backend: 'codex', folder: 'Research' }],
+      folderOrder: ['Research', 'General'],
+      collapsedFolders: new Set(['Research']),
+      error: null
+    })
+    const user = userEvent.setup()
+    render(<FolderDialog />)
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('agentsdock:new-folder', { detail: { parent: 'Research' } }))
+    })
+    expect(screen.getByRole('dialog', { name: 'New folder in Research' })).toBeInTheDocument()
+    await user.type(screen.getByRole('textbox', { name: 'Folder name' }), ' Drafts {Enter}')
+
+    expect(useAppStore.getState().folderOrder).toEqual(['Research', 'General', 'Research/Drafts'])
+    expect([...useAppStore.getState().collapsedFolders]).toEqual([])
     expect(useAppStore.getState().modals.folder).toBe(false)
   })
 })

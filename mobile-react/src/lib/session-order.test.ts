@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Session } from '../types'
+import { folderIsHidden } from './folders'
 import { orderedSessionSections, rankMentionRows, rememberedFolderOrder, resolveSidebarDrop, sharesFolderOrder, sidebarFolderOrder, sidebarVisibleSessions, unreadCount, type SidebarDropRow } from './session-order'
 
 function session(id: string, folder = 'General'): Session {
@@ -69,6 +70,26 @@ test('a folder holding only tabs keeps its place in folderOrder, else follows th
   assert.deepEqual(sidebarFolderOrder([{ ...session('p', 'Work'), pinned: true }, ...sessions], ['Ops', 'Work']), ['Ops', 'Work', 'Zeta'])
 })
 
+test('a folder is listed directly before its subfolders, with a parent that only subfolders name', () => {
+  const sessions = [session('p', 'Work/Papers'), session('g'), session('o', 'Ops'), session('r', 'Lab/Runs/Old'), { ...session('pin', 'Work/Code'), pinned: true }, { ...session('old', 'Work/Code'), archived: true }]
+  // Work and Lab hold no chat and the order does not list them; Lab/Runs/Old follows the order alphabetically.
+  assert.deepEqual(
+    orderedSessionSections(sessions, ['Ops', 'Work/Papers', 'General', 'Work/Code'], true, true).map(section => [section.id, section.sessions.length]),
+    [['Pinned', 1], ['Ops', 1], ['Work', 0], ['Work/Papers', 1], ['Work/Code', 0], ['General', 1], ['Lab', 0], ['Lab/Runs', 0], ['Lab/Runs/Old', 1], ['Archived', 1]],
+  )
+  assert.deepEqual(sidebarFolderOrder(sessions, ['Ops', 'Work/Papers', 'General', 'Work/Code']), ['Ops', 'Work', 'Work/Papers', 'Work/Code', 'General', 'Lab', 'Lab/Runs', 'Lab/Runs/Old'])
+  // A folder holding only tabs goes under its parent too, after the parent's chat folders.
+  assert.deepEqual(
+    orderedSessionSections(sessions, ['Ops', 'Work/Papers', 'General'], false, true, ['Work/Terminals', 'Ops']).map(section => section.id),
+    ['Pinned', 'Ops', 'Work', 'Work/Papers', 'Work/Terminals', 'General', 'Lab', 'Lab/Runs', 'Lab/Runs/Old'],
+  )
+  // Filtered results keep the parents of a folder with a match, so its place in the tree stays readable.
+  assert.deepEqual(
+    orderedSessionSections([session('r', 'Lab/Runs/Old')], ['Ops', 'Work/Papers']).map(section => [section.id, section.sessions.length]),
+    [['Lab', 0], ['Lab/Runs', 0], ['Lab/Runs/Old', 1]],
+  )
+})
+
 test('with a shared folder order, a dropped folder order leaves out folders holding only tabs it does not list', () => {
   const sessions = [session('w1', 'Work'), session('a')]
   const folders = ['Work', 'General']
@@ -94,8 +115,9 @@ test('remembered folder order keeps folders that only exist on sessions, General
   assert.equal(rememberedFolderOrder(same, [session('y', 'Work')]), same)
 })
 
+// As the sidebar draws it: a collapsed folder shows its header only, and none of its subfolders.
 function rowsOf(sessions: Session[], folderOrder: string[], collapsed: string[] = []): SidebarDropRow[] {
-  return orderedSessionSections(sessions, folderOrder, true, true).flatMap<SidebarDropRow>(section => [
+  return orderedSessionSections(sessions, folderOrder, true, true).filter(section => !folderIsHidden(section.id, collapsed)).flatMap<SidebarDropRow>(section => [
     { kind: 'header', folder: section.id },
     ...(collapsed.includes(section.id) ? [] : section.sessions.map(value => ({ kind: 'session' as const, session: value }))),
   ])
@@ -145,6 +167,60 @@ test('dragging a folder header reorders folders and keeps Pinned and Archived ou
   assert.deepEqual(resolveSidebarDrop(dropped(rows, 4, 2), 2, sessions, ['Work', 'General']), { kind: 'folder-order', order: ['General', 'Work'] })
   // Landing inside its own neighbourhood leaves the folder order as it was.
   assert.equal(resolveSidebarDrop(dropped(rows, 2, 3), 3, sessions, ['Work', 'General']), null)
+})
+
+const nested = [session('w', 'Work'), session('p', 'Work/Papers'), session('c', 'Work/Code'), session('l', 'Lab'), session('g')]
+const nestedFolders = ['Work', 'Work/Papers', 'Work/Code', 'Lab', 'General']
+const names = (rows: SidebarDropRow[]) => rows.map(row => row.kind === 'header' ? row.folder : row.session.id)
+
+test('a dragged folder is reordered among the folders of its parent, and its subfolders move with it', () => {
+  const rows = rowsOf(nested, nestedFolders)
+  assert.deepEqual(names(rows), ['Work', 'w', 'Work/Papers', 'p', 'Work/Code', 'c', 'Lab', 'l', 'General', 'g'])
+  // Only the dragged header moves in the list. Work dropped under Lab's chat lands before General.
+  assert.deepEqual(resolveSidebarDrop(dropped(rows, 0, 7), 7, nested, nestedFolders), { kind: 'folder-order', order: ['Lab', 'Work', 'Work/Papers', 'Work/Code', 'General'] })
+  assert.deepEqual(resolveSidebarDrop(dropped(rows, 8, 0), 0, nested, nestedFolders), { kind: 'folder-order', order: ['General', 'Work', 'Work/Papers', 'Work/Code', 'Lab'] })
+  // Inside Work: before the other subfolder, or after it and its chats, which is the end of Work.
+  const swapped = { kind: 'folder-order', order: ['Work', 'Work/Code', 'Work/Papers', 'Lab', 'General'] }
+  assert.deepEqual(resolveSidebarDrop(dropped(rows, 4, 2), 2, nested, nestedFolders), swapped)
+  assert.deepEqual(resolveSidebarDrop(dropped(rows, 2, 5), 5, nested, nestedFolders), swapped)
+  // A folder dragged past the last folder at the top goes after it and all of its subfolders.
+  const lastHasSubfolders = ['Lab', 'General', 'Work', 'Work/Papers', 'Work/Code']
+  const lastRows = rowsOf(nested, lastHasSubfolders)
+  assert.deepEqual(resolveSidebarDrop(dropped(lastRows, 0, lastRows.length - 1), lastRows.length - 1, nested, lastHasSubfolders), { kind: 'folder-order', order: ['General', 'Work', 'Work/Papers', 'Work/Code', 'Lab'] })
+})
+
+test('a folder dropped outside its parent, or between the subfolders of another folder, stays where it was', () => {
+  const rows = rowsOf(nested, nestedFolders)
+  // Work/Papers under Lab, and above Work.
+  assert.equal(resolveSidebarDrop(dropped(rows, 2, 7), 7, nested, nestedFolders), null)
+  assert.equal(resolveSidebarDrop(dropped(rows, 2, 0), 0, nested, nestedFolders), null)
+  // Lab between Work/Papers and Work/Code.
+  assert.equal(resolveSidebarDrop(dropped(rows, 6, 4), 4, nested, nestedFolders), null)
+  // Work under its own subfolders: still before Lab.
+  assert.equal(resolveSidebarDrop(dropped(rows, 0, 5), 5, nested, nestedFolders), null)
+})
+
+test('a folder dragged past a collapsed folder keeps the subfolders that have no header in the order', () => {
+  const rows = rowsOf(nested, nestedFolders, ['Work'])
+  assert.deepEqual(names(rows), ['Work', 'Lab', 'l', 'General', 'g'])
+  const order = { kind: 'folder-order', order: ['Lab', 'Work', 'Work/Papers', 'Work/Code', 'General'] }
+  assert.deepEqual(resolveSidebarDrop(dropped(rows, 1, 0), 0, nested, nestedFolders), order)
+  assert.deepEqual(resolveSidebarDrop(dropped(rows, 0, 2), 2, nested, nestedFolders), order)
+})
+
+test('a chat dropped under the header of a subfolder moves to that subfolder', () => {
+  const rows = rowsOf(nested, nestedFolders)
+  assert.deepEqual(resolveSidebarDrop(dropped(rows, 9, 3), 3, nested, nestedFolders), { kind: 'reorder', sessionId: 'g', targetId: 'p', placement: 'before', targetFolder: 'Work/Papers' })
+  // Under a collapsed folder it goes to that folder, not to a subfolder the collapse hides.
+  const collapsed = rowsOf(nested, nestedFolders, ['Work'])
+  assert.deepEqual(resolveSidebarDrop(dropped(collapsed, 4, 1), 1, nested, nestedFolders), { kind: 'reorder', sessionId: 'g', targetId: 'w', placement: 'before', targetFolder: 'Work' })
+})
+
+test('folders holding only tabs are reordered among themselves in this device\'s own order', () => {
+  const sessions = [session('w', 'Work')]
+  // As the sidebar draws them: after the chat folders, in plain sort order.
+  const rows: SidebarDropRow[] = [...rowsOf(sessions, ['Work']), { kind: 'header', folder: 'Alpha' }, { kind: 'header', folder: 'Beta' }]
+  assert.deepEqual(resolveSidebarDrop(dropped(rows, 3, 2), 2, sessions, ['Work']), { kind: 'folder-order', order: ['Work', 'Beta', 'Alpha'] })
 })
 
 test('a standalone job run chat, archived or not, is listed only while it is open', () => {

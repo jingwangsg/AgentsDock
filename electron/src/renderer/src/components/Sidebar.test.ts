@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { Session } from '@shared/types'
+import type { Session, Surface } from '@shared/types'
 import { buildSections, reorderFolderList, resolveSidebarDrop, sidebarFolderAssignmentPatch, sidebarReorderAnalyticsEvent, SIDEBAR_LONG_PRESS } from './Sidebar'
 
 describe('gesture reorder activation', () => {
@@ -22,6 +22,14 @@ describe('buildSections folders', () => {
     expect(buildSections([loose], ['General', 'Work'], '').map(section => section.title)).toEqual(['General', 'Work'])
     expect(buildSections([], ['Work', 'General', 'Ideas'], '').map(section => section.title)).toEqual(['Work', 'General', 'Ideas'])
   })
+
+  it('lists a subfolder after its parent, also one that only a tab or only a deeper folder names', () => {
+    const paper = { id: 'paper', title: 'Paper', backend: 'codex', folder: 'Work/Papers/2026' } as Session
+    const tab = { id: 'tab', kind: 'terminal', folder: 'Lab/Shells' } as Surface
+    const sections = buildSections([paper], ['Lab', 'General', 'Work'], '', undefined, [tab])
+    expect(sections.map(section => section.title)).toEqual(['Lab', 'Lab/Shells', 'General', 'Work', 'Work/Papers', 'Work/Papers/2026'])
+    expect(sections.map(section => [section.sessions.length, section.surfaces.length])).toEqual([[0, 0], [0, 1], [0, 0], [0, 0], [0, 0], [1, 0]])
+  })
 })
 
 describe('folder ordering', () => {
@@ -39,6 +47,18 @@ describe('folder ordering', () => {
     const folders = ['Pinned work', 'Jobs', 'General']
     expect(reorderFolderList(folders, 'Jobs', 'Jobs', 'after')).toBe(folders)
     expect(reorderFolderList(folders, 'Missing', 'Jobs', 'before')).toBe(folders)
+  })
+
+  it('moves a folder with its subfolders past another folder and its subfolders', () => {
+    const folders = ['Work', 'Work/Papers', 'Work/Papers/2026', 'Lab', 'Lab/Runs', 'General']
+    expect(reorderFolderList(folders, 'Work', 'Lab', 'after')).toEqual(['Lab', 'Lab/Runs', 'Work', 'Work/Papers', 'Work/Papers/2026', 'General'])
+    expect(reorderFolderList(folders, 'General', 'Lab', 'before')).toEqual(['Work', 'Work/Papers', 'Work/Papers/2026', 'General', 'Lab', 'Lab/Runs'])
+  })
+
+  it('leaves the order alone when the two folders lie in different folders', () => {
+    const folders = ['Work', 'Work/Papers', 'Lab', 'Lab/Runs']
+    expect(reorderFolderList(folders, 'Work/Papers', 'Lab', 'before')).toBe(folders)
+    expect(reorderFolderList(folders, 'Work/Papers', 'Lab/Runs', 'after')).toBe(folders)
   })
 })
 
@@ -189,6 +209,17 @@ describe('sidebar drop resolution', () => {
       { id: 'folder:Jobs', placement: 'after' },
       ['General', 'Jobs', 'Hidden']
     )).toEqual({ kind: 'reorder-folder', order: ['Jobs', 'General', 'Hidden'] })
+  })
+
+  it('does nothing for a folder dropped beside a folder of another parent', () => {
+    expect(resolveSidebarDrop(
+      'folder:Work/Papers',
+      { type: 'folder' },
+      'folder:Lab',
+      { type: 'folder' },
+      { id: 'folder:Lab', placement: 'before' },
+      ['Work', 'Work/Papers', 'Lab']
+    )).toBeNull()
   })
 
   it('does nothing for canceled and self drops', () => {

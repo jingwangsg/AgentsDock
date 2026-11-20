@@ -1,8 +1,9 @@
+import { folderIsHidden, sidebarFolders } from '@shared/folders'
 import { fuzzyScore } from '@shared/fuzzy'
 import type { Session } from '@shared/types'
 
 // In shared/ because main sends this list to a server that has no shared folder order yet.
-export { sidebarFolders } from '@shared/folders'
+export { sidebarFolders }
 
 /**
  * Cheap preflight for a possible direct-create placeholder. Callers must also
@@ -115,10 +116,7 @@ export function rankMentionRows<T>(
 export function orderedActiveSessions(sessions: Session[], folderOrder: string[]): Session[] {
   const pinned = sessions.filter(session => session.pinned && !session.archived)
   const regular = sessions.filter(session => !session.pinned && !session.archived)
-  const folders = [...new Set(regular.map(session => session.folder?.trim() || 'General'))]
-  const order = new Map(folderOrder.map((folder, index) => [folder, index]))
-  folders.sort((a, b) => (order.get(a) ?? Number.MAX_SAFE_INTEGER) - (order.get(b) ?? Number.MAX_SAFE_INTEGER) || a.localeCompare(b))
-  return [...pinned, ...folders.flatMap(folder => regular.filter(session => (session.folder?.trim() || 'General') === folder))]
+  return [...pinned, ...sidebarFolders(sessions, folderOrder).flatMap(folder => regular.filter(session => (session.folder?.trim() || 'General') === folder))]
 }
 
 export interface DigestTargetSection {
@@ -153,5 +151,8 @@ export function digestTargetSections(
 }
 
 export function navigableSessions(sessions: Session[], folderOrder: string[], collapsedFolders: Set<string>): Session[] {
-  return orderedActiveSessions(sessions, folderOrder).filter(session => session.pinned || !collapsedFolders.has(session.folder?.trim() || 'General'))
+  return orderedActiveSessions(sessions, folderOrder).filter(session => {
+    const folder = session.folder?.trim() || 'General'
+    return session.pinned || !(collapsedFolders.has(folder) || folderIsHidden(folder, collapsedFolders))
+  })
 }

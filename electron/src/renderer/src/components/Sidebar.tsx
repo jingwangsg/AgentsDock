@@ -21,6 +21,7 @@ import { activeEmergencyAlert } from '../lib/emergency-alert'
 import { backendLabel, shortRelativeTime, workingDirectoryTail } from '../lib/format'
 import { openSessionHistoryResult } from '../lib/session-history-search'
 import { TEAM_NETWORK_UI_ENABLED } from '../lib/team-network-ui'
+import { folderIn, folderIsHidden, folderIsWithin, folderLeaf, folderParent, folderSegments, folderTree } from '@shared/folders'
 import { rankSessionsForSearch, sidebarFolders } from '../lib/sessions'
 import { surfaceSubline, surfaceTitle } from '../lib/surfaces'
 import { useTerminalStatus } from '../lib/terminal-status'
@@ -35,6 +36,8 @@ interface DropIndicator { id: string; placement: 'before' | 'after' | 'inside' }
 interface DragItemData { type: 'session' | 'folder'; label?: string; section?: string }
 
 export const SIDEBAR_LONG_PRESS = { delay: 280, tolerance: 6 } as const
+/** Pixels a folder and its rows are set in for each folder it lies in. */
+const SUBFOLDER_INDENT = 12
 
 export type SidebarDropOperation =
   | { kind: 'reorder-folder'; order: string[] }
@@ -201,6 +204,11 @@ export function Sidebar({ hidden = false }: { hidden?: boolean }) {
     const overId = activeData?.type === 'folder' && overData?.type === 'session' && overData.section?.startsWith('folder:')
       ? overData.section
       : String(event.over.id)
+    // A folder is reordered among the folders of its parent only; elsewhere the drop would change nothing.
+    if (activeData?.type === 'folder' && folderParent(overId.replace('folder:', '')) !== folderParent(String(event.active.id).replace('folder:', ''))) {
+      updateDrop(null)
+      return
+    }
     updateDrop({ id: overId, placement })
   }
   const onDragEnd = async (event: DragEndEvent) => {
@@ -264,20 +272,25 @@ export function Sidebar({ hidden = false }: { hidden?: boolean }) {
           while the pointer moves within a row, so the first and last slot of a folder are reachable. */}
       <DndContext collisionDetection={sidebarCollisionDetection} sensors={sensors} onDragStart={onDragStart} onDragMove={onDragOver} onDragOver={onDragOver} onDragEnd={onDragEnd} onDragCancel={finishDrag}>
         <div className="session-list" ref={sessionListRef} inert={switchingProfileId ? true : undefined} aria-busy={Boolean(switchingProfileId)} onScroll={event => rememberSidebarScroll(event.currentTarget.scrollTop)}>
-          {sections.map(section => (
-            <SidebarSection
+          {sections.map(section => {
+            // A collapsed folder hides its subfolders with its chats.
+            if (section.kind === 'folder' && folderIsHidden(section.title, collapsed)) return null
+            const sectionCollapsed = section.kind === 'archived' ? archivedCollapsed : section.kind === 'folder' && collapsed.has(section.title)
+            return <SidebarSection
               key={section.id}
               section={section}
               selectedId={selectedId}
               selectedSurfaceId={selectedSurfaceId}
               chatPanes={chatPanes}
-              collapsed={section.kind === 'archived' ? archivedCollapsed : section.kind === 'folder' && collapsed.has(section.title)}
+              collapsed={sectionCollapsed}
+              // The header of a collapsed folder also counts and marks the chats of the subfolders it hides.
+              covered={sectionCollapsed && section.kind === 'folder' ? sections.filter(other => other.kind === 'folder' && folderIsWithin(other.title, section.title)).flatMap(other => other.sessions) : section.sessions}
               drop={drop}
               suppressClick={suppressClick}
               folders={folders}
               isSidebarScrolling={isSidebarScrolling}
             />
-          ))}
+          })}
           {!sections.some(section => section.sessions.length || section.surfaces.length) && <div className="sidebar-empty">{t("ui.Sidebar.Sidebar.no_chats_found_14dbfb5")}</div>}
         </div>
         <DragOverlay dropAnimation={null}>{dragging && <div className="drag-overlay"><GripVertical size={13} />{dragging.label}</div>}</DragOverlay>
@@ -289,8 +302,8 @@ export function Sidebar({ hidden = false }: { hidden?: boolean }) {
   )
 }
 
-function SidebarSection({ section, selectedId, selectedSurfaceId, chatPanes, collapsed, drop, suppressClick, folders, isSidebarScrolling }: {
-  section: Section; selectedId: string | null; selectedSurfaceId: string | null; chatPanes: { primary: string | null; secondary: string | null }; collapsed: boolean; drop: DropIndicator | null; suppressClick: (id: string) => boolean
+function SidebarSection({ section, selectedId, selectedSurfaceId, chatPanes, collapsed, covered, drop, suppressClick, folders, isSidebarScrolling }: {
+  section: Section; selectedId: string | null; selectedSurfaceId: string | null; chatPanes: { primary: string | null; secondary: string | null }; collapsed: boolean; covered: Session[]; drop: DropIndicator | null; suppressClick: (id: string) => boolean
   folders: string[]; isSidebarScrolling: () => boolean
 }) {
   useLocale()
@@ -308,8 +321,8 @@ function SidebarSection({ section, selectedId, selectedSurfaceId, chatPanes, col
     else if (section.kind === 'folder') useAppStore.getState().toggleFolder(section.title)
   }
   return (
-    <section ref={droppable.setNodeRef} className={`sidebar-section ${boundaryIndicator}`}>
-      <FolderHeader section={section} collapsed={collapsed} drop={drop} onToggle={toggle} suppressClick={suppressClick} folders={folders} />
+    <section ref={droppable.setNodeRef} className={`sidebar-section ${boundaryIndicator}`} style={section.kind === 'folder' ? { paddingLeft: Math.max(0, folderSegments(section.title).length - 1) * SUBFOLDER_INDENT } : undefined}>
+      <FolderHeader section={section} collapsed={collapsed} covered={covered} drop={drop} onToggle={toggle} suppressClick={suppressClick} folders={folders} />
       {!collapsed && section.sessions.map(session => (
         <SessionRow key={session.id} session={session} selected={session.id === selectedId} visiblePane={splitOpen ? chatPanes.primary === session.id ? 'primary' : chatPanes.secondary === session.id ? 'secondary' : null : null} sectionId={section.id} dropIndicator={drop?.id === `session:${session.id}` ? `drop-${drop.placement}` : ''} suppressClick={suppressClick} folders={folders} isSidebarScrolling={isSidebarScrolling} />
       ))}
@@ -370,37 +383,40 @@ export function folderStatusKinds(sessions: Session[], activeSessionIds: Readonl
   return (['emergency', 'attention', 'running', 'unread'] as const).filter(kind => kinds.has(kind))
 }
 
-function FolderHeader({ section, collapsed, drop, onToggle, suppressClick, folders }: {
-  section: Section; collapsed: boolean; drop: DropIndicator | null; onToggle: () => void; suppressClick: (id: string) => boolean; folders: string[]
+function FolderHeader({ section, collapsed, covered, drop, onToggle, suppressClick, folders }: {
+  section: Section; collapsed: boolean; covered: Session[]; drop: DropIndicator | null; onToggle: () => void; suppressClick: (id: string) => boolean; folders: string[]
 }) {
   useLocale()
   const health = useAppStore(state => state.health)
   const runtimeCatalog = useAppStore(state => state.runtimeCatalog)
   const activeSessionIds = useAppStore(state => state.activeSessionIds)
-  const statusKinds = section.kind === 'search' ? [] : folderStatusKinds(section.sessions, activeSessionIds)
+  const statusKinds = section.kind === 'search' ? [] : folderStatusKinds(covered, activeSessionIds)
   const id = `folder:${section.title}`
-  const draggable = useDraggable({ id, disabled: section.kind !== 'folder', data: { type: 'folder', label: section.title } })
+  // A folder shows its own name; its place in the list shows the folders it lies in.
+  const label = section.kind === 'folder' ? folderLeaf(section.title) : section.title
+  const draggable = useDraggable({ id, disabled: section.kind !== 'folder', data: { type: 'folder', label } })
   const indicator = drop?.id === id && drop.placement === 'inside' ? 'drop-inside' : ''
   const header = (
     <div ref={draggable.setNodeRef} className={`section-header ${indicator} ${draggable.isDragging ? 'dragging' : ''}`}>
       <button onClick={() => { if (!suppressClick(id)) onToggle() }} {...draggable.listeners} {...draggable.attributes}>
         {section.kind !== 'search' && (collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />)}
         {section.kind === 'pinned' ? <Pin size={11} /> : section.kind === 'archived' ? <Archive size={11} /> : section.kind === 'search' ? <Search size={11} /> : <Folder size={11} />}
-        <span>{section.title}</span>
+        <span title={label === section.title ? undefined : section.title}>{label}</span>
         {statusKinds.map(kind => <span key={kind} className={`status-dot ${kind}`} aria-hidden="true" />)}
-        <small>{section.sessions.length}</small>
+        <small>{covered.length}</small>
       </button>
     </div>
   )
   if (section.kind !== 'folder') return header
-  // `folders` is the rendered order (folderOrder, then folders only chats know about), so a swap
-  // persists the full list and unlisted folders keep their place.
-  const position = folders.indexOf(section.title)
-  const swapWith = (neighbour: number) => {
-    const order = [...folders]
-    ;[order[position], order[neighbour]] = [order[neighbour], order[position]]
-    useAppStore.getState().setFolderOrder(order)
-  }
+  // `folders` is the rendered order (folderOrder, then folders only chats know about), so a move
+  // persists the full list and unlisted folders keep their place. A folder moves among the folders
+  // of its parent, with its subfolders.
+  const parent = folderParent(section.title)
+  const siblings = folders.filter(folder => folderParent(folder) === parent)
+  const position = siblings.indexOf(section.title)
+  const moveNextTo = (sibling: string, placement: 'before' | 'after') => useAppStore.getState().setFolderOrder(reorderFolderList(folders, section.title, sibling, placement))
+  const destinations = folders.filter(folder => folder !== parent && !folderIsWithin(folder, section.title))
+  const moveInto = (destination: string | null) => void useAppStore.getState().renameFolder(section.title, folderIn(destination, folderLeaf(section.title)))
   return (
     <ContextMenu.Root>
       <ContextMenu.Trigger asChild>{header}</ContextMenu.Trigger>
@@ -412,9 +428,14 @@ function FolderHeader({ section, collapsed, drop, onToggle, suppressClick, folde
           <MenuItem icon={SquareTerminal} label={t('ui.sidebar.newTerminal')} onSelect={() => void useAppStore.getState().createSurface('terminal', section.title)} />
           <MenuItem icon={Globe} label={t('ui.sidebar.newBrowser')} onSelect={() => void useAppStore.getState().createSurface('browser', section.title)} />
           <ContextMenu.Separator className="menu-separator" />
+          <MenuItem icon={FolderPlus} label={t('ui.sidebar.newSubfolder')} onSelect={() => window.dispatchEvent(new CustomEvent('agentsdock:new-folder', { detail: { parent: section.title } }))} />
           <MenuItem icon={Pencil} label={t('ui.sidebar.renameFolder')} onSelect={() => window.dispatchEvent(new CustomEvent('agentsdock:rename-folder', { detail: { folder: section.title } }))} />
-          {position > 0 && <MenuItem icon={ArrowUp} label={t('ui.sidebar.moveFolderUp')} onSelect={() => swapWith(position - 1)} />}
-          {position < folders.length - 1 && <MenuItem icon={ArrowDown} label={t('ui.sidebar.moveFolderDown')} onSelect={() => swapWith(position + 1)} />}
+          {(parent !== null || destinations.length > 0) && <ContextMenu.Sub><ContextMenu.SubTrigger className="menu-item"><Folder size={14} />{t('ui.sidebar.moveFolderTo')}<ChevronRight size={13} className="submenu-arrow" /></ContextMenu.SubTrigger><ContextMenu.Portal><ContextMenu.SubContent className="menu-content" sideOffset={3}>
+            {parent !== null && <ContextMenu.Item className="menu-item" onSelect={() => moveInto(null)}>{t('ui.sidebar.topLevel')}</ContextMenu.Item>}
+            {destinations.map(folder => <ContextMenu.Item className="menu-item" key={folder} onSelect={() => moveInto(folder)}>{folder}</ContextMenu.Item>)}
+          </ContextMenu.SubContent></ContextMenu.Portal></ContextMenu.Sub>}
+          {position > 0 && <MenuItem icon={ArrowUp} label={t('ui.sidebar.moveFolderUp')} onSelect={() => moveNextTo(siblings[position - 1], 'before')} />}
+          {position >= 0 && position < siblings.length - 1 && <MenuItem icon={ArrowDown} label={t('ui.sidebar.moveFolderDown')} onSelect={() => moveNextTo(siblings[position + 1], 'after')} />}
           <ContextMenu.Separator className="menu-separator" />
           <MenuItem icon={Trash2} label={t("ui.Sidebar.FolderHeader.delete_folder_0fac016")} danger onSelect={() => void useAppStore.getState().deleteFolder(section.title)} />
         </ContextMenu.Content>
@@ -564,11 +585,8 @@ export function buildSections(sessions: Session[], folderOrder: string[], query:
     const folder = session.folder?.trim() || 'General'
     byFolder.set(folder, [...(byFolder.get(folder) ?? []), session])
   }
-  const folders = sidebarFolders(filtered, folderOrder)
-  // A folder that only a terminal or browser tab lives in still gets listed, after the chat folders.
-  for (const folder of [...new Set(surfaces.map(surface => surface.folder))].sort()) {
-    if (!folders.includes(folder)) folders.push(folder)
-  }
+  // A folder that only a terminal or browser tab lives in still gets listed, after the chat folders of its parent.
+  const folders = folderTree([...sidebarFolders(filtered, folderOrder), ...[...new Set(surfaces.map(surface => surface.folder))].sort()])
   return [
     ...(pinned.length ? [{ id: 'pinned', title: t("ui.Sidebar.buildSections.pinned_f20c879"), sessions: pinned, surfaces: [], kind: 'pinned' as const }] : []),
     ...folders.map(folder => ({ id: `folder:${folder}`, title: folder, sessions: byFolder.get(folder) ?? [], surfaces: surfaces.filter(surface => surface.folder === folder), kind: 'folder' as const })),
@@ -619,12 +637,20 @@ function folderFromSection(section: string | undefined): string | null {
   return section.slice('folder:'.length).trim() || 'General'
 }
 
+/**
+ * `folders`, in display order, with `active` and its subfolders moved before or after `target` and its subfolders.
+ * Returns the same array when nothing moves: the two must lie in the same folder.
+ */
 export function reorderFolderList(folders: string[], active: string, target: string, placement: 'before' | 'after'): string[] {
-  if (active === target || !folders.includes(active) || !folders.includes(target)) return folders
-  const reordered = folders.filter(folder => folder !== active)
+  if (active === target || !folders.includes(active) || !folders.includes(target) || folderParent(active) !== folderParent(target)) return folders
+  const moving = folders.filter(folder => folderIsWithin(folder, active))
+  const reordered = folders.filter(folder => !folderIsWithin(folder, active))
   let index = reordered.indexOf(target)
-  if (placement === 'after') index += 1
-  reordered.splice(Math.max(0, index), 0, active)
+  if (placement === 'after') {
+    index += 1
+    while (index < reordered.length && folderIsWithin(reordered[index], target)) index += 1
+  }
+  reordered.splice(index, 0, ...moving)
   return reordered
 }
 
