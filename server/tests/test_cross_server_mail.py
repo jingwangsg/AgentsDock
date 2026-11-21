@@ -432,6 +432,55 @@ class RelayRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(remote.calls), 2)  # the first title and the late mail
 
 
+class SentMailBodyTests(unittest.IsolatedAsyncioTestCase):
+    """A message card keeps a preview; the whole body is read from the server the chat is on."""
+
+    async def test_the_sending_server_serves_the_whole_body_of_mail_it_sent_to_another_server(self) -> None:
+        db = ledger()
+        body = "line of a long handoff\n" * 400          # longer than a card's preview
+        xs.enqueue(db, mail(body=body))
+        xs.record_result(db, MESSAGE, "delivered")
+        xs.mark_read(db, MESSAGE, "2026-11-21T02:12:53Z")
+        undelivered = "handoff_" + "d" * 32
+        xs.enqueue(db, mail(id=undelivered, message_id=undelivered, idempotency_key="key-00002"))
+        xs.record_result(db, undelivered, "failed", error="This chat pair was removed.")
+        # The receipt this server sent for mail it read: an outbox row that is no message.
+        receipt = "read_" + "e" * 32
+        xs.enqueue(db, mail(id=receipt, message_id="handoff_" + "e" * 32, kind="read", body="",
+                            idempotency_key="key-00003"))
+
+        class CrossChat:
+            async def get(self, envelope_id: str):
+                return None                              # mail to another server is not among this server's envelopes
+
+            async def cross_server_call(self, name: str, *args, **kwargs):
+                return getattr(xs, name)(db, *args, **kwargs)
+
+        for name, value in (("CROSS_CHAT", CrossChat()), ("AGENT_TOKEN", TOKEN)):
+            patcher = patch.object(agent_server, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        http = httpx.AsyncClient(transport=httpx.ASGITransport(app=agent_server.app), base_url="http://server",
+                                 headers={"X-AgentsDock-Token": TOKEN})
+        self.addAsyncCleanup(http.aclose)
+
+        sent = await http.get(f"/api/cross-chat/handoffs/{MESSAGE}")
+        self.assertEqual(sent.status_code, 200, sent.text)
+        handoff = sent.json()["handoff"]
+        self.assertEqual((handoff["body"], handoff["body_chars"]), (body, len(body)))
+        self.assertEqual((handoff["id"], handoff["source_session_id"], handoff["target_session_id"]),
+                         (MESSAGE, "sess_hub", xs.sender_key("srv-remote", "sess_remote")))
+        self.assertEqual((handoff["status"], handoff["inbox_state"], handoff["error"]), ("stored", "read", None))
+
+        failed = (await http.get(f"/api/cross-chat/handoffs/{undelivered}")).json()["handoff"]
+        self.assertEqual((failed["status"], failed["inbox_state"], failed["error"]),
+                         ("failed", "unread", "This chat pair was removed."))
+
+        for unknown in (receipt, "handoff_" + "f" * 32):
+            missing = await http.get(f"/api/cross-chat/handoffs/{unknown}")
+            self.assertEqual((missing.status_code, missing.json()["detail"]), (404, "cross-chat handoff was not found"))
+
+
 class TwoHubOutboxTests(unittest.IsolatedAsyncioTestCase):
     """Two hubs attached one server: each hub's relay reads its outbox through the server's endpoints."""
 

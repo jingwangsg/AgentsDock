@@ -37,6 +37,34 @@ Remaining limitations or blocked acceptance: (a) A tab now loads from the server
 Availability: desktop 148 built locally.
 ```
 
+## 2026-11-21 — View message shows mail sent to a chat on another server (server)
+
+- Reported: on the card of a message an agent sent to a chat on another
+  server, View message answered `Could not load full message: cross-chat
+  handoff was not found`.
+- Cause. A card keeps the first 4,096 characters; View message reads the
+  whole body from the server (`GET /api/cross-chat/handoffs/{id}`). The
+  route looked only among the envelopes of mail between chats of one
+  server. Mail to a chat on another server is kept in the sending server's
+  outbox, with its whole body and also after delivery, so the route found
+  nothing. The receiving server stores the message as an ordinary envelope:
+  its card worked.
+- Change. For an id that is not among the envelopes, the route reads the
+  outbox. Only mail is answered; a read receipt or a title in the outbox is
+  no message. Mail that was not delivered is answered with the status
+  `failed` and its error.
+
+```text
+Change and expected user behavior: View message on the sender's card of mail to a chat on another server shows the whole message.
+Source commit / app build / server version: branch fix/desktop-tab-through-server; server 1.0.7-beta.11 plus the branch; no app change for this entry.
+Test surface: a unit test through the real route with the real outbox functions, with two mutation checks; an isolated server on a copy of a real ledger holding one chat, read over HTTP and through the built desktop app.
+Actions exercised and observed outcomes: (1) HTTP, a delivered and read message of 10,700 characters. Server before the change: 404 "cross-chat handoff was not found". After: 200, the body's length and SHA-256 equal the values in the card's event, inbox state read. (2) The built desktop app, View message pressed on that card. Server before the change: the card shows "Could not load full message: cross-chat handoff was not found". After, on the final tree: the button reads Show less, no error, the card's text grows from 676 to 8,325 characters. The isolated server started no run and delivered nothing.
+Real boundaries exercised; any mocked/stubbed boundaries: a real server process and the built desktop app. The chat was a copy without its provider thread; no second server was involved, the message had been delivered before the copy.
+Focused regression / typecheck / production build: tests/test_cross_server_mail.py, 30 tests; all 8 server shards, with the two timing failures named in the entry above.
+Remaining limitations or blocked acceptance: Cancel on an unread card of mail to another server still answers "not found": the outbox has no operation that takes a message back. A guest of a shared chat cannot read the whole message of any card; the route is not offered to guests. The change takes effect when the server of the sending chat restarts (a hub restart, or a redeploy for a chat on a remote); neither was done.
+Availability: server source only.
+```
+
 ## 2026-11-21 — Nested folders in the chat list (desktop 147, Android 90)
 
 - A folder can be in another folder. A folder's name is its path:
