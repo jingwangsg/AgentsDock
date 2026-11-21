@@ -1,5 +1,42 @@
 # Public development log
 
+## 2026-11-21 — Desktop browser tabs load every page through the server (desktop 148)
+
+- Reported: on a desktop whose server is on another network (a mirror of
+  another Mac's hub), a browser tab showed `Could not load
+  https://google.com/: ERR_SOCKS_CONNECTION_FAILED`.
+- Cause. A tab's connections go through a SOCKS proxy in the app. The proxy
+  sent a loopback address through the server and dialed every other host
+  from the Mac the app runs on, without the system's proxy settings. A host
+  that this Mac cannot reach itself failed, although the server reaches it.
+  The phone app has sent every host through the server since 2026-10-09.
+- Change. When the server takes a host for a tab's tunnel (capability
+  `browser_tunnel_hosts_v1`, a server with an access token), the desktop
+  sends every connection of a tab through the server, which resolves and
+  dials the host. A page then loads from the server's network, as on the
+  phone. `localhost` in a tab is the server's loopback, as before. With a
+  server without the capability nothing changes.
+- All connections of a tab to other hosts share one of the tab's 16
+  tunnels, so the ports a tab visits on other hosts are not limited to 16.
+- The app reads the capability once, when a tab is first prepared. A failed
+  health check, which clears the app's copy of the server's capabilities
+  until the next good one, does not switch an open tab back to dialing from
+  the Mac.
+- An upload that starts before the tunnel's connection to the server is
+  open is now held until it opens. Before, a connection that had sent more
+  than 4 MB by then was closed. This also applies to forwarded ports.
+
+```text
+Change and expected user behavior: a desktop browser tab loads a page of any host through the selected server, so a page the server reaches loads although the Mac is on another network; localhost in a tab is still the server's loopback.
+Source commit / app build / server version: branch fix/desktop-tab-through-server; desktop 148; no server change for this entry (the capability exists since 2026-10-09).
+Test surface: unit tests of the tab's proxy, the tunnel manager, the server client and the service's wiring, each with a mutation check; the built desktop app in a hidden window against an isolated server with an access token, driven with real pointer and key events (a tab opened from a folder's menu, the address typed, Enter).
+Actions exercised and observed outcomes: (1) Final build, server on the same Mac. A page on an address of the Mac that is not loopback: loaded; the server's log shows the tab's tunnel with that host and port. Build 147 loads the same page with no tunnel in the server's log. A page on the server's loopback (`http://localhost:<port>/`): loaded, tunnel without a host. A page that posts 8 MiB to the non-loopback address over plain HTTP: the page's server got 8,388,608 bytes. `https://www.google.com/`: title "Google"; the server's log shows the tab's tunnels to that host and to four other hosts of the page, all on port 443. (2) Another network, run on the branch before the review changes (one tunnel per tab, capability read once, held upload): a server on a remote machine reached through an ssh forward, a page on an address of that machine to which a connection from the Mac times out. Build 147: "Could not load …: ERR_SOCKS_CONNECTION_FAILED" after 10.2 s. Branch: loaded after 1.0 s, tunnel with the host in that server's log.
+Real boundaries exercised; any mocked/stubbed boundaries: real server processes, the built desktop app with its per-tab proxy and a real webview, real page servers, a public site. The app's window was hidden. No hub was between the app and the server.
+Focused regression / typecheck / production build: tsc; the production build; the full desktop suite, 5,574 tests; all 8 server shards. Two server tests that wait on a timer failed with four shards running at once; they pass alone, on this branch and on main. One desktop run under that load reported an unhandled EBADF from an upload test with every test passing; a second run did not.
+Remaining limitations or blocked acceptance: (a) A tab now loads from the server's network: a host that only the Mac reaches does not load in a tab; Open Externally opens it in the system browser. WebRTC media, which is UDP, does not go through the proxy. (b) The app cannot slow the server down. When a page reads a response slower than the server sends it, the app holds up to 128 MB per connection and then closes the connection. This was the rule for loopback pages and now applies to every page; it was not measured with a large media file. (c) The tab's proxy listens on the Mac's loopback without authentication, from the tab's first use until the tab is deleted or the profile changes, as before. Through it a process on the Mac now reaches every host the server's network reaches; before, the server's loopback only. (d) A server that gains the capability while a tab is open is used for that tab after the app restarts or the profile is selected again. (e) A tab with 16 loopback ports open has no tunnel left for other hosts. (f) Not checked through a hub to a remote in the real app; the hub passes the host to the remote, which the phone app uses.
+Availability: desktop 148 built locally.
+```
+
 ## 2026-11-21 — Nested folders in the chat list (desktop 147, Android 90)
 
 - A folder can be in another folder. A folder's name is its path:

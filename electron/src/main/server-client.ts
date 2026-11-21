@@ -2355,8 +2355,12 @@ export class AgentServerClient {
     }
   }
 
-  /** Opens one authenticated loopback proxy scoped to a chat or browser tab. */
-  portTunnelSocket(sessionId: string, remotePort: number): WebSocket {
+  /**
+   * Opens one authenticated proxy scoped to a chat or browser tab, to `remotePort` of the server's loopback. With
+   * `host`, to that port of `host`, which the server resolves and dials: for a browser tab only, on a server with
+   * browser_tunnel_hosts_v1.
+   */
+  portTunnelSocket(sessionId: string, remotePort: number, host?: string): WebSocket {
     const minimumPort = sessionId.startsWith('browser_') ? 1 : 1_024
     if (!Number.isSafeInteger(remotePort) || (remotePort < minimumPort && remotePort !== PORT_TUNNEL_SSH_PORT) || remotePort > 65_535) {
       throw new Error(`Remote port must be an integer from ${minimumPort} through 65535.`)
@@ -2366,6 +2370,7 @@ export class AgentServerClient {
       configuration,
       `/api/sessions/${encodeURIComponent(sessionId)}/ports/${remotePort}/tunnel/ws`
     ))
+    if (host !== undefined) endpoint.searchParams.set('host', host)
     endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:'
     const socket = new WebSocket(endpoint, [
       PORT_TUNNEL_SUBPROTOCOL,

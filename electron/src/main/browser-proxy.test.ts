@@ -34,6 +34,17 @@ class PageWebSocket extends EchoWebSocket {
   }
 }
 
+/** The server could not connect to the host: it closes the tunnel with 4502 right after the tunnel opened. */
+class UnreachableWebSocket extends EchoWebSocket {
+  constructor() {
+    super()
+    queueMicrotask(() => {
+      this.readyState = 3
+      this.dispatchEvent(Object.assign(new Event('close'), { code: 4502 }))
+    })
+  }
+}
+
 const proxies: BrowserProxy[] = []
 const sockets: Socket[] = []
 afterEach(() => {
@@ -41,19 +52,35 @@ afterEach(() => {
   for (const proxy of proxies.splice(0)) proxy.dispose()
 })
 
-async function connectProxy(createRemote: () => EventTarget = () => new EchoWebSocket()) {
+/** `allHosts`: whether the server takes a host for a browser tab's tunnel (browser_tunnel_hosts_v1). */
+async function connectProxy(createRemote: (host?: string) => EventTarget = () => new EchoWebSocket(), allHosts = false) {
   const proxy = new BrowserProxy()
   proxies.push(proxy)
   const ports: number[] = []
-  const config = await proxy.start('browser_test', port => {
+  const hosts: Array<string | undefined> = []
+  const config = await proxy.start('browser_test', (port, host) => {
     ports.push(port)
-    return createRemote() as unknown as WebSocket
-  })
+    hosts.push(host)
+    return createRemote(host) as unknown as WebSocket
+  }, allHosts)
   const port = Number(new URL(config.proxyRules).port)
-  const socket = createConnection(port, '127.0.0.1')
-  sockets.push(socket)
-  await once(socket, 'connect')
-  return { socket, ports, config, proxy }
+  const connect = async () => {
+    const socket = createConnection(port, '127.0.0.1')
+    sockets.push(socket)
+    await once(socket, 'connect')
+    return socket
+  }
+  return { socket: await connect(), connect, ports, hosts, config, proxy }
+}
+
+/** The SOCKS5 greeting and a CONNECT to `host` by name; resolves with the proxy's reply code. */
+async function socksConnect(socket: Socket, host: string, port: number): Promise<number> {
+  let response = once(socket, 'data')
+  socket.write(Buffer.from([5, 1, 0]))
+  await response
+  response = once(socket, 'data')
+  socket.write(Buffer.concat([Buffer.from([5, 1, 0, 3, host.length]), Buffer.from(host), Buffer.from([port >> 8, port & 255])]))
+  return (await response)[0][1]
 }
 
 describe('BrowserProxy', () => {
@@ -82,7 +109,59 @@ describe('BrowserProxy', () => {
     expect(config.proxyBypassRules).toBe('<-loopback>')
   })
 
-  it('keeps non-loopback traffic local instead of sending it to the server', async () => {
+  it('sends a connection to another host through the server, with the host on its remote socket, when the server takes a host', async () => {
+    const { socket, connect, ports, hosts } = await connectProxy(() => new EchoWebSocket(), true)
+    expect(await socksConnect(socket, 'intranet.example', 443)).toBe(0)
+    const echoed = once(socket, 'data')
+    socket.write('TLS client hello')
+    expect((await echoed)[0].toString()).toBe('TLS client hello')
+
+    // An address literal, and bytes that arrive in one packet with the request.
+    const second = await connect()
+    let response = once(second, 'data')
+    second.write(Buffer.from([5, 1, 0]))
+    await response
+    response = once(second, 'data')
+    second.write(Buffer.concat([Buffer.from([5, 1, 0, 1, 10, 1, 2, 3, 0, 80]), Buffer.from('early bytes')]))
+    const reply = (await response)[0]
+    expect(reply[1]).toBe(0)
+    const early = reply.length > 10 ? reply.subarray(10) : (await once(second, 'data'))[0]
+    expect(early.toString()).toBe('early bytes')
+
+    // The tab's localhost is still the server's loopback: no host on that remote socket.
+    const third = await connect()
+    expect(await socksConnect(third, 'localhost', 8080)).toBe(0)
+    const loopbackEcho = once(third, 'data')
+    third.write('to the loopback')
+    expect((await loopbackEcho)[0].toString()).toBe('to the loopback')
+    expect([ports, hosts]).toEqual([[443, 80, 8080], ['intranet.example', '10.1.2.3', undefined]])
+  })
+
+  it('takes connections to more ports of other hosts than the 16 tunnels a tab may have', async () => {
+    const { socket, connect, ports } = await connectProxy(() => new EchoWebSocket(), true)
+    for (let port = 8001; port <= 8017; port += 1) {
+      const next = port === 8001 ? socket : await connect()
+      expect(await socksConnect(next, 'intranet.example', port)).toBe(0)
+      const echoed = once(next, 'data')
+      next.write(`to port ${port}`)
+      expect((await echoed)[0].toString()).toBe(`to port ${port}`)
+    }
+    expect(ports).toEqual(Array.from({ length: 17 }, (_, index) => 8001 + index))
+  })
+
+  it('ends only the connection whose host the server could not reach', async () => {
+    const { socket, connect } = await connectProxy(host => host === 'down.example' ? new UnreachableWebSocket() : new EchoWebSocket(), true)
+    expect(await socksConnect(socket, 'up.example', 443)).toBe(0)
+    const down = await connect()
+    const closed = once(down, 'close')
+    expect(await socksConnect(down, 'down.example', 443)).toBe(0)
+    await closed
+    const echoed = once(socket, 'data')
+    socket.write('still open')
+    expect((await echoed)[0].toString()).toBe('still open')
+  })
+
+  it('dials another host from this Mac when the server takes no host for a tab\'s tunnel', async () => {
     const host = Object.values(networkInterfaces()).flat().find(address => address?.family === 'IPv4' && !address.internal)?.address
     if (!host) throw new Error('This network acceptance test needs a local IPv4 interface.')
     const server = createServer(socket => socket.pipe(socket))

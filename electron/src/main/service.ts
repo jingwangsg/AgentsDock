@@ -2968,16 +2968,19 @@ export class AppService {
       return partition
     }
     const proxy = new BrowserProxy()
+    // load-bearing: read once, here, where the scope has just passed its check. A failed health check clears
+    // this.health until the next good one; read per connection, a tab's pages would load from this Mac in between.
+    const allHosts = this.health?.capabilities?.browser_tunnel_hosts_v1?.available === true
     const ready = (async () => {
       const surfaces = await scope.client.surfaces()
       this.assertCurrentScope(scope)
       if (!surfaces.some(surface => surface.id === surfaceId && surface.kind === 'browser')) {
         throw new Error('Browser tab was not found on this server.')
       }
-      const config = await proxy.start(surfaceId, port => {
+      const config = await proxy.start(surfaceId, (port, host) => {
         this.assertCurrentScope(scope)
-        return scope.client.portTunnelSocket(surfaceId, port)
-      })
+        return scope.client.portTunnelSocket(surfaceId, port, host)
+      }, allHosts)
       this.assertCurrentScope(scope)
       const partition = `persist:agentsdock-browser-${encodeURIComponent(scope.profileId)}-${encodeURIComponent(scope.namespace)}-${surfaceId}`
       const browserSession = session.fromPartition(partition)

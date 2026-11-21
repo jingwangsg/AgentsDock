@@ -3505,6 +3505,20 @@ describe('AgentServerClient live stream', () => {
     client.dispose()
   })
 
+  it('names the host a browser tab\'s tunnel is for, and no host for the server\'s loopback', () => {
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const client = new AgentServerClient('https://example.test:7850', 'secret')
+    client.portTunnelSocket('browser_test', 443, 'intranet.example')
+    client.portTunnelSocket('browser_test', 443, '2001:db8::1')
+    client.portTunnelSocket('browser_test', 443)
+    expect(FakeWebSocket.instances.map(socket => socket.url.pathname + socket.url.search)).toEqual([
+      '/api/sessions/browser_test/ports/443/tunnel/ws?host=intranet.example',
+      '/api/sessions/browser_test/ports/443/tunnel/ws?host=2001%3Adb8%3A%3A1',
+      '/api/sessions/browser_test/ports/443/tunnel/ws'
+    ])
+    client.dispose()
+  })
+
   it('reconnects after an unmarked terminal error control packet and preserves its message', () => {
     vi.useFakeTimers()
     vi.spyOn(Math, 'random').mockReturnValue(0)
