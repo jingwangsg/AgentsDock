@@ -231,7 +231,19 @@ export class PortTunnelManager {
     })
   }
 
-  private acceptLocalSocket(tunnel: ManagedTunnel, localSocket: Socket): void {
+  /**
+   * Bridges `localSocket`, which the caller accepted itself, to the remote socket `createRemoteSocket` opens, as one
+   * more connection of the session's started tunnel to `remotePort`: it counts toward that tunnel's limits and
+   * closes with it. A browser tab's connection to a host other than the server's loopback comes this way; the
+   * tunnel's own listener takes connections for the server's loopback only.
+   */
+  bridge(sessionId: string, remotePort: number, localSocket: Socket, createRemoteSocket: () => WebSocket): void {
+    const tunnel = this.tunnels.get(tunnelKey(sessionId, remotePort))
+    if (!tunnel) throw new Error(`Remote port ${remotePort} is not forwarded for this chat.`)
+    this.acceptLocalSocket(tunnel, localSocket, createRemoteSocket)
+  }
+
+  private acceptLocalSocket(tunnel: ManagedTunnel, localSocket: Socket, createRemoteSocket = tunnel.createRemoteSocket): void {
     if (tunnel.closed || this.tunnels.get(tunnel.key) !== tunnel) {
       localSocket.destroy()
       return
@@ -262,7 +274,7 @@ export class PortTunnelManager {
     localSocket.once('close', () => tunnel.bridges.delete(bridge))
 
     try {
-      remoteSocket = tunnel.createRemoteSocket()
+      remoteSocket = createRemoteSocket()
     } catch (error) {
       this.markError(tunnel, `Remote port tunnel failed: ${errorText(error)}`)
       finish()
@@ -351,12 +363,10 @@ export class PortTunnelManager {
         return
       }
       pendingBytes += bytes.byteLength
-      if (pendingBytes > MAX_PENDING_BYTES) {
-        this.markError(tunnel, 'Port tunnel closed because too much data arrived before the remote connection was ready.')
-        finish()
-        return
-      }
       pending.push(Buffer.from(bytes))
+      // An upload must not outrun a remote socket that is still opening: nothing more is read until the held
+      // bytes are sent. This bounds what is held; before, a connection that had sent 4 MB by then was closed.
+      if (pendingBytes > WEBSOCKET_HIGH_WATER_BYTES) localSocket.pause()
     })
     localSocket.on('error', () => finish(false))
     localSocket.on('close', () => finish(false))
@@ -376,6 +386,8 @@ export class PortTunnelManager {
       this.markOpen(tunnel)
       for (const bytes of pending.splice(0)) sendRemote(bytes)
       pendingBytes = 0
+      // Reads again, at once or when the remote socket has taken the held bytes, if the socket was paused above.
+      checkRemoteBackpressure()
     })
     transport.addEventListener('message', event => {
       if (closed || !acceptedProtocol) return

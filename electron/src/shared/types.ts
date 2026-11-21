@@ -2004,6 +2004,8 @@ export interface HealthCapabilities {
   cross_server_mail_v1?: ServerCapability
   /** GET /api/sessions/{id} takes prefetch=true: a background read that starts nothing an open would. */
   session_prefetch_v1?: { available: boolean; version: number }
+  /** A browser tab's port tunnel takes a host (`?host=`): the server resolves and dials it instead of its loopback. */
+  browser_tunnel_hosts_v1?: { available: boolean }
   /** The shared folder order (GET/PUT `path`), pushed on the summary stream's `stream_protocol`. */
   folder_order_v1?: { available: boolean; version: number; path: string; stream_protocol: string }
   [key: string]: SideQuestionsCapability | ServerCapability | ServerRestartCapability | TeamHubV1Capability | TeamHubHostControlCapability | LocalSessionImportCapability | SessionForkCompletedPrefixCapability | SessionRewindCapability | AgentEmergencyAlertsCapability | TeamMailHintsCapability | TeamActivityHintsCapability | AgentTeamMailCapability | AgentTeamMessagesCapability | TeamBulletinAliasCapability | TeamAllServersAliasCapability | PinnedItemsCapability | RemoteServersCapability | JsonValue | undefined

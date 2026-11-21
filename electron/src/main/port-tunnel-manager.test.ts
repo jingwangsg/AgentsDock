@@ -99,6 +99,53 @@ describe('PortTunnelManager', () => {
     expect([...(await received)]).toEqual([9, 8, 0, 7])
   })
 
+  it('bridges a socket the caller accepted to the caller\'s own remote socket, as a connection of a started tunnel', async () => {
+    const manager = new PortTunnelManager(1)
+    managers.push(manager)
+    const listenerRemote = vi.fn()
+    await manager.start('browser_tab', 443, undefined, listenerRemote)
+    // `accepted` is what a caller such as a browser tab's SOCKS listener holds; `client` is its other end.
+    const server = createServer()
+    await new Promise<void>(resolve => server.listen(0, PORT_TUNNEL_LOOPBACK_HOST, resolve))
+    try {
+      const connection = new Promise<Socket>(resolve => server.once('connection', resolve))
+      const client = await openLocalConnection((server.address() as { port: number }).port)
+      const accepted = await connection
+      const remote = new FakeWebSocket()
+      manager.bridge('browser_tab', 443, accepted, () => remote as unknown as WebSocket)
+      client.write('to the host')
+      remote.open()
+      await eventually(() => remote.sent.length === 1)
+      expect(Buffer.from(remote.sent[0]).toString()).toBe('to the host')
+      const received = onceData(client)
+      remote.message(Buffer.from('from the host'))
+      expect((await received).toString()).toBe('from the host')
+      expect(listenerRemote).not.toHaveBeenCalled()
+
+      // It is a connection of that tunnel: it closes with the tunnel, and there is no bridge without one.
+      await manager.stop('browser_tab', 443)
+      await onceClosed(client)
+      expect(() => manager.bridge('browser_tab', 443, accepted, listenerRemote)).toThrow('is not forwarded for this chat')
+    } finally { server.close() }
+  })
+
+  it('holds an upload that outruns an opening remote socket instead of closing the connection', async () => {
+    const manager = new PortTunnelManager()
+    managers.push(manager)
+    const remote = new FakeWebSocket()
+    const forwarded = await manager.start('chat-a', 7007, undefined, () => remote as unknown as WebSocket)
+    const local = await openLocalConnection(forwarded.localPort)
+    await eventually(() => remote.listeners.has('open'))
+    // More than the 4 MB at which a connection that uploaded before its remote socket opened used to be closed.
+    const size = 6 * 1024 * 1024
+    local.write(Buffer.alloc(size))
+    // Let the upload reach the tunnel before the remote socket opens.
+    await new Promise(resolve => setTimeout(resolve, 100))
+    remote.open()
+    await eventually(() => remote.sent.reduce((total, chunk) => total + chunk.byteLength, 0) === size)
+    expect(manager.list()).toEqual([expect.objectContaining({ state: 'open', error: null })])
+  })
+
   it('uses an exact preferred port and keeps duplicate starts idempotent', async () => {
     const preferredPort = await reserveLoopbackPort()
 

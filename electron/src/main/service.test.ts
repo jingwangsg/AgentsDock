@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import type { AddressInfo } from 'node:net'
+import { once } from 'node:events'
+import { createConnection, type AddressInfo } from 'node:net'
 import { setTimeout as retryWait } from 'node:timers/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -143,6 +144,30 @@ describe('browser routing ownership', () => {
     const second = await service.prepareBrowser('browser_test')
     expect(first).not.toBe(second)
     expect(electronHarness.browserSession.setProxy).toHaveBeenCalledWith(expect.objectContaining({ proxyBypassRules: '<-loopback>' }))
+  })
+
+  it.each([
+    ['through the server when the server takes a host for a tab\'s tunnel', true, [['browser_test', 1, '0.0.0.0']]],
+    ['from this Mac when it takes none', false, []]
+  ])('dials a tab\'s connection to another host %s', async (_label, available, tunnels) => {
+    const a = Object.assign(fakeClient({
+      health: async () => ({ ok: true, server_identity: 'server-a', capabilities: { browser_tunnel_hosts_v1: { available } } })
+    }), { surfaces: vi.fn(async () => [{ id: 'browser_test', kind: 'browser' }]) })
+    const { service } = createProfileService({ 'http://a.test:7850': [a] })
+    await service.prepareBrowser('browser_test')
+    const [{ proxyRules }] = electronHarness.browserSession.setProxy.mock.calls.at(-1) as unknown as [{ proxyRules: string }]
+    const socket = createConnection(Number(new URL(proxyRules).port), '127.0.0.1')
+    cleanup.push(() => socket.destroy())
+    await once(socket, 'connect')
+    const greeted = once(socket, 'data')
+    socket.write(Buffer.from([5, 1, 0]))
+    await greeted
+    // SOCKS5 CONNECT to 0.0.0.0:1, where nothing listens. The proxy answers when the connection has joined the
+    // tab's tunnel, or closes when the dial from this Mac is refused.
+    const settled = Promise.race([once(socket, 'data'), once(socket, 'close')])
+    socket.write(Buffer.from([5, 1, 0, 1, 0, 0, 0, 0, 0, 1]))
+    await settled
+    expect(a.portTunnelSocket.mock.calls).toEqual(tunnels)
   })
 
   it('rejects a late setup result after switching servers', async () => {

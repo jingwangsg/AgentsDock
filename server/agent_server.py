@@ -99618,7 +99618,15 @@ async def post_agent_cross_chat_handoff(
 async def get_cross_chat_handoff(envelope_id: str) -> dict[str, Any]:
     record = await CROSS_CHAT.get(envelope_id)
     if record is None:
-        raise HTTPException(status_code=404, detail="cross-chat handoff was not found")
+        # Mail to a chat on another server is not among this server's envelopes: the outbox it left through
+        # keeps it, with its whole body.
+        item = await CROSS_CHAT.cross_server_call("outbox_item", envelope_id)
+        if item is None or item["kind"] != "mail":
+            raise HTTPException(status_code=404, detail="cross-chat handoff was not found")
+        record = cross_server_message_record(item)
+        if item["state"] == "failed":
+            record.update(status="failed", error=item["error"])
+        return {"handoff": public_cross_chat_envelope(record, include_body=True)}
     if record.get("delivery_mode") == "mailbox":
         snapshots = await CROSS_CHAT.mailbox_envelopes(message_id=envelope_id)
         if snapshots:
