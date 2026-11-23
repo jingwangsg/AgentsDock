@@ -143,6 +143,10 @@ function mockServer(route: (path: string) => { key: string; path: string } | nul
     if (request.method === 'POST' && target.path === '/api/admin/runtimes/codex/update') {
       return reply(200, { output: 'npm install\ncodex-cli 9.9.9', diagnostic: { available: true, version: '9.9.9' } })
     }
+    if (request.method === 'POST' && target.path === '/api/admin/runtimes/cursor/update') {
+      if (target.key !== 'r1') return reply(422, { detail: [{ msg: 'Input should be claude or codex' }] })
+      return reply(200, { output: 'Cursor updated on r1', diagnostic: { backend: 'cursor', version: '9.9.9' } })
+    }
     if (target.path === '/api/sessions') return reply(200, { sessions: [session(target.key)] })
     if (target.path === '/api/runtime/catalog') return catalogAvailable ? reply(200, { backends: {} }) : reply(503, { detail: 'catalog unavailable' })
     if (target.path === '/api/jobs') return reply(200, { jobs: [] })
@@ -291,6 +295,8 @@ try {
   assert.equal(staleHubInstanceAnswers, 0, 'the store must poll past the stopping process\'s answer')
   running.hub = []
   assert.equal(await useAppStore.getState().updateServerCli('hub', 'codex'), 'codex-cli 9.9.9')
+  assert.equal(await useAppStore.getState().updateServerCli('remote', 'cursor'), 'Cursor updated on r1')
+  await assert.rejects(useAppStore.getState().updateServerCli('hub', 'cursor'), /Update this AgentsServer/)
   identities.hub = 'server-replaced'
   await assert.rejects(useAppStore.getState().updateServerCli('hub', 'codex'), /different identity/)
   identities.hub = 'server-hub'

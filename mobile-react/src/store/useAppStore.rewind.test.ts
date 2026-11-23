@@ -19,7 +19,7 @@ const session = (id: string): Session => ({
   manual_unread: false,
 })
 const sessionA = session('chat-a')
-const sessionB = session('chat-b')
+const sessionB = { ...session('chat-b'), backend: 'cursor' as const }
 const event = (seq: number, type: string, extra: Partial<Event> = {}): Event => ({
   id: `event-${seq}`, seq, session_id: sessionA.id, type, ts: timestamp, ...extra,
 })
@@ -143,7 +143,7 @@ try {
   health = { ...health, active: [] }
   await useAppStore.getState().refreshSessions()
   assert.equal(scheduled.length, before + 3, 'a background chat leaving the active set notifies once')
-  assert.deepEqual(scheduled.at(-1), { title: sessionB.title, body: 'Response finished' })
+  assert.deepEqual(scheduled.at(-1), { title: sessionB.title, body: 'Cursor turn finished' })
   await useAppStore.getState().refreshSessions()
   assert.equal(scheduled.length, before + 3, 'an unchanged idle set does not notify again')
 

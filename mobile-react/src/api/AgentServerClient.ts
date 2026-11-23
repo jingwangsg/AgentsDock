@@ -2,6 +2,7 @@ import { File } from 'expo-file-system'
 
 import type {
   AgentFile,
+  Backend,
   BulkImportSessionItem,
   BulkImportSessionResult,
   LocalSessionCandidate,
@@ -374,8 +375,16 @@ export class AgentServerClient {
     }, 30_000, false, 'native-control')
   }
   /** The server stops the CLI after 10 minutes; a download can take several. */
-  updateRuntimeCli(backend: 'claude' | 'codex'): Promise<{ output: string; diagnostic: RuntimeDiagnostic }> {
-    return this.request(`/api/admin/runtimes/${backend}/update`, { method: 'POST' }, 11 * 60_000, false, 'native-control')
+  async updateRuntimeCli(backend: Backend): Promise<{ output: string; diagnostic: RuntimeDiagnostic }> {
+    try {
+      return await this.request(`/api/admin/runtimes/${backend}/update`, { method: 'POST' }, 11 * 60_000, false, 'native-control')
+    } catch (error) {
+      if (backend === 'cursor' && error instanceof ServerError
+        && (error.status === 422 || (error.status === 404 && error.detail === 'Not Found'))) {
+        throw new Error('Update this AgentsServer to enable Cursor CLI updates.')
+      }
+      throw error
+    }
   }
   serverUpdateStatus(): Promise<ServerUpdateStatus> { return this.get('/api/admin/update') }
   // Hub for SSH-only remote servers (see server/remote_servers.py): the
@@ -1348,7 +1357,12 @@ export class AgentServerClient {
    * backoff rules as stream(): a socket that is accepted and dropped must not
    * reconnect twice a second.
    */
-  sessionSummaryStream(handlers: { onSession: (session: Session) => void; onFolderOrder: (packet: PushedFolderOrder) => void; onOpen: () => void }): () => void {
+  sessionSummaryStream(handlers: {
+    onSession: (session: Session) => void
+    onFolderOrder: (packet: PushedFolderOrder) => void
+    onOpen: () => void
+    canConnect?: () => boolean
+  }): () => void {
     const scope = this.captureScope()
     if (!scope.configuration.sessionSummaryEvents) return () => undefined
     const endpoint = new URL(buildURL(scope.configuration.baseURL, '/api/session-summaries/events'))
@@ -1378,6 +1392,7 @@ export class AgentServerClient {
       clearConnectTimeout()
       const url = new URL(endpoint)
       const protocols = [SESSION_SUMMARY_STREAM_PROTOCOL_V2, SESSION_SUMMARY_STREAM_PROTOCOL]
+      if (handlers.canConnect && !handlers.canConnect()) return
       if (scope.configuration.websocketSubprotocolAuth && token) {
         protocols.push(`agentsdock-token.${base64(token).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}`)
       } else if (token) url.searchParams.set('token', token)

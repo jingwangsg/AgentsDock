@@ -121,6 +121,17 @@ try {
     title: 'New chat', folder: 'Empty', cwd: '/work/research', backend: 'claude', model: 'claude-sonnet', effort: 'high',
   }, 'an empty folder falls back to the open chat location and keeps same-backend defaults')
 
+  resetCreation({ chatDefaults: { ...defaults, backend: 'cursor' } })
+  assert.equal(await useAppStore.getState().quickCreateSession(0), false)
+  assert.match(useAppStore.getState().error ?? '', /newer AgentsServer/)
+  assert.equal(requests.length, 0, 'an unavailable Cursor default cannot start a different provider')
+  resetCreation({
+    health: { ok: true, capabilities: { cursor_backend: { available: true, version: 2 } } },
+    runtime: { backends: { cursor: { available: true, models: [{ value: 'auto', label: 'Auto' }], efforts: [] } } },
+  })
+  assert.equal(await useAppStore.getState().quickCreateSession(0, { folder: 'Research', backend: 'cursor' }), true)
+  assert.deepEqual(requests[0], { title: 'New chat', folder: 'Research', cwd: '/work/research', backend: 'cursor', model: '', effort: '' })
+
   resetCreation()
   const createGate = deferred<Session>()
   const selectionGate = deferred<void>()

@@ -85,7 +85,7 @@ import { publishSideChatChanged } from '../lib/side-chat'
 import { reconcileTeamReferences, requireTeamReferenceSupport, restoreFailedTeamReferences, teamMessagesAvailable, teamReferenceContractSupported, teamReferencesEqual, teamReferenceTokenPresent, validTeamReferences } from '../lib/team-references'
 import { BUILT_IN_HUB_TOKEN, DEFAULT_SERVER_URL, localHubAlive } from '../lib/server-setup'
 import { serverSearchQuery } from '../lib/server-search'
-import { readyChatBackends, runtimeSelectionError } from '../lib/runtime-catalog'
+import { runtimeSelectionError } from '../lib/runtime-catalog'
 import { clearCodeReviewFallbacks } from '../lib/code-review'
 import { SessionMutationReconciler, type SessionReadToken } from '../lib/session-mutation-reconciler'
 import { APP_FONT_SCALE_DEFAULT, clampAppFontScale } from '../lib/typography'
@@ -876,7 +876,7 @@ interface AppState {
    */
   updateAndRedeployAll(force: boolean, onProgress: (entry: RemoteServerDeployLogEntry) => void): Promise<{ running: Array<ServerRunningChats & { name: string }>; failures: string | null }>
   /** Server list "Update CLI" on any saved server; resolves with the CLI's last output line. */
-  updateServerCli(profileId: string, backend: 'claude' | 'codex'): Promise<string>
+  updateServerCli(profileId: string, backend: Backend): Promise<string>
   updateServerProfile(profileId: string, patch: UpdateServerProfileInput): Promise<void>
   removeServerProfile(profileId: string): Promise<void>
   reorderServerProfiles(profileIds: string[]): Promise<void>
@@ -3418,9 +3418,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     // chat supplies the working directory.
     const folderSeed = preset ? newestChatInFolder(state.sessions, preset.folder) : undefined
     const defaultCwd = state.health?.default_cwd?.trim() || ''
-    const backends = readyChatBackends(state.health, state.runtime)
-    const backend: Backend = preset && backends.includes(preset.backend) ? preset.backend
-      : backends.includes(state.chatDefaults.backend) ? state.chatDefaults.backend : (backends[0] ?? 'codex')
+    const backend = preset?.backend ?? state.chatDefaults.backend
     let model = state.chatDefaults.model
     let effort = state.chatDefaults.effort
     // The stored model/effort belong to the stored backend.
@@ -5635,7 +5633,12 @@ function installAppLifecycle(
       cancelSyncRecovery(set)
       stopForegroundRefreshTimer()
       stopSelectedStream()
-      stopSessionSummaryStream()
+      const state = get()
+      if (activeConnection.client.isValidated && !usesSecondAddress(activeConnection)
+        && state.health?.capabilities?.session_summary_events_v1?.available) {
+        backgroundTurnIds = new Set([...state.activeSessionIds, ...state.sendingSessionIds])
+      }
+      if (!backgroundTurnIds.size) stopSessionSummaryStream()
       if (readReceiptTimer) clearTimeout(readReceiptTimer)
       readReceiptTimer = null
       set(state => ({
@@ -5959,6 +5962,8 @@ function scheduleReadReceipt(scope: ConnectionScope, sessionId: string, get: () 
 }
 
 let summaryStreamStop: (() => void) | null = null
+// Keep only the summaries for turns already underway when the app leaves the screen.
+let backgroundTurnIds = new Set<string>()
 
 /**
  * Chats without an open timeline learn turn boundaries and provider questions
@@ -5973,17 +5978,21 @@ function startSessionSummaryStream(): void {
   const scope = captureConnection()
   let opened = false
   summaryStreamStop = scope.client.sessionSummaryStream({
+    canConnect: () => NativeAppState.currentState === 'active',
     onOpen: () => {
       // A reconnect may have missed rows: one list refresh reconciles them.
       if (opened && connectionIsCurrent(scope) && get().connected) void get().refreshSessions()
       opened = true
     },
     onSession: incoming => applyPushedSessionSummary(scope, incoming),
-    onFolderOrder: pushed => { if (pushed.server_identity === get().health?.server_identity) adoptFolderOrder(scope, pushed) },
+    onFolderOrder: pushed => {
+      if (NativeAppState.currentState === 'active' && pushed.server_identity === get().health?.server_identity) adoptFolderOrder(scope, pushed)
+    },
   })
 }
 
 function stopSessionSummaryStream(): void {
+  backgroundTurnIds.clear()
   const stop = summaryStreamStop
   summaryStreamStop = null
   stop?.()
@@ -5991,10 +6000,14 @@ function stopSessionSummaryStream(): void {
 
 function applyPushedSessionSummary(scope: ConnectionScope, incoming: Session): void {
   const get = useAppStore.getState
-  if (!connectionIsCurrent(scope) || !get().connected || NativeAppState.currentState !== 'active') return
+  if (!connectionIsCurrent(scope) || !get().connected || !scope.client.isValidated) return
   const before = get().sessions.find(session => session.id === incoming.id)
-  const sessionRead = sessionMutations.captureRead()
   const terminal = incoming.latest_agent_event_type === 'turn_finished' || incoming.latest_agent_event_type === 'turn_stopped'
+  const newTerminal = terminal && incoming.latest_event_type !== 'turn_started'
+    && (incoming.latest_agent_event_seq ?? 0) > (before?.latest_agent_event_seq ?? 0)
+  const background = NativeAppState.currentState !== 'active'
+  if (background && (!backgroundTurnIds.has(incoming.id) || !newTerminal)) return
+  const sessionRead = sessionMutations.captureRead()
   let changed = false
   useAppStore.setState(state => {
     const sessions = before
@@ -6011,11 +6024,14 @@ function applyPushedSessionSummary(scope: ConnectionScope, incoming: Session): v
     return { sessions, activeSessionIds, profiles: updateProfileRuntime(state.profiles, scope.profileId, { cachedUnreadCount: unreadCount(sessions) }) }
   })
   if (!changed) return
-  // The chat on screen shows its reply; it notifies only from its own stream, in the background.
+  // When the app is in the background, even the selected chat is off screen.
   const after = get().sessions.find(session => session.id === incoming.id)
-  if (after && terminal && incoming.id !== get().onScreenSessionId
-    && (incoming.latest_agent_event_seq ?? 0) > (before?.latest_agent_event_seq ?? 0)) {
+  if (after && newTerminal && (background || incoming.id !== get().onScreenSessionId)) {
     void notifyOnce(scope, after, `poll:${after.latest_event_seq ?? 0}`)
+  }
+  if (background) {
+    backgroundTurnIds.delete(incoming.id)
+    if (!backgroundTurnIds.size) stopSessionSummaryStream()
   }
   void saveCachedSessions(scope.namespace, get().sessions)
   void updateBadge(get())
@@ -6403,6 +6419,13 @@ async function notifyOnce(scope: ConnectionScope, session: Session, turnKey: str
   notifiedEvents.add(key)
   if (notifiedEvents.size > 200) notifiedEvents.delete(notifiedEvents.values().next().value ?? '')
   try {
-    await Notifications.scheduleNotificationAsync({ content: { title: session.title, body: 'Response finished', data: { profileId: scope.profileId, serverIdentity: scope.namespace, sessionId: session.id } }, trigger: null })
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: session.title,
+        body: session.backend === 'cursor' ? 'Cursor turn finished' : 'Response finished',
+        data: { profileId: scope.profileId, serverIdentity: scope.namespace, sessionId: session.id },
+      },
+      trigger: null,
+    })
   } catch { /* permissions can be denied */ }
 }

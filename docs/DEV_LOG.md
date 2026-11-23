@@ -1,5 +1,17 @@
 # Public development log
 
+## 2026-11-23 — Hub sign-in for managed agents and Cursor on desktop and mobile
+
+- A hub deployment enrolls the SSH remote for Codex and Cursor sign-in. The remote runs each turn in its own workspace with a provider access token issued through the hub. The hub retains the refresh credential.
+- The Mac and Android server menus support updating Cursor alongside Claude Code and Codex. New Chat uses the selected server's runtime catalog. Cursor turn notifications open the originating chat and server.
+- Verified real Codex and Cursor replies in the desktop app through an isolated hub, SSH tunnel and remote server. The local installation packages are desktop build 149 and Android sideload build 91.
+
+## 2026-11-23 — Cursor remembers the first chat after a fresh CLI login
+
+- AgentsServer now creates Cursor's native `chats/` directory before linking it into a temporary tool profile. Previously, the CLI could save a new user's first turn inside that profile and lose it during cleanup.
+- Verified with Electron, an isolated AgentsServer and Cursor CLI `2026.11.22-e9042b2`. A second turn recalled a random value supplied in the first, and both completed with the same native Cursor session ID. The focused server suites passed 101 tests and the server package built locally.
+- Availability is server source. Other hosts receive the fix with an AgentsServer update.
+
 ## 2026-11-21 — Desktop browser tabs load every page through the server (desktop 148)
 
 - Reported: on a desktop whose server is on another network (a mirror of

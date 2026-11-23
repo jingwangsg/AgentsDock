@@ -42,7 +42,7 @@ test('pushed chat rows reach the list, the running set and the turn-end notifica
   assert.match(store, /sessionMutations\.reconcileIncoming\(value, incoming, sessionRead\)/)
   assert.match(store, /activeSessionIds\.delete\(incoming\.id\)/)
   assert.match(store, /incoming\.id !== get\(\)\.onScreenSessionId[\s\S]{0,200}notifyOnce\(scope, after, `poll:/)
-  // The stream follows the foreground connection: started with the refresh timer, stopped on background.
+  // The foreground starts a fresh stream. Home closes it when there is no active turn to notify.
   assert.match(store, /startForegroundRefreshTimer\(get, set\)\n    startSessionSummaryStream\(\)/)
-  assert.match(store, /stopSelectedStream\(\)\n      stopSessionSummaryStream\(\)/)
+  assert.match(store, /if \(!backgroundTurnIds\.size\) stopSessionSummaryStream\(\)/)
 })

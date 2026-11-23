@@ -35,7 +35,7 @@ import {
 } from '../lib/server-profile-ui'
 import { hubProxyBaseURL, hubProxyRemoteId } from '../lib/server-profiles'
 import { errorMessage, normalizeServerURL } from '../lib/format'
-import type { ServerRunningChats } from '../types'
+import type { Backend, ServerRunningChats } from '../types'
 import { usePalette } from '../theme'
 import { Text, TextInput } from './AppText'
 import { ModalSafeArea } from './ModalSafeArea'
@@ -53,6 +53,7 @@ export type {
 type Awaitable<T> = T | Promise<T>
 type ActionResult = boolean | void
 type CreatedProfile = string | Pick<ServerProfileListItem, 'id'>
+const cliNames: Record<Backend, string> = { claude: 'Claude Code', codex: 'Codex', cursor: 'Cursor' }
 
 interface CommonServerProfileProps {
   profiles: readonly ServerProfileListItem[]
@@ -87,7 +88,7 @@ export interface ServerProfilesManagerProps extends CommonServerProfileProps {
   onSetRemoteHidden: (profileId: string, hidden: boolean) => Promise<void>
   /** Edit with a new name: the hub keeps it, so every device shows the same name for the remote. */
   onRenameRemote: (profileId: string, name: string) => Promise<void>
-  onUpdateCli: (profileId: string, backend: 'claude' | 'codex') => Promise<string>
+  onUpdateCli: (profileId: string, backend: Backend) => Promise<string>
   /** Settings → Servers "Update & redeploy all" on the hub, as on the desktop; resolves to the servers with running chats when `force` is false and some have any. */
   onUpdateAll?: (force: boolean, onProgress: (entry: RemoteDeployProgressEntry) => void) => Promise<{ running: Array<ServerRunningChats & { name: string }>; failures: string | null }>
 }
@@ -476,8 +477,8 @@ export function ServerProfilesManager({
     }
   }
 
-  const updateCli = async (profile: ServerProfileListItem, backend: 'claude' | 'codex') => {
-    noteRow(profile.id, { kind: 'cli', working: true, text: `Updating ${backend === 'claude' ? 'Claude Code' : 'Codex'}…` })
+  const updateCli = async (profile: ServerProfileListItem, backend: Backend) => {
+    noteRow(profile.id, { kind: 'cli', working: true, text: `Updating ${cliNames[backend]}…` })
     try {
       noteRow(profile.id, { kind: 'cli', text: await onUpdateCli(profile.id, backend) })
     } catch (error) {
@@ -496,9 +497,10 @@ export function ServerProfilesManager({
   }
 
   const chooseCli = (profile: ServerProfileListItem) => Alert.alert(`Update a CLI on ${profile.name}`, undefined, [
-    { text: 'Claude Code', onPress: () => { void updateCli(profile, 'claude') } },
-    { text: 'Codex', onPress: () => { void updateCli(profile, 'codex') } },
-    { text: 'Cancel', style: 'cancel' },
+    ...IOS_ONLY_CANCEL,
+    { text: cliNames.claude, onPress: () => { void updateCli(profile, 'claude') } },
+    { text: cliNames.codex, onPress: () => { void updateCli(profile, 'codex') } },
+    { text: cliNames.cursor, onPress: () => { void updateCli(profile, 'cursor') } },
   ], { cancelable: true })
 
   const confirmRemove = (profile: ServerProfileListItem) => {
@@ -570,7 +572,7 @@ export function ServerProfilesManager({
       {hubAvailable ? <SecondaryButton icon={Plus} label="Add server" disabled={Boolean(busy) || deployBusy || Boolean(updateAll?.working)} onPress={openDeploy} /> : null}
     </View>
     {hubAvailable && onUpdateAll ? <View style={styles.updateAll}>
-      <SecondaryButton icon={RotateCw} label="Update & redeploy all" accessibilityLabel="Redeploy every remote server from the hub, update Claude Code and Codex on all of them, then restart the hub" busy={Boolean(updateAll?.working)} disabled={Boolean(busy) || deployBusy || redeploying || Boolean(updateAll?.working)} onPress={() => { void runUpdateAll(false) }} />
+      <SecondaryButton icon={RotateCw} label="Update & redeploy all" accessibilityLabel="Redeploy every remote server from the hub, update Claude Code, Codex and Cursor on all of them, then restart the hub" busy={Boolean(updateAll?.working)} disabled={Boolean(busy) || deployBusy || redeploying || Boolean(updateAll?.working)} onPress={() => { void runUpdateAll(false) }} />
       {updateAll ? <Text accessibilityRole={updateAll.failed ? 'alert' : undefined} style={[styles.help, { color: updateAll.failed ? colors.red : colors.muted }]}>{updateAll.text}</Text> : null}
       {updateAllLog.length ? <View style={styles.deployLog}>
         {updateAllLog.map((entry, index) => <Text key={`${entry.phase}-${index}`} style={[styles.deployLogLine, { color: colors.muted }]} numberOfLines={2}>{entry.message}</Text>)}

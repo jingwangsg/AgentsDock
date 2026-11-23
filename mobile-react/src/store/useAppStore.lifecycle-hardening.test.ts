@@ -182,6 +182,7 @@ try {
         server_identity: 'server-lifecycle',
         server_version: 'test-lifecycle',
         api_contract_version: 9,
+        capabilities: { session_summary_events_v1: { available: true } },
         active_sessions: [],
       })
     }
@@ -235,7 +236,7 @@ try {
 
   appState.__emitAppState('active')
   await waitFor(
-    () => FakeWebSocket.instances.length === 1
+    () => FakeWebSocket.instances.some(ws => ws.url.includes('/sessions/chat-1/events'))
       && requests.filter(request => request.pathname === `/api/sessions/${session.id}`).length === 1
       && requests.filter(request => request.pathname === `/api/sessions/${session.id}/files`).length === 1,
     'foreground reconciliation did not reach one timeline, files, and stream request',
@@ -249,14 +250,15 @@ try {
   assert.equal(requests.filter(request => request.pathname === '/api/jobs').length, 1)
   assert.equal(requests.filter(request => request.pathname === `/api/sessions/${session.id}`).length, 1)
   assert.equal(requests.filter(request => request.pathname === `/api/sessions/${session.id}/files`).length, 1)
-  assert.equal(FakeWebSocket.instances.length, 1, 'foreground recovery must create one selected-session stream')
+  const timelineSockets = () => FakeWebSocket.instances.filter(ws => ws.url.includes('/sessions/chat-1/events'))
+  assert.equal(timelineSockets().length, 1, 'foreground recovery must create one selected-session stream')
   assert.equal(
     requests.filter(request => request.pathname === `/api/sessions/${session.id}/read`).length,
     0,
     'an already-read session must not send a redundant read receipt during reconciliation',
   )
 
-  const socket = FakeWebSocket.instances[0]
+  const socket = timelineSockets()[0]
   const sessionsBeforeTrace = useAppStore.getState().sessions
   const profilesBeforeTrace = useAppStore.getState().profiles
   socket.emitMessage({
@@ -333,11 +335,11 @@ try {
   serverNewEvents = [{ seq: 8, id: 'event-8', session_id: session.id, type: 'assistant_message', ts: timestamp, text: 'Written while away' }]
   const timelineRequestsBeforeReturn = requestCount(timelinePath)
   const chatListRequestsBeforeReturn = requestCount('/api/sessions')
-  const streamsBeforeReturn = FakeWebSocket.instances.length
+  const streamsBeforeReturn = timelineSockets().length
   const foregroundHealthResponse = deferred<Response>()
   heldHealth = foregroundHealthResponse.promise
   appState.__emitAppState('active')
-  await waitFor(() => FakeWebSocket.instances.length === streamsBeforeReturn + 1, 'the open chat must catch up before the server health arrives')
+  await waitFor(() => timelineSockets().length === streamsBeforeReturn + 1, 'the open chat must catch up before the server health arrives')
   assert.equal(useAppStore.getState().snapshots[session.id]?.events.at(-1)?.id, 'event-8')
   assert.equal(requestCount(timelinePath), timelineRequestsBeforeReturn + 1, 'the catch-up is one read from the cached cursor')
   assert.equal(requestCount('/api/sessions'), chatListRequestsBeforeReturn, 'the chat list still waits for the health')
@@ -349,6 +351,7 @@ try {
     server_identity: 'server-lifecycle',
     server_version: 'test-lifecycle',
     api_contract_version: 9,
+    capabilities: { session_summary_events_v1: { available: true } },
     active_sessions: [],
   }))
   await waitFor(() => requestCount(readReceiptPath) === 1, 'the read receipt must follow the chat list')
@@ -357,6 +360,25 @@ try {
   assert.equal(requestCount('/api/sessions'), chatListRequestsBeforeReturn + 1)
   assert.equal(requestCount(timelinePath), timelineRequestsBeforeReturn + 1, 'the chat list arriving afterwards must not read the timeline again')
   assert.equal(useAppStore.getState().sessions.find(value => value.id === session.id)?.last_read_agent_event_seq, 8, 'the open chat ends read')
+
+  const summaries = FakeWebSocket.instances.filter(ws => ws.url.includes('/session-summaries/events')).at(-1)!
+  const running = { ...serverSession, backend: 'cursor', latest_event_type: 'turn_started', latest_event_seq: 9 }
+  summaries.emitMessage({ type: 'session_summary', session: running })
+  assert.ok(useAppStore.getState().activeSessionIds.has(session.id))
+  useAppStore.setState({ onScreenSessionId: session.id })
+  appState.__emitAppState('background')
+  assert.equal(timelineSockets().at(-1)?.readyState, FakeWebSocket.CLOSED)
+  assert.notEqual(summaries.readyState, FakeWebSocket.CLOSED, 'Home keeps the running chat’s summary subscription')
+  const notices = (Notifications as typeof Notifications & { __scheduledNotifications(): { body?: string }[] }).__scheduledNotifications()
+  const prior = notices.length
+  const finished = { ...running, latest_event_type: 'turn_finished', latest_agent_event_type: 'turn_finished', latest_event_seq: 10, latest_agent_event_seq: 10 }
+  summaries.emitMessage({ type: 'session_summary', session: { ...finished, id: 'unrelated' } })
+  assert.equal(notices.length, prior)
+  summaries.emitMessage({ type: 'session_summary', session: finished })
+  summaries.emitMessage({ type: 'session_summary', session: finished })
+  assert.equal(notices.length, prior + 1)
+  assert.equal(notices.at(-1)?.body, 'Cursor turn finished')
+  assert.equal(summaries.readyState, FakeWebSocket.CLOSED, 'the final notice closes the summary subscription')
 
   console.log('store lifecycle, runtime invalidation, passive trace, and read-receipt regressions passed')
 } finally {
