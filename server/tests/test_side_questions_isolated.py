@@ -588,7 +588,7 @@ class ServerCallbackTests(unittest.IsolatedAsyncioTestCase):
             codex_provider=codex_provider,
             CODEX_PROVIDER_STORE=SimpleNamespace(revision=lambda: None, for_session=lambda *args, **kwargs: None,
                 require_thread=lambda *args: None),
-            DEFAULT_BACKEND="claude", BACKEND_CLAUDE="claude", BACKEND_CODEX="codex",
+            DEFAULT_BACKEND="claude", BACKEND_CLAUDE="claude", BACKEND_CODEX="codex", HUB_PROVIDER_INSTALL=None,
             CLAUDE_BIN="synthetic-claude", CODEX_BIN="synthetic-codex", DEFAULT_CWD=str(root),
             ACTIVE=self.parent_active, QUEUED_TURNS=self.parent_queue,
             session_codex_thread_id=lambda session: session.get("codex_thread_id"),

@@ -76,7 +76,7 @@ class BinaryRefreshTests(unittest.IsolatedAsyncioTestCase):
             "CODEX_APP_SERVER_MANAGER": None, "CODEX_CUSTOM_APP_SERVER_MANAGERS": {},
             "CODEX_RETIRED_APP_SERVER_MANAGERS": [], "CODEX_SESSION_APP_SERVER_MANAGERS": {},
             "CODEX_BINARY_IDENTITY": None, "CODEX_BINARY_CHECKED_AT": 0,
-            "CODEX_LOGIN_REVISION": None,
+            "CODEX_LOGIN_REVISION": None, "HUB_PROVIDER_INSTALL": None,
             "codex_auth": SimpleNamespace(native_login_revision=lambda *_args, **_kwargs: None,
                 native_login_handoff_supported=lambda *_args, **_kwargs: True,
                 HANDOFF_MESSAGE=codex_auth.HANDOFF_MESSAGE),

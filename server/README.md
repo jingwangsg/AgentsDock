@@ -90,6 +90,8 @@ An `aws@<sky-cluster>` host is reached through the AWS SSM ProxyCommand of the c
 
 A long-lived Claude token (from `claude setup-token`) in the hub's `CLAUDE_CODE_OAUTH_TOKEN` authenticates the hub's own Claude chats and is written into every remote install's env under the same name whenever the hub deploys it. It travels at the head of the bootstrap script on ssh stdin, never in argv or logs; a new or changed token restarts that server. A shared token avoids the logouts that OAuth refresh rotation causes when several hosts share one home.
 
+After the hub next deploys a managed remote, ordinary Codex and Cursor chats use the hub user's native CLI logins. Sign in with `codex login` and `cursor-agent login` on the hub. The remote still runs its own CLI in its own workspace. It requests an access token over the hub's SSH connection. The hub owns renewal. A disconnected hub or unavailable login prevents new delegated work. Standalone servers keep their local sign-in, and explicitly configured custom Codex endpoints keep their own credentials.
+
 The SSH forward registry is separate from `remote-servers.json`: a forwarded service is never treated as an AgentsServer install or started by its tunnel manager. When a remote cluster is recreated under another SSH host name, update that entry's host in the private registry and restart the SSH forward service. There is no admin API or desktop UI for these forwards yet.
 
 ## Updating

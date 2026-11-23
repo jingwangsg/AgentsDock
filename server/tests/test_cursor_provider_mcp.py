@@ -49,6 +49,9 @@ class ProfileTests(unittest.TestCase):
             try:
                 injected, flags = profile.prepare()
                 overlay = Path(injected["CURSOR_CONFIG_DIR"])
+                history = overlay / "chats" / "first-session"
+                history.parent.mkdir(exist_ok=True)
+                history.write_text("remember this turn")
                 permissions = json.loads((overlay / "cli-config.json").read_text())["permissions"]
                 self.assertIn(MCP_ALLOW, permissions["allow"])
                 self.assertEqual(permissions["deny"], ["Shell(rm)", "Mcp(*:danger)"])
@@ -62,6 +65,7 @@ class ProfileTests(unittest.TestCase):
             finally:
                 profile.close()
             self.assertFalse(overlay.exists())
+            self.assertEqual((config / "chats/first-session").read_text(), "remember this turn")
             self.assertEqual((config / "cli-config.json").read_text(), original)
             self.assertTrue(((config / "projects").resolve()).is_dir())
 

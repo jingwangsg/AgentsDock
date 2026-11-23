@@ -1,4 +1,10 @@
 set -eu
+if ! [[ ${AGENTSDOCK_HUB_PROOF:-} =~ ^[a-f0-9]{64}$ ]]; then
+  echo "Missing or invalid Hub deployment proof." >&2
+  exit 1
+fi
+readonly deploy_proof="$AGENTSDOCK_HUB_PROOF"
+unset AGENTSDOCK_HUB_PROOF
 INSTALL_DIR="$1"
 case "$INSTALL_DIR" in "~"*) INSTALL_DIR="$HOME${INSTALL_DIR#\~}" ;; esac
 PORT="$2"
@@ -33,18 +39,33 @@ for check_dir in "$HOME_DIR" "$HOME_DIR/.config"; do
 done
 cd "$INSTALL_DIR"
 
+DRAIN_SOURCE=
 if [ -f upload.tgz ]; then
   log "Unpacking AgentsServer source"
   rm -rf server.new && mkdir server.new
   tar -xzf upload.tgz -C server.new 2>tar.err || { cat tar.err >&2; exit 2; }
   rm -f tar.err
+  DRAIN_SOURCE=server.new
+elif [ -f env ]; then
+  if ! grep -qxF 'export AGENTSDOCK_HUB_PROVIDER_AUTH=1' env ||
+      { [ -n "${AGENTSDOCK_CLAUDE_TOKEN:-}" ] && ! grep -qxF "export CLAUDE_CODE_OAUTH_TOKEN=$AGENTSDOCK_CLAUDE_TOKEN" env; }; then
+    DRAIN_SOURCE=server
+  fi
+fi
+# The incumbent uses the port in its own env even when the requested port has changed.
+# A config-only deploy needs the same cutover before start.sh reloads its credentials.
+if [ -n "$DRAIN_SOURCE" ]; then
+  (
+    export AGENTSDOCK_STATE_DIR="$INSTALL_DIR/state" AGENTSDOCK_AGENT_TOKEN="" AGENTSDOCK_AGENT_PORT="$PORT"
+    [ ! -f env ] || . ./env
+    python=server/.venv/bin/python
+    [ -x "$python" ] || python=python3
+    "$python" "$DRAIN_SOURCE/remote_deploy_drain.py" "$AGENTSDOCK_AGENT_PORT" "$PORT"
+  )
+fi
+if [ -f upload.tgz ]; then
   if [ -d server/.venv ]; then mv server/.venv server.new/.venv; fi
   rm -rf server.old; [ -d server ] && mv server server.old; mv server.new server; rm -rf server.old upload.tgz
-  # The new source must replace the running instance; start.sh alone sees a
-  # healthy port and leaves the old process serving. The [a] keeps the pattern
-  # from matching a shell that carries it in its own command line.
-  tmux kill-session -t "agentsdock-$PORT" 2>/dev/null || true
-  pkill -f "[a]gent_server.py serve.*--port $PORT$" 2>/dev/null || true
 elif [ ! -f server/agent_server.py ]; then
   printf 'No server source was uploaded to %s.\n' "$INSTALL_DIR" >&2
   exit 2
@@ -176,15 +197,14 @@ for path in glob.glob(os.path.join(legacy, "*.sqlite")):
     source.close()
 PY
 fi
+# Only bootstrap-enrolled installs request provider access over their hub's SSH channel.
+if ! grep -qxF 'export AGENTSDOCK_HUB_PROVIDER_AUTH=1' env; then
+  printf '%s\n' 'export AGENTSDOCK_HUB_PROVIDER_AUTH=1' >> env
+fi
 # The hub's Claude token (RemoteServerManager._deploy); the server uses no other Claude auth.
 if [ -n "${AGENTSDOCK_CLAUDE_TOKEN:-}" ] && ! grep -qxF "export CLAUDE_CODE_OAUTH_TOKEN=$AGENTSDOCK_CLAUDE_TOKEN" env; then
   (umask 077; { grep -v '^export CLAUDE_CODE_OAUTH_TOKEN=' env || true; printf 'export CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$AGENTSDOCK_CLAUDE_TOKEN"; } > env.new && mv env.new env)
   log "Installed the Claude token from the hub"
-  # A running server keeps its old environment: stop it so start.sh below starts one
-  # with the token, and wait, or start.sh would still find the old one healthy.
-  tmux kill-session -t "agentsdock-$PORT" 2>/dev/null || true
-  pkill -f "[a]gent_server.py serve.*--port $PORT$" 2>/dev/null || true
-  for _ in $(seq 1 30); do pgrep -f "[a]gent_server.py serve.*--port $PORT$" >/dev/null || break; sleep 1; done
 fi
 
 cat > start.sh <<'START'
@@ -211,7 +231,6 @@ RUN
 chmod +x "$DIR/run.sh"
 SESSION="agentsdock-$AGENTSDOCK_AGENT_PORT"
 if command -v tmux >/dev/null 2>&1; then
-  tmux kill-session -t "$SESSION" 2>/dev/null || true
   tmux new-session -d -s "$SESSION" "bash '$DIR/run.sh'"
 else
   setsid nohup bash "$DIR/run.sh" >/dev/null 2>&1 < /dev/null &
@@ -233,5 +252,12 @@ bash start.sh
 
 . ./env
 VERSION="$(tr -d '[:space:]' < server/VERSION 2>/dev/null || true)"
+# Keep the prior relay authorized throughout the drain. The hub adopts this key at the setup receipt.
+(
+  proof_tmp="$(mktemp "$INSTALL_DIR/.hub-provider-proof.XXXXXXXXXX")"
+  trap 'rm -f "$proof_tmp"' EXIT
+  printf %s "$deploy_proof" > "$proof_tmp"
+  mv -f "$proof_tmp" "$INSTALL_DIR/.hub-provider-proof"
+)
 # The venv interpreter exists after uv sync; python3 depends on the PATH env just replaced.
 printf 'AGENTSDOCK_SETUP_RESULT=%s\n' "$(server/.venv/bin/python -c 'import json,sys; print(json.dumps({"server_url": "http://127.0.0.1:" + sys.argv[1], "access_token": sys.argv[2], "service": "ssh-tunnel", "tailscale_ip": "", "server_version": sys.argv[3], "remote_port": int(sys.argv[1]), "install_dir": sys.argv[4]}))' "$PORT" "$AGENTSDOCK_AGENT_TOKEN" "$VERSION" "$INSTALL_DIR")"

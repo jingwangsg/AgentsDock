@@ -80,7 +80,7 @@ def supports_codex_titles(schema: dict) -> bool:
 
 
 async def generate_codex_title(prompt: str, *, executable: str, model: str | None,
-                               env: dict, provider_selection: dict | None = None) -> str | None:
+                               env: dict, provider_selection: dict | None = None, external_login=None) -> str | None:
     from codex_provider import config_args, native_config, native_environment, prepare_native_catalog
 
     env = isolated_environment(env)
@@ -110,7 +110,7 @@ async def generate_codex_title(prompt: str, *, executable: str, model: str | Non
             executable, cwd=directory, env_factory=lambda: env,
             app_server_args=config_args(config), request_timeout=15, lifecycle_timeout=5,
             process_stream_limit=1024 * 1024, notification_queue_limit=64,
-            sensitive_values=sensitive,
+            sensitive_values=sensitive, external_login=external_login,
         )
         turn = None
         try:
@@ -240,15 +240,17 @@ def cursor_profile(root: Path, original_env: dict) -> tuple[Path, dict]:
         raise TitleGenerationError('Managed Cursor hooks require explicit compatibility')
     allowed = {'PATH', 'SystemRoot', 'WINDIR', 'LANG', 'LC_ALL', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
                'NODE_EXTRA_CA_CERTS', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
-               'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy', 'CURSOR_API_KEY', 'CURSOR_API_ENDPOINT'}
+               'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy', 'CURSOR_API_KEY', 'CURSOR_AUTH_TOKEN', 'CURSOR_API_ENDPOINT'}
     env = {k: v for k, v in original_env.items() if k in allowed}
+    if env.get('CURSOR_AUTH_TOKEN'):
+        env['AGENT_CLI_CREDENTIAL_STORE'] = 'memory'
     env.update(HOME=str(home), USERPROFILE=str(home), CURSOR_CONFIG_DIR=str(config),
                CURSOR_DATA_DIR=str(root / 'data'), XDG_CONFIG_HOME=str(home / '.config'),
                XDG_DATA_HOME=str(root / 'data'), XDG_CACHE_HOME=str(root / 'cache'),
                TMPDIR=str(root), TMP=str(root), TEMP=str(root),
                NODE_COMPILE_CACHE=str(root / 'cache'), NO_OPEN_BROWSER='1')
     auth = _cursor_auth_file(Path(original_env.get('HOME') or Path.home()), original_env)
-    if not env.get('CURSOR_API_KEY') and auth.exists():
+    if not (env.get('CURSOR_API_KEY') or env.get('CURSOR_AUTH_TOKEN')) and auth.exists():
         destination = _cursor_auth_file(home, env)
         destination.parent.mkdir(parents=True, exist_ok=True)
         credentials = _private_json(auth)
@@ -275,7 +277,7 @@ def cursor_profile(root: Path, original_env: dict) -> tuple[Path, dict]:
 
 
 async def cursor_keychain_snapshot(env: dict, isolated: dict, workspace: Path) -> None:
-    if sys.platform != 'darwin' or isolated.get('CURSOR_API_KEY') or isolated.get('AGENT_CLI_CREDENTIAL_STORE') == 'file':
+    if sys.platform != 'darwin' or isolated.get('CURSOR_API_KEY') or isolated.get('CURSOR_AUTH_TOKEN') or isolated.get('AGENT_CLI_CREDENTIAL_STORE') == 'file':
         return
     # Cursor's macOS CLI stores these exact credentials under cursor-user.
     # Read the exact login pair; never enumerate keychain

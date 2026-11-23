@@ -19,6 +19,8 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Sequence
 
+import hub_provider_auth
+
 
 class CodexAppServerError(RuntimeError):
     """Base error raised by the app-server transport."""
@@ -564,6 +566,7 @@ class CodexAppServerClient:
         fork_cleanup_grace: float = 30.0,
         process_factory: ProcessFactory | None = None,
         before_start: Callable[[], Awaitable[Any]] | None = None,
+        external_login: Callable[[str, bool], Awaitable[dict]] | None = None,
         server_request_handler: ServerRequestHandler | None = None,
         notification_guard: Callable[[dict[str, Any]], bool] | None = None,
         initialize_params: dict[str, Any] | None = None,
@@ -575,6 +578,9 @@ class CodexAppServerClient:
         self.codex_bin = codex_bin
         self.cwd = cwd
         self.env_factory = env_factory
+        self._external_login = external_login
+        self._external_identity = ""
+        self._external_account = ""
         self._before_start = before_start
         self._sensitive_values = tuple(value for value in sensitive_values if isinstance(value, str) and value)
         self._protected_env_keys = tuple(protected_env_keys)
@@ -584,6 +590,9 @@ class CodexAppServerClient:
         self._on_process_started = on_process_started
         self._on_process_exited = on_process_exited
         self.app_server_args = tuple(str(value) for value in app_server_args)
+        if external_login is not None:
+            from codex_provider import config_args
+            self.app_server_args += config_args(hub_provider_auth.CODEX_CONFIG)
         self.request_timeout = request_timeout
         self.lifecycle_timeout = lifecycle_timeout
         self.process_exit_timeout = max(0.0, float(process_exit_timeout))
@@ -738,6 +747,7 @@ class CodexAppServerClient:
             try:
                 if self._before_start is not None:
                     await self._before_start()
+                env = self.env_factory()
                 proc = await self._process_factory(
                     self.codex_bin,
                     "app-server",
@@ -748,7 +758,7 @@ class CodexAppServerClient:
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=self.cwd,
-                    env=self.env_factory(),
+                    env=hub_provider_auth.codex_environment(env) if self._external_login else env,
                     limit=self.process_stream_limit,
                     start_new_session=True,
                 )
@@ -800,6 +810,20 @@ class CodexAppServerClient:
                     {"method": "initialized"},
                     discard_on_send_timeout=False,
                 )
+                if self._external_login is not None:
+                    self._authentication_submitted = True
+                    # Managed settings can override CLI options. Verify the native destination
+                    # and ephemeral store before giving this process a bearer token.
+                    effective = (await self._request_connected("config/read", {"includeLayers": False},
+                                                               discard_on_send_timeout=False))["config"]
+                    if any(effective.get(key) != value for key, value in hub_provider_auth.CODEX_CONFIG.items()):
+                        raise hub_provider_auth.HubLoginError(hub_provider_auth.FAILURE)
+                    grant = await self._external_login(self._external_identity, False)
+                    self._external_account = grant["chatgptAccountId"]
+                    self._external_identity = hub_provider_auth.codex_identity(grant["accessToken"])
+                    self._sensitive_values = (grant["accessToken"],)
+                    await self._request_connected("account/login/start", {"type": "chatgptAuthTokens", **grant},
+                                                  discard_on_send_timeout=False)
                 self._initialized = True
                 self._generation += 1
             except Exception:
@@ -1034,7 +1058,7 @@ class CodexAppServerClient:
         *,
         timeout: float | None = None,
     ) -> Any:
-        if method == "account/login/start":
+        if method == "account/login/start" or (method == "getAuthStatus" and params.get("includeToken")):
             self._authentication_submitted = True
             self._stderr_tail.clear()
         await self.start()
@@ -1056,6 +1080,9 @@ class CodexAppServerClient:
         transport_turn: CodexAppServerTurn | None = None,
         before_send: Callable[[], bool] | None = None,
     ) -> Any:
+        if self._external_login and method in {"thread/start", "thread/resume", "thread/fork"}:
+            params = {**params, "modelProvider": "openai",
+                      "config": {**(params.get("config") or {}), **hub_provider_auth.CODEX_CONFIG}}
         if self._protected_env_keys and method in {"thread/start", "thread/resume", "thread/fork"}:
             effective = await self._request_connected("config/read", {
                 "includeLayers": False, "cwd": params.get("cwd") or self.cwd,
@@ -1315,7 +1342,7 @@ class CodexAppServerClient:
                                     CodexAppServerRequestError(
                                         request_method,
                                         {"message": "Native Codex authentication request failed"}
-                                        if request_method.startswith("account/")
+                                        if request_method.startswith("account/") or request_method == "getAuthStatus"
                                         else message.get("error"),
                                     )
                                 )
@@ -1632,9 +1659,18 @@ class CodexAppServerClient:
         params: dict[str, Any],
     ) -> None:
         try:
-            result = self._server_request_handler(request_id, method, params)
-            if inspect.isawaitable(result):
-                result = await result
+            if self._external_login and method == "account/chatgptAuthTokens/refresh":
+                if not self._external_identity or params.get("previousAccountId") not in (None, self._external_account):
+                    raise hub_provider_auth.HubLoginError(hub_provider_auth.FAILURE)
+                result = await self._external_login(self._external_identity, True)
+                if hub_provider_auth.codex_identity(result["accessToken"]) != self._external_identity:
+                    raise hub_provider_auth.HubLoginError(hub_provider_auth.FAILURE)
+                if result["accessToken"] not in self._sensitive_values:
+                    self._sensitive_values += (result["accessToken"],)
+            else:
+                result = self._server_request_handler(request_id, method, params)
+                if inspect.isawaitable(result):
+                    result = await result
             if not isinstance(result, dict):
                 raise CodexAppServerProtocolError(
                     f"server request handler returned non-object for {method}"
@@ -2745,6 +2781,7 @@ class CodexAppServerManager:
         json_parse_thread_threshold: int = 1024 * 1024,
         process_factory: ProcessFactory | None = None,
         before_start: Callable[[], Awaitable[Any]] | None = None,
+        external_login: Callable[[str, bool], Awaitable[dict]] | None = None,
         server_request_handler: ServerRequestHandler | None = None,
         notification_guard: Callable[[dict[str, Any]], bool] | None = None,
         initialize_params: dict[str, Any] | None = None,
@@ -2765,6 +2802,7 @@ class CodexAppServerManager:
             json_parse_thread_threshold=json_parse_thread_threshold,
             process_factory=process_factory,
             before_start=before_start,
+            external_login=external_login,
             server_request_handler=server_request_handler,
             notification_guard=notification_guard,
             initialize_params=initialize_params,

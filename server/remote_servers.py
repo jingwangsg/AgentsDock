@@ -37,6 +37,8 @@ from urllib.parse import parse_qsl, urlencode
 
 import httpx
 import websockets
+
+import hub_provider_auth
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.routing import APIRoute
@@ -89,7 +91,7 @@ DEPLOY_HEALTH_WAIT_SECONDS = 120.0
 # HTTP timeout for a remote's /api/admin/runtimes/{backend}/update: the remote itself stops the CLI
 # after 10 minutes (RUNTIME_CLI_UPDATE_TIMEOUT_SECONDS), so its answer arrives before this fires.
 CLI_UPDATE_REQUEST_TIMEOUT = 11 * 60.0
-CLI_PRODUCT_NAMES = {"claude": "Claude Code", "codex": "Codex"}
+CLI_PRODUCT_NAMES = {"claude": "Claude Code", "codex": "Codex", "cursor": "Cursor"}
 SSH_FORWARD_PROBE_TIMEOUT = 30.0
 SSH_FORWARD_PROBE_FAILURES = 3
 UPLOAD_CHUNK = 256 * 1024
@@ -225,6 +227,7 @@ class RemoteServer(BaseModel):
     local_port: int
     token: str
     created_at: str
+    provider_auth_key: str | None = Field(default=None, repr=False, pattern="^[a-f0-9]{64}$")
     # Left out of the lists clients offer for choosing a server; Settings still lists it, and its tunnels,
     # chats and ssh alias stay as they are.
     hidden: bool = False
@@ -1091,10 +1094,12 @@ class Tunnel:
         self, server: RemoteServer | SSHForward, revive: Callable[[RemoteServer], Awaitable[None]] | None,
         *, role: Literal["main", "bulk", "stream", "surface"] = "main",
         on_route: Callable[[SSHRoute], Awaitable[None]] | None = None,
+        provider_auth_source=None,
     ):
         self.server = server
         self.role = role
         # Awaited with each route resolved before ssh starts; it must not raise.
+        self._issue_provider_grant = provider_auth_source
         self._on_route = on_route
         self.label = server.id if role == "main" else f"{server.id} ({role})"
         # The route of the running ssh; the forward probe logs in with its destination and options.
@@ -1197,6 +1202,10 @@ class Tunnel:
                         self._schedule_revive()
 
             reader = asyncio.create_task(read_stderr(), name=f"ssh-tunnel-stderr:{self.label}")
+            auth_channel = None
+            if self._issue_provider_grant and isinstance(self.server, RemoteServer) and self.role == "main" and self.server.provider_auth_key:
+                auth_channel = asyncio.create_task(self._serve_provider_auth(route))
+
             try:
                 # Poll the exit status, which is set as soon as ssh exits. stderr's EOF, which proc.wait()
                 # also waits for, comes only when every holder of the pipe has exited, and a ProxyCommand
@@ -1212,6 +1221,9 @@ class Tunnel:
                 kill_process_group(proc)
                 tell_group_killer(f"-{proc.pid}")
                 reader.cancel()
+                if auth_channel is not None:
+                    auth_channel.cancel()
+                    await asyncio.gather(auth_channel, return_exceptions=True)
             code = proc.returncode
             if settle is not None:
                 settle.cancel()
@@ -1234,6 +1246,30 @@ class Tunnel:
             logger.warning("ssh tunnel %s exited; restarting in %.0fs: %s", self.label, self._backoff, self.status["last_error"])
             await asyncio.sleep(self._backoff)
             self._backoff = next_backoff(self._backoff)
+
+    async def _serve_provider_auth(self, route: SSHRoute) -> None:
+        directory = validate_remote_dir(self.server.install_dir)
+        command = f'cd {directory} && exec server/.venv/bin/python -I server/hub_provider_auth.py "$PWD"'
+        delay = MIN_BACKOFF
+        while True:
+            proc = None
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    ssh_binary(), "-T", "-o", "ClearAllForwardings=yes", *route.options, *SSH_BATCH_OPTIONS,
+                    route.destination, "bash", "-c", shlex.quote(command),
+                    env=route.env, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL, start_new_session=True)
+                tell_group_killer(f"+{proc.pid}")
+                await hub_provider_auth.forward_requests(proc, self.server.provider_auth_key, self._issue_provider_grant)
+            except (OSError, ValueError, asyncio.TimeoutError, hub_provider_auth.HubLoginError):
+                pass
+            finally:
+                if proc is not None:
+                    kill_process_group(proc)
+                    await proc.wait()
+                    tell_group_killer(f"-{proc.pid}")
+            await asyncio.sleep(delay)
+            delay = next_backoff(delay)
 
     def _mark_connected(self, proc: asyncio.subprocess.Process) -> None:
         if self._proc is proc and proc.returncode is None:
@@ -1591,7 +1627,9 @@ class RemoteServerManager:
         manage_tunnels: bool = True,
         revive: Callable[[RemoteServer], Awaitable[None]] = start_remote_server,
         ssh_aliases: bool = False,
+        provider_auth_source=None,
     ) -> None:
+        self.provider_auth_source = provider_auth_source
         self.path = state_dir / "remote-servers.json"
         self.forward_path = state_dir / "ssh-forwards.json"
         self.source_dir = source_dir
@@ -1682,7 +1720,7 @@ class RemoteServerManager:
             if stale is not None:
                 asyncio.create_task(stale.stop())
         on_route = (lambda route, remote_id=server.id: self._keep_ssh_alias(remote_id, route)) if self.ssh_aliases else None
-        tunnel = Tunnel(server, self._revive_unless_bootstrapping, on_route=on_route)
+        tunnel = Tunnel(server, self._revive_unless_bootstrapping, on_route=on_route, provider_auth_source=self.provider_auth_source)
         self.tunnels[server.id] = tunnel
         logger.info("ssh tunnel starting for %s (%s, local %d -> remote %d)", server.id, server.ssh_host, server.local_port, server.remote_port)
         tunnel.start()
@@ -1871,8 +1909,11 @@ class RemoteServerManager:
             # mounts, which only the deploy's osmo workflow query and probe learn.
             changes["install_dir"] = DEFAULT_INSTALL_DIR
         previous_name = server.name
-        server = server.model_copy(update=changes)
         moved = "ssh_host" in changes or "install_dir" in changes
+        if moved:
+            # Enroll the new SSH destination only after its own bootstrap succeeds.
+            changes["provider_auth_key"] = None
+        server = server.model_copy(update=changes)
         # load-bearing order: start_deploy raises (409 busy, 503 no ssh) before the registry
         # changes, and its task reads the entry only after this synchronous method returns.
         job = self.start_deploy(None, redeploy_id=remote_id) if moved else None
@@ -2050,10 +2091,8 @@ class RemoteServerManager:
         try:
             existing = self.servers[redeploy_id] if redeploy_id else None
             if existing is not None:
-                # Not the entry's port: until a move's deploy finishes it is the previous install's (after a finished
-                # deploy the two are equal). The bootstrap stops whatever serves the port it is given and writes it into
-                # the install's env, so the entry's port would stop the previous install's server or start a second
-                # server on the found install's state. 0: the found install's port, else a free one.
+                # During a move the registry still has the old install's port. Keep the target
+                # install on its own port, or choose a free one if it has never run.
                 # A deploy records the expanded directory it installed to: only a move whose deploy did not finish,
                 # or an entry added through POST ADMIN_PATH, still names the default.
                 ssh_host, install_dir = existing.ssh_host, existing.install_dir
@@ -2145,6 +2184,8 @@ class RemoteServerManager:
             # script on stdin: never in argv, ps output or the job log.
             token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
             prelude = f"AGENTSDOCK_CLAUDE_TOKEN={shlex.quote(token)}\n".encode() if token else b""
+            provider_auth_key = secrets.token_hex(32)
+            prelude += f"AGENTSDOCK_HUB_PROOF={provider_auth_key}\n".encode()
             self._bootstrapping = ssh_host
             try:
                 result_lines = await self._run_ssh(
@@ -2161,11 +2202,11 @@ class RemoteServerManager:
                 server = self.servers.get(existing.id)
                 if server is None:
                     raise RuntimeError("The remote server was removed during the deployment.")
-                if server.remote_port != result["remote_port"] or server.install_dir != result["install_dir"] or server.token != result["access_token"]:
-                    server = server.model_copy(update={"remote_port": result["remote_port"], "install_dir": result["install_dir"], "token": result["access_token"]})
-                    self.servers[server.id] = server
-                    self._save()
-                    self._ensure_tunnel(server)
+                server = server.model_copy(update={"provider_auth_key": provider_auth_key, "remote_port": result["remote_port"],
+                                                   "install_dir": result["install_dir"], "token": result["access_token"]})
+                self.servers[server.id] = server
+                self._save()
+                self._ensure_tunnel(server)
             else:
                 server = RemoteServer(
                     id=secrets.token_hex(6),
@@ -2175,6 +2216,7 @@ class RemoteServerManager:
                     remote_port=result["remote_port"],
                     local_port=find_free_local_port(self._reserved_ports()),
                     token=result["access_token"],
+                    provider_auth_key=provider_auth_key,
                     created_at=now_iso(),
                 )
                 self.servers[server.id] = server

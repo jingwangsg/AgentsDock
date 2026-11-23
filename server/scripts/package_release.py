@@ -71,6 +71,8 @@ FILES = (
     "codex_side_question.py",
     "claude_side_question.py",
     "cursor_agent_client.py",
+    "remote_deploy_drain.py",
+    "hub_provider_auth.py",
     "cursor_provider_mcp.py",
     "opencode_agent_client.py",
     "cursor_process_guard.py",

@@ -258,15 +258,14 @@ class CursorRuntimeProfile:
         self.path.chmod(0o700)
         config_dir = self.path / "config"
         config_dir.mkdir(mode=0o700)
-        # Preserve native sibling configuration (plugins, rules, MCP settings).
-        # Credential stores and CLI history use the unchanged HOME/data roots.
-        if original.is_dir():
-            children = list(itertools.islice(original.iterdir(), 1025))
-            if len(children) > 1024:
-                raise ValueError("Cursor configuration directory exceeds limit")
-            for child in children:
-                if child.name != "cli-config.json":
-                    (config_dir / child.name).symlink_to(child, target_is_directory=child.is_dir())
+        # On first use Cursor would create its history inside the disposable profile.
+        (original / "chats").mkdir(mode=0o700, parents=True, exist_ok=True)
+        children = list(itertools.islice(original.iterdir(), 1025))
+        if len(children) > 1024:
+            raise ValueError("Cursor configuration directory exceeds limit")
+        for child in children:
+            if child.name != "cli-config.json":
+                (config_dir / child.name).symlink_to(child, target_is_directory=child.is_dir())
         config_file = config_dir / "cli-config.json"
         config_file.write_text(json.dumps(merged), encoding="utf-8")
         config_file.chmod(0o600)

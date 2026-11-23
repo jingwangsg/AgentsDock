@@ -89,6 +89,7 @@ import agentsdock_canvas
 import remote_servers
 import claude_model_catalog
 import codex_auth
+import hub_provider_auth
 import codex_model_catalog
 import codex_provider
 import server_instances
@@ -366,6 +367,7 @@ def load_config_env_file(path: Path | None = None) -> list[str]:
 
 
 CONFIG_ENV_APPLIED = load_config_env_file()
+HUB_PROVIDER_INSTALL = CONFIG_ENV_FILE.parent if os.environ.get("AGENTSDOCK_HUB_PROVIDER_AUTH") == "1" else None
 
 
 def resolve_state_dir() -> Path:
@@ -743,7 +745,12 @@ def codex_native_catalog_key() -> str | None:
     """
     if CODEX_BINARY_IDENTITY is None:
         return None
-    account = codex_auth.native_account_identity(codex_app_server_env(), cwd=existing_cwd(DEFAULT_CWD))
+    if HUB_PROVIDER_INSTALL:
+        if CODEX_LOGIN_REVISION is None:
+            return None
+        account = ["hub", CODEX_LOGIN_REVISION.value.decode()]
+    else:
+        account = codex_auth.native_account_identity(codex_app_server_env(), cwd=existing_cwd(DEFAULT_CWD))
     return codex_model_catalog.native_catalog_key(CODEX_BINARY_IDENTITY, account)
 
 
@@ -966,6 +973,8 @@ CODEX_INTERACTION_METHODS = {
     "execCommandApproval",
 }
 CODEX_TRANSPORT = agentsdock_setting("CODEX_TRANSPORT", CODEX_TRANSPORT_AUTO).strip().lower()
+if HUB_PROVIDER_INSTALL:
+    CODEX_TRANSPORT = CODEX_TRANSPORT_APP_SERVER
 if CODEX_TRANSPORT not in {CODEX_TRANSPORT_AUTO, CODEX_TRANSPORT_APP_SERVER, CODEX_TRANSPORT_EXEC}:
     CODEX_TRANSPORT = CODEX_TRANSPORT_AUTO
 CLAUDE_TRANSPORT = agentsdock_setting(
@@ -50448,7 +50457,11 @@ async def generate_session_title(session_id: str, snapshot: dict, reply: str) ->
             options["model"] = codex_runtime_settings(snapshot)[0]
             options["executable"] = CODEX_BIN
             options["provider_selection"] = CODEX_PROVIDER_STORE.for_session(snapshot, include_key=True)
+            if HUB_PROVIDER_INSTALL and not options["provider_selection"]:
+                options["external_login"] = hub_codex_login
         else:
+            if HUB_PROVIDER_INSTALL:
+                options["env"] = await asyncio.to_thread(cursor_hub_env, options["env"])
             options["executable"] = resolve_cursor_executable()
             if not options["executable"]:
                 return
@@ -57911,6 +57924,18 @@ async def refresh_claude_native_models(*, explicit: bool = False) -> None:
             logger.info("claude native model probe did not record the picker: %s", failure)
 
 
+async def hub_codex_login(previous="", refresh=False, *, manager=None) -> dict:
+    if not previous and (revision := getattr(manager, "_agentsdock_login_revision", None)):
+        previous = revision.value.decode()
+    try:
+        grant = await asyncio.to_thread(hub_provider_auth.request, HUB_PROVIDER_INSTALL, "codex", previous, refresh)
+    except hub_provider_auth.HubLoginError:
+        raise HTTPException(503, hub_provider_auth.FAILURE) from None
+    if manager is not None:
+        manager._agentsdock_login_revision = codex_auth.LoginRevision(hub_provider_auth.codex_identity(grant["accessToken"]).encode())
+    return grant
+
+
 async def refresh_codex_app_server_login(*, request_handoff: bool = False) -> None:
     """Change normal-Codex admission; never kill a credential-owning process.
 
@@ -57922,11 +57947,15 @@ async def refresh_codex_app_server_login(*, request_handoff: bool = False) -> No
     if CODEX_TRANSPORT == CODEX_TRANSPORT_EXEC or CODEX_AUTH_LOCK.locked() or CODEX_MANAGER_CLOSING:
         return
     async with CODEX_LOGIN_PROBE_LOCK:
-        if not await asyncio.to_thread(codex_auth.native_login_handoff_supported,
-                codex_app_server_env(), cwd=existing_cwd(DEFAULT_CWD)):
-            return
-        revision = await asyncio.to_thread(codex_auth.native_login_revision,
-            codex_app_server_env(), cwd=existing_cwd(DEFAULT_CWD))
+        if HUB_PROVIDER_INSTALL:
+            grant = await hub_codex_login()
+            revision = codex_auth.LoginRevision(hub_provider_auth.codex_identity(grant["accessToken"]).encode())
+        else:
+            if not await asyncio.to_thread(codex_auth.native_login_handoff_supported,
+                    codex_app_server_env(), cwd=existing_cwd(DEFAULT_CWD)):
+                return
+            revision = await asyncio.to_thread(codex_auth.native_login_revision,
+                codex_app_server_env(), cwd=existing_cwd(DEFAULT_CWD))
         async with CODEX_GOALS_CONFIG_LOCK:
             async with CODEX_APP_SERVER_MANAGER_LOCK:
                 if CODEX_APP_SERVER_MANAGER_CLEANUP_EPOCH is not None or CODEX_AUTH_LOCK.locked() or CODEX_MANAGER_CLOSING:
@@ -58136,7 +58165,7 @@ async def codex_app_server_manager_for_thread(thread_id: str) -> CodexAppServerM
 
 async def prepare_codex_app_server_process(manager: CodexAppServerManager, selected: dict | None) -> None:
     manager._agentsdock_binary_identity = await asyncio.to_thread(codex_binary_identity)
-    if not selected:
+    if not selected and not HUB_PROVIDER_INSTALL:
         manager._agentsdock_login_revision = await asyncio.to_thread(codex_auth.native_login_revision,
             codex_app_server_env(), cwd=existing_cwd(DEFAULT_CWD))
     if selected:
@@ -58197,8 +58226,11 @@ async def codex_app_server_manager(sess: dict[str, Any] | None = None, *, allow_
     global CODEX_APP_SERVER_MANAGER_EPOCH
     ensure_provider_manager_factory_admission(codex=True)
     await refresh_codex_app_server_binary()
-    await refresh_codex_app_server_login()
     selected = CODEX_PROVIDER_STORE.for_session(sess, include_key=True) if sess is not None else None
+    # Controls addressed to an existing turn keep its owner even while the Hub reconnects.
+    if not HUB_PROVIDER_INSTALL or (not selected and not (
+            allow_retired_login and sess is not None and existing_codex_app_server_manager(sess) is not None)):
+        await refresh_codex_app_server_login()
     revision = selected["credential_id"] if selected else None
     session_id = str((sess or {}).get("id") or "")
     # Goal enablement is a process launch flag. Manager lookup therefore takes
@@ -58244,6 +58276,8 @@ async def codex_app_server_manager(sess: dict[str, Any] | None = None, *, allow_
                             "model_catalog_json": str(CODEX_PROVIDER_STORE.root / "native-models.json"),
                         }) if selected else ())
                     ),
+                    external_login=(lambda previous, refresh: hub_codex_login(previous, refresh, manager=manager))
+                        if HUB_PROVIDER_INSTALL and not selected else None,
                     before_start=lambda: prepare_codex_app_server_process(manager, selected),
                     request_timeout=CODEX_APP_SERVER_TIMEOUT_SECONDS,
                     lifecycle_timeout=CODEX_APP_SERVER_LIFECYCLE_TIMEOUT_SECONDS,
@@ -61131,7 +61165,7 @@ def runtime_probe_timeout(timeout_seconds: float) -> float:
 
 
 def runtime_command(
-    cmd: list[str], *, timeout_seconds: float | None = None,
+    cmd: list[str], *, timeout_seconds: float | None = None, env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     timeout = runtime_probe_timeout(
         RUNTIME_CATALOG_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
@@ -61140,7 +61174,7 @@ def runtime_command(
         return subprocess.run(
             cmd,
             cwd=DEFAULT_CWD if Path(DEFAULT_CWD).exists() else str(Path.home()),
-            env=runner_env(),
+            env=runner_env() if env is None else env,
             text=True,
             capture_output=True,
             timeout=timeout,
@@ -61161,6 +61195,25 @@ def auth_failure_text(value: str) -> bool:
         "unauthorized", "invalid api key", "missing api key",
         "please log in", "please login", "please sign in",
     ))
+
+
+def cursor_hub_env(env: dict[str, str]) -> dict[str, str]:
+    grant = hub_provider_auth.request(HUB_PROVIDER_INSTALL, "cursor")
+    # Cursor persists --auth-token into its active credential store, even on a failed turn.
+    clean = {k: v for k, v in env.items() if k.upper() not in {
+        "CURSOR_API_KEY", "CURSOR_API_ENDPOINT", "CURSOR_API_BASE_URL", "CURSOR_BACKEND_URL", "CURSOR_WEBSITE_URL",
+        "CURSOR_AGENT_CLI_AUTHLESS_MODE",
+    }}
+    return {**clean, "CURSOR_AUTH_TOKEN": grant["accessToken"], "AGENT_CLI_CREDENTIAL_STORE": "memory"}
+
+
+def cursor_catalog_command(cmd: list[str]) -> str:
+    if not HUB_PROVIDER_INSTALL:
+        return run_catalog_command(cmd)
+    result = runtime_command(cmd, env=cursor_hub_env(runner_env()))
+    if result.returncode:
+        raise hub_provider_auth.HubLoginError(hub_provider_auth.FAILURE)
+    return result.stdout
 
 
 def cursor_api_key_configured() -> bool:
@@ -61200,6 +61253,12 @@ def cursor_auth_probe_state(
     wording, so text alone is not strong enough to declare an API key invalid.
     """
 
+    if HUB_PROVIDER_INSTALL:
+        try:
+            cursor_catalog_command([executable, "--list-models"])
+            return "ready"
+        except (OSError, subprocess.SubprocessError, hub_provider_auth.HubLoginError):
+            return "error"
     api_key_configured = cursor_api_key_configured()
     command = (
         [executable, "--list-models"]
@@ -61438,6 +61497,14 @@ def probe_runtime(backend: str) -> dict[str, Any]:
                 "Claude when you send a message."
             ),
         )
+    if backend == BACKEND_CODEX and HUB_PROVIDER_INSTALL:
+        try:
+            hub_provider_auth.request(HUB_PROVIDER_INSTALL, "codex")
+        except hub_provider_auth.HubLoginError:
+            return runtime_diagnostic_payload(backend, "error", installed=True, authenticated=None,
+                                              version=version, message=hub_provider_auth.FAILURE)
+        return runtime_diagnostic_payload(backend, "ready", installed=True, authenticated=True,
+                                          version=version, message="Signed in through the hub.")
     auth_cmd = [resolved, "login", "status"]
     try:
         auth_result = runtime_command(auth_cmd)
@@ -62356,7 +62423,7 @@ def discover_cursor_catalog(*, executable: str | None = None) -> dict[str, Any]:
         if executable is None:
             raise RuntimeError("no compatible Cursor executable is available")
         model_source = f"{Path(executable).name} --list-models"
-        output = run_catalog_command([executable, "--list-models"])
+        output = cursor_catalog_command([executable, "--list-models"])
         parsed = parse_cursor_models_list(output)
     except Exception as exc:
         logger.warning(
@@ -62369,7 +62436,7 @@ def discover_cursor_catalog(*, executable: str | None = None) -> dict[str, Any]:
     is_free_tier = False
     try:
         if executable and not runtime_catalog_budget_expired():
-            about_output = run_catalog_command([executable, "about"])
+            about_output = cursor_catalog_command([executable, "about"])
             is_free_tier = cursor_account_is_free_tier(parse_cursor_account_tier(about_output))
     except Exception as exc:
         logger.warning(
@@ -70289,6 +70356,8 @@ async def run_cursor_process(
         *cmd,
     ]
     try:
+        if HUB_PROVIDER_INSTALL:
+            env = await asyncio.to_thread(cursor_hub_env, env)
         proc = await asyncio.create_subprocess_exec(
             *guard_cmd,
             stdin=asyncio.subprocess.PIPE,
@@ -70400,6 +70469,7 @@ async def run_cursor_process(
     changed_paths: set[str] = set()
     seen_artifacts: set[str] = set()
     stderr_bytes = b""
+    hub_token = env.get("CURSOR_AUTH_TOKEN") if HUB_PROVIDER_INSTALL else None
     # Cursor streams reasoning as many token-sized `thinking` deltas, while
     # Codex publishes exactly one reasoning_summary per reasoning item and
     # the client renders one event as one block. Emitting every delta turned
@@ -70588,6 +70658,8 @@ async def run_cursor_process(
             last_event_monotonic = time.monotonic()
             idle_warning_emitted = False
             decoded = raw.decode("utf-8", "replace").rstrip("\r\n")
+            if hub_token:
+                decoded = decoded.replace(hub_token, "[REDACTED]")
             line = decoded.strip()
             if not line.startswith("{"):
                 if cursor_approval_request_text(line):
@@ -70899,6 +70971,8 @@ async def run_cursor_process(
             )
 
     stderr_text = stderr_bytes.decode("utf-8", "replace")
+    if hub_token:
+        stderr_text = stderr_text.replace(hub_token, "[REDACTED]")
     cursor_auth_signal = bool(
         not stopped
         and (
@@ -82495,7 +82569,7 @@ async def require_agent_token(request: Request, call_next):
         "/api/admin/codex/provider/models",
     }
     claude_token_admin_route = request.url.path == "/api/admin/claude/token"
-    runtime_update_admin_route = request.url.path in {"/api/admin/runtimes/claude/update", "/api/admin/runtimes/codex/update"}
+    runtime_update_admin_route = request.url.path in {"/api/admin/runtimes/claude/update", "/api/admin/runtimes/codex/update", "/api/admin/runtimes/cursor/update"}
     public_chat_shares_admin_route = (
         request.url.path == "/api/admin/chat-shares"
         or request.url.path.startswith("/api/admin/chat-shares/")
@@ -86602,10 +86676,11 @@ async def put_claude_oauth_token(req: ClaudeTokenAdminRequest, request: Request)
 
 RUNTIME_CLI_UPDATE_LOCK = asyncio.Lock()
 RUNTIME_CLI_UPDATE_TIMEOUT_SECONDS = 600
-# Each product's documented unattended install command, verbatim. Both put the CLI in ~/.local/bin, which
+# Each product's unattended installer puts a launcher in ~/.local/bin, which
 # runner_env() puts on the chats' PATH, and the CLI's own `update` keeps that install current afterwards.
 RUNTIME_CLI_INSTALL_COMMANDS = {
     BACKEND_CLAUDE: "curl -fsSL https://claude.ai/install.sh | bash",
+    BACKEND_CURSOR: "curl -fsSL https://cursor.com/install | bash",
     BACKEND_CODEX: "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh",
 }
 
@@ -86616,7 +86691,9 @@ def runtime_cli_installer_owns(backend: str, env: dict[str, str], executable: st
     if not executable:
         return False
     home = env.get("HOME", str(Path.home()))
-    if backend == BACKEND_CODEX:
+    if backend == BACKEND_CURSOR:
+        root = Path(home) / ".local/share/cursor-agent/versions"
+    elif backend == BACKEND_CODEX:
         root = Path(env.get("CODEX_HOME") or f"{home}/.codex") / "packages" / "standalone"
     else:
         root = Path(env.get("XDG_DATA_HOME") or f"{home}/.local/share") / "claude" / "versions"
@@ -86624,7 +86701,7 @@ def runtime_cli_installer_owns(backend: str, env: dict[str, str], executable: st
 
 
 @app.post("/api/admin/runtimes/{backend}/update")
-async def update_runtime_cli(backend: Literal["claude", "codex"], request: Request):
+async def update_runtime_cli(backend: Literal["claude", "codex", "cursor"], request: Request):
     """Update CLI on this server, installing it when it is missing or `update` cannot manage it: the per-row button, and the update-all job's remote step."""
 
     require_native_admin_control(request)
@@ -86638,6 +86715,29 @@ async def update_hub_cli(backend: str) -> tuple[str, bool]:
     return str((result["diagnostic"] or {}).get("version") or ""), result["action"] == "install"
 
 
+def cursor_update_executable(env: dict[str, str]) -> str | None:
+    executable, installed, _, _ = cursor_executable_resolution()
+    if installed and not executable:
+        # Older versions may lack a required chat flag. They can still update themselves.
+        if not runtime_cli_installer_owns(BACKEND_CURSOR, env, installed):
+            try:
+                about = runtime_command([installed, "about"])
+            except (OSError, subprocess.SubprocessError):
+                about = None
+            if not about or about.returncode or "about cursor cli" not in (about.stdout + about.stderr).lower():
+                raise HTTPException(409, f"Cannot identify {installed} as Cursor CLI. Set CURSOR_BIN to the Cursor launcher.")
+        executable = installed
+
+    # Both install and self-update can replace these two launchers, even when
+    # the server uses a different Cursor binary from its PATH.
+    for name in CURSOR_EXECUTABLE_CANDIDATES:
+        launcher = Path(env["HOME"]) / ".local/bin" / name
+        if os.path.lexists(launcher) and str(launcher.resolve()) != executable:
+            if not runtime_cli_installer_owns(BACKEND_CURSOR, env, str(launcher)):
+                raise HTTPException(409, f"Cursor would replace {launcher}. Move the conflicting launcher before updating.")
+    return executable
+
+
 async def run_runtime_cli_update(backend: str) -> dict[str, Any]:
     """Run the CLI's own `update` with the binary and PATH this server's chats spawn, or its official installer when
     the CLI is missing or is an install that `update` cannot manage."""
@@ -86646,8 +86746,13 @@ async def run_runtime_cli_update(backend: str) -> dict[str, Any]:
         raise HTTPException(409, "A CLI update is already running on this server.")
     async with RUNTIME_CLI_UPDATE_LOCK:
         env = codex_app_server_env() if backend == BACKEND_CODEX else runner_env()
-        configured = runtime_executable(backend)
-        executable = shutil.which(configured, path=env.get("PATH"))
+        if backend == BACKEND_CURSOR:
+            env.setdefault("HOME", str(Path.home()))
+            configured = CURSOR_BIN
+            executable = await asyncio.to_thread(cursor_update_executable, env)
+        else:
+            configured = runtime_executable(backend)
+            executable = shutil.which(configured, path=env.get("PATH"))
         # `update` cannot manage a native binary that neither the official installer, npm nor a Homebrew cask put there
         # (measured 2026-11-01): `codex update` exits 1 with "Could not detect the Codex installation method", and `claude
         # update` reports success but leaves a launcher it did not create running the old version. A script is a package
@@ -86661,9 +86766,9 @@ async def run_runtime_cli_update(backend: str) -> dict[str, Any]:
                     unmanaged = binary.read(2) != b"#!"
         if executable and not unmanaged:
             command = [executable, "update"]
-            action, label = "update", f"`{backend} update`"
-        elif os.sep in configured:
-            # CLAUDE_BIN/CODEX_BIN name a path, and the installers never put the CLI there.
+            action, label = "update", f"`{'agent' if backend == BACKEND_CURSOR else backend} update`"
+        elif os.sep in configured or (backend == BACKEND_CURSOR and configured not in CURSOR_EXECUTABLE_CANDIDATES):
+            # An installer cannot supply a custom path or a nonstandard Cursor launcher name.
             raise HTTPException(404, f"The {backend} CLI is configured as {configured}, which does not exist on this server.")
         else:
             missing = [tool for tool in ("curl", "bash") if not shutil.which(tool, path=env.get("PATH"))]
@@ -86728,7 +86833,8 @@ async def run_runtime_cli_update(backend: str) -> dict[str, Any]:
     if returncode:
         raise HTTPException(500, f"{label} exited with {returncode}" + (f": {output}" if output else "."))
     if action == "install":
-        installed = shutil.which(configured, path=env.get("PATH"))
+        installed = (await asyncio.to_thread(resolve_cursor_executable) if backend == BACKEND_CURSOR
+                     else shutil.which(configured, path=env.get("PATH")))
         if not installed:
             raise HTTPException(
                 500, f"{label} finished, but this server's chats still cannot find `{configured}` on their PATH"
@@ -86948,6 +87054,7 @@ async def create_native_side_chat(session_id: str, *, persisted_state=None, pers
                         if persist_state is not None:
                             await persist_state({**binding, "codex": value})
                     self.codex = NativeCodexSideChat(parent_id, executable=CODEX_BIN,
+                        external_login=hub_codex_login if HUB_PROVIDER_INSTALL and not provider_selection else None,
                         model=model if isinstance(model, str) and model.strip() else None,
                         cwd=cwd, fork_overrides=fork_overrides, turn_overrides=turn_overrides,
                         server_request_handler=side_server_request,
@@ -102450,7 +102557,59 @@ agentsdock_canvas.register_canvas_routes(
 # Hub for SSH-only remote servers: registry, tunnels, deploy, and the /api/remote/{id} proxy.
 # Only the hub on the default state directory keeps the remotes' ssh aliases: another instance, such as an
 # isolated test hub, must not rewrite or remove them.
-REMOTE_SERVERS = remote_servers.RemoteServerManager(STATE_DIR, source_dir=SERVER_ROOT, ssh_aliases=STATE_DIR == Path.home() / ".agentsdock")
+HUB_GRANT_LOCKS = {provider: asyncio.Lock() for provider in ("codex", "cursor")}
+
+
+async def issue_hub_provider_grant(backend: str, previous: str, refresh: bool) -> dict:
+    if HUB_PROVIDER_INSTALL:
+        raise hub_provider_auth.HubLoginError(hub_provider_auth.FAILURE)
+    async with HUB_GRANT_LOCKS[backend]:
+        if backend == "codex":
+            manager = await codex_app_server_manager()
+            status = await manager.request("getAuthStatus", {"includeToken": True, "refreshToken": False})
+            if status.get("authMethod") != "chatgpt":
+                raise hub_provider_auth.HubLoginError(hub_provider_auth.FAILURE)
+            token = status["authToken"]
+            claims = hub_provider_auth.claims(token)
+            account = claims["https://api.openai.com/auth"]["chatgpt_account_id"]
+            identity = hub_provider_auth.codex_identity(token)
+            if previous and previous != identity:
+                raise hub_provider_auth.HubLoginError(hub_provider_auth.FAILURE)
+            if refresh or claims["exp"] < time.time() + 90:
+                status = await manager.request("getAuthStatus", {"includeToken": True, "refreshToken": True})
+                token = status["authToken"]
+                if (status.get("authMethod") != "chatgpt" or hub_provider_auth.codex_identity(token) != identity
+                        or hub_provider_auth.claims(token)["exp"] <= time.time()):
+                    raise hub_provider_auth.HubLoginError(hub_provider_auth.FAILURE)
+            return {"accessToken": token, "chatgptAccountId": account}
+        return {"accessToken": await asyncio.to_thread(hub_cursor_access_token)}
+
+
+def hub_cursor_access_token() -> str:
+    env = runner_env()
+    home = Path(env["HOME"])
+    path = title_generation._cursor_auth_file(home, env)
+    if env.get("AGENT_CLI_CREDENTIAL_STORE") == "memory":
+        raise hub_provider_auth.HubLoginError(hub_provider_auth.FAILURE)
+    for attempt in range(2):
+        if sys.platform == "darwin" and env.get("AGENT_CLI_CREDENTIAL_STORE") != "file":
+            token = subprocess.run(["/usr/bin/security", "find-generic-password", "-a", "cursor-user",
+                                    "-s", "cursor-access-token", "-w"], stdin=subprocess.DEVNULL, capture_output=True,
+                                   text=True, check=True, timeout=5).stdout.strip()
+        else:
+            token = title_generation._private_json(path)["accessToken"]
+        if hub_provider_auth.claims(token)["exp"] > time.time() + 90:
+            return token
+        if not attempt and (cli := resolve_cursor_executable()):
+            # An ambient --auth-token/API key login would replace the browser login being renewed.
+            env.pop("CURSOR_AUTH_TOKEN", None)
+            env.pop("CURSOR_API_KEY", None)
+            runtime_command([cli, "--list-models"], env=env)
+    raise hub_provider_auth.HubLoginError(hub_provider_auth.FAILURE)
+
+
+REMOTE_SERVERS = remote_servers.RemoteServerManager(STATE_DIR, source_dir=SERVER_ROOT,
+    ssh_aliases=STATE_DIR == Path.home() / ".agentsdock", provider_auth_source=issue_hub_provider_grant)
 remote_servers.register_remote_server_routes(
     app, manager=REMOTE_SERVERS, authorize_admin=require_native_admin_control, websocket_authorized=websocket_authorized,
     # Update & redeploy all: the hub's own running chats (as /api/health lists them), CLI updates and restart.

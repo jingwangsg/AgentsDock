@@ -38,12 +38,12 @@ class RemoteBootstrapEnvTests(unittest.TestCase):
         python = install / "server" / ".venv" / "bin" / "python"
         if not python.exists():
             python.symlink_to(sys.executable)
-        # Every deploy uploads the source. Unpacking stops whatever serves the port, so the run
-        # uses one no local server listens on.
         with tarfile.open(install / "upload.tgz", "w:gz") as tar:
             tar.add(install / "server" / "agent_server.py", arcname="agent_server.py")
+            for name in ("remote_deploy_drain.py", "server_instances.py", "execution_http.py"):
+                tar.add(SCRIPT.parent / name, arcname=name)
         subprocess.run(["bash", str(SCRIPT), str(install), "59871", str(home_dir)], check=True, capture_output=True,
-                       env={"HOME": str(self.home), "PATH": self.path})
+                       env={"HOME": str(self.home), "PATH": self.path, "AGENTSDOCK_HUB_PROOF": "d" * 64})
         return (install / "env").read_text()
 
     def test_the_setup_prints_a_line_each_minute_during_a_silent_step(self) -> None:
@@ -57,7 +57,7 @@ class RemoteBootstrapEnvTests(unittest.TestCase):
         # Here a minute lasts 0.3 s and uv sync 1 s.
         (self.home / ".local" / "bin" / "uv").write_text("#!/bin/sh\nsleep 1\n")
         args = ["bash", "-s", "--", str(self.shared / ".agentsdock-server-test"), "59871", str(self.shared)]
-        env = {"HOME": str(self.home), "PATH": self.path}
+        env = {"HOME": str(self.home), "PATH": self.path, "AGENTSDOCK_HUB_PROOF": "d" * 64}
         script = SCRIPT.read_bytes().replace(b"sleep 60 ", b"sleep 0.3 ")
         lines = subprocess.run(args, input=script, check=True, capture_output=True, env=env).stdout.decode().splitlines()
         sync = lines.index("[AgentsDock setup] Preparing the Python runtime (uv sync)")

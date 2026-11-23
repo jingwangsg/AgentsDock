@@ -73,6 +73,8 @@ RUNTIME_FILES=(
   "$SCRIPT_DIR/codex_side_question.py"
   "$SCRIPT_DIR/claude_side_question.py"
   "$SCRIPT_DIR/cursor_agent_client.py"
+  "$SCRIPT_DIR/remote_deploy_drain.py"
+  "$SCRIPT_DIR/hub_provider_auth.py"
   "$SCRIPT_DIR/cursor_provider_mcp.py"
   "$SCRIPT_DIR/opencode_agent_client.py"
   "$SCRIPT_DIR/cursor_process_guard.py"

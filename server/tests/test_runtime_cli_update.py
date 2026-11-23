@@ -1,5 +1,4 @@
-"""The app can run `claude update` / `codex update` on a server with the binary its chats spawn, or install a missing CLI
-or one `update` cannot manage."""
+"""Update a server's chat CLI or install a missing or unmanaged CLI."""
 
 import shutil
 import subprocess
@@ -106,6 +105,8 @@ class RuntimeCliUpdateTests(unittest.TestCase):
         self.enterContext(patch.object(server, "runner_env", lambda: {"HOME": str(home), "PATH": path}))
         self.enterContext(patch.object(server, "CLAUDE_BIN", "claude"))
         self.enterContext(patch.object(server, "CODEX_BIN", "codex"))
+        self.enterContext(patch.object(server, "CURSOR_BIN", "cursor-agent"))
+        self.enterContext(patch.object(server, "CURSOR_BIN_OVERRIDE", ""))
 
     def fake_curl(self, installer, *, before=""):
         """A `curl` that logs its arguments and serves `installer` (run by the pipe's shell) after `before` runs."""
@@ -343,8 +344,65 @@ class RuntimeCliUpdateTests(unittest.TestCase):
         self.assertEqual(response.json()["detail"], f"The claude CLI is configured as {configured}, which does not exist on this server.")
         self.assertFalse((tools / "curl.log").exists())
 
+    def test_install_then_update_cursor_using_its_own_launchers(self):
+        tools = self.fake_curl(f"""
+bin="$HOME/.local/bin"
+release="$HOME/.local/share/cursor-agent/versions/2.0.0"
+mkdir -p "$bin" "$release"
+cat > "$release/cursor-agent" <<'EOF'
+#!/bin/sh
+case "$1" in
+    --help) echo '{" ".join(server.CURSOR_REQUIRED_CLI_FLAGS)}' ;;
+    about) echo 'About Cursor CLI' ;;
+    --version) echo 2.0.0 ;;
+    update) echo 'Cursor updated' ;;
+esac
+EOF
+chmod 755 "$release/cursor-agent"
+ln -s "$release/cursor-agent" "$bin/cursor-agent"
+ln -s "$release/cursor-agent" "$bin/agent"
+""")
+        url = "/api/admin/runtimes/cursor/update"
+        installed = self.client.post(url, headers=HEADERS)
+        self.assertEqual(installed.status_code, 200, installed.text)
+        self.assertEqual((tools / "curl.log").read_text(), "-fsSL https://cursor.com/install\n")
+        self.assertEqual(installed.json()["action"], "install")
+        self.assertEqual(installed.json()["diagnostic"]["version"], "2.0.0")
+        updated = self.client.post(url, headers=HEADERS)
+        self.assertEqual((updated.json()["action"], updated.json()["output"]), ("update", "Cursor updated"))
+
+        # The native updater can relink both names. A user-owned sibling must survive.
+        alias = self.bin / "home/.local/bin/agent"
+        alias.unlink()
+        alias.write_text("an unrelated launcher")
+        collision = self.client.post(url, headers=HEADERS)
+        self.assertEqual(collision.status_code, 409, collision.text)
+        self.assertIn(str(alias), collision.json()["detail"])
+        self.assertEqual(alias.read_text(), "an unrelated launcher")
+
+    def test_cursor_can_update_an_old_identifiable_cli_but_never_an_unrelated_agent(self):
+        tools = self.fake_curl("exit 1")
+        agent = tools / "agent"
+        for identity, expected in (("Another tool", 409), ("About Cursor CLI", 200)):
+            with self.subTest(identity=identity):
+                marker = self.bin / "updated"
+                agent.write_text(f'#!/bin/sh\ncase "$1" in\nabout) echo "{identity}" ;;\nupdate) : > "{marker}" ;;\nesac\n')
+                agent.chmod(0o755)
+                response = self.client.post("/api/admin/runtimes/cursor/update", headers=HEADERS)
+                self.assertEqual(response.status_code, expected, response.text)
+                self.assertEqual(marker.exists(), expected == 200)
+                self.assertFalse((tools / "curl.log").exists())
+
     def test_unknown_backend(self):
-        self.assertEqual(self.client.post("/api/admin/runtimes/cursor/update", headers=HEADERS).status_code, 422)
+        self.assertEqual(self.client.post("/api/admin/runtimes/unknown/update", headers=HEADERS).status_code, 422)
+
+    def test_missing_custom_cursor_launcher_does_not_install_another_binary(self):
+        tools = self.fake_curl("exit 1")
+        with patch.object(server, "CURSOR_BIN", "cursor-preview"):
+            response = self.client.post("/api/admin/runtimes/cursor/update", headers=HEADERS)
+        self.assertEqual(response.status_code, 404, response.text)
+        self.assertIn("cursor-preview", response.json()["detail"])
+        self.assertFalse((tools / "curl.log").exists())
 
     def test_requires_the_native_admin_token(self):
         self.cli("claude", "exit 0")

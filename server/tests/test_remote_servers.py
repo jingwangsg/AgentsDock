@@ -295,12 +295,13 @@ class RemoteServerTests(unittest.TestCase):
 
     def test_registry_roundtrip_is_private_and_hides_tokens(self) -> None:
         path = self.tmp_path / "state" / "remote-servers.json"
-        servers = [make_server(), make_server(id="123456abcdef", name="lab", local_port=7852)]
+        servers = [make_server(provider_auth_key="d" * 64), make_server(id="123456abcdef", name="lab", local_port=7852)]
         rs.save_registry(path, servers)
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
         assert rs.load_registry(path) == servers
         view = rs.public_view(servers[0], {"state": "connected", "restarts": 0, "last_error": None})
         assert "token" not in view and view["proxy_path"] == "/api/remote/abcdef123456"
+        assert "provider_auth_key" not in view and "d" * 64 not in json.dumps(view)
         assert rs.load_registry(self.tmp_path / "missing.json") == []
 
     def test_create_rejects_dangerous_input(self) -> None:
@@ -323,19 +324,21 @@ class RemoteServerTests(unittest.TestCase):
     def test_update_changes_an_entry_in_place_and_redeploys_a_moved_one(self) -> None:
         async def main() -> None:
             manager = rs.RemoteServerManager(self.tmp_path, source_dir=self.tmp_path, manage_tunnels=False)
-            manager.servers["abcdef123456"] = make_server()
+            manager.servers["abcdef123456"] = make_server(provider_auth_key="d" * 64)
             deploys: list[str | None] = []
             live_tunnel = mock.Mock(server=manager.servers["abcdef123456"])
             manager.tunnels["abcdef123456"] = live_tunnel
             with mock.patch.object(manager, "start_deploy", side_effect=lambda request, *, redeploy_id: deploys.append(redeploy_id) or rs.DeployJob(job_id="job")):
                 renamed, job = manager.update("abcdef123456", rs.RemoteServerUpdate(name=" lab "))
                 assert (renamed.name, job, deploys) == ("lab", None, [])
+                assert renamed.provider_auth_key == "d" * 64
                 # A rename keeps the live forward instead of restarting it.
                 assert manager.tunnels["abcdef123456"] is live_tunnel and live_tunnel.server.name == "lab"
 
                 with mock.patch.dict(os.environ, {"AGENTSDOCK_OCI_HOME": "/mnt/lustre/me"}):
                     moved, job = manager.update("abcdef123456", rs.RemoteServerUpdate(ssh_host="oci@new_cluster"))
                 assert job is not None and deploys == ["abcdef123456"]
+                assert moved.provider_auth_key is None
                 with mock.patch.dict(os.environ, {"AGENTSDOCK_OCI_HOME": "/mnt/lustre/me"}), self.assertRaises(HTTPException) as odd:
                     manager.update("abcdef123456", rs.RemoteServerUpdate(ssh_host="oci@a:b"))
                 assert odd.exception.status_code == 422
@@ -1181,6 +1184,7 @@ time.sleep(30)
         # would strand every saved profile on the retired id.
         [again] = rs.load_registry(manager.path)
         assert (again.id, again.name) == (server.id, "first")
+        assert server.provider_auth_key and again.provider_auth_key and again.provider_auth_key != server.provider_auth_key
 
     def test_a_rename_during_a_redeploy_survives_its_write_back(self) -> None:
         self.fake_host(existing_port=7860)
@@ -2193,9 +2197,9 @@ time.sleep(30)
             finally:
                 await close()
             assert order == [
-                ("redeploy", remote.id), ("cli", remote.id, "claude"), ("cli", remote.id, "codex"),
-                ("redeploy", dead.id), ("cli", dead.id, "claude"), ("cli", dead.id, "codex"),
-                ("hub-cli", "claude"), ("hub-cli", "codex"), ("restart",),
+                ("redeploy", remote.id), ("cli", remote.id, "claude"), ("cli", remote.id, "codex"), ("cli", remote.id, "cursor"),
+                ("redeploy", dead.id), ("cli", dead.id, "claude"), ("cli", dead.id, "codex"), ("cli", dead.id, "cursor"),
+                ("hub-cli", "claude"), ("hub-cli", "codex"), ("hub-cli", "cursor"), ("restart",),
             ]
             messages = [entry["message"] for entry in view["log"]]
             assert f"{remote.name}: Uploading the server…" in messages and f"{remote.name}: Claude Code claude-2.0" in messages
@@ -2321,13 +2325,15 @@ time.sleep(30)
         (source / "agent_server.py").write_text("")
         (source / "VERSION").write_text("1.2.3\n")
         # A moved install's stale config dir, and no final newline (a hand edit).
-        # Unpacking stops whatever serves the port, so the run uses one no local server listens on.
         (install / "env").write_text(f"export AGENTSDOCK_AGENT_TOKEN={REMOTE_TOKEN}\nexport AGENTS_SERVER_CONFIG_DIR=/old\nexport AGENTSDOCK_AGENT_PORT=59872")
         install.chmod(0o775)  # a host umask of 002
 
-        def bootstrap(prelude: bytes = b"") -> subprocess.CompletedProcess:
+        def bootstrap(prelude: bytes = b"", proof: str = "a" * 64) -> subprocess.CompletedProcess:
+            prelude += f"AGENTSDOCK_HUB_PROOF={proof}\n".encode()
             with tarfile.open(install / "upload.tgz", "w:gz") as tar:
                 tar.add(source, arcname=".")
+                for name in ("remote_deploy_drain.py", "server_instances.py", "execution_http.py"):
+                    tar.add(rs.BOOTSTRAP_SCRIPT.parent / name, arcname=name)
             return subprocess.run(
                 ["bash", "-s", "--", str(install), "59872", str(home)], input=prelude + rs.BOOTSTRAP_SCRIPT.read_bytes(),
                 capture_output=True, env={**os.environ, "HOME": str(home)}, timeout=60,
@@ -2337,25 +2343,29 @@ time.sleep(30)
         output = proc.stdout.decode()
         assert proc.returncode == 0, output + proc.stderr.decode()
         result = rs.parse_setup_result(output.splitlines())
+        proof_path = install / ".hub-provider-proof"
+        assert proof_path.read_text() == "a" * 64 and stat.S_IMODE(proof_path.stat().st_mode) == 0o600
+        assert "a" * 64 not in output + proc.stderr.decode() + (install / "env").read_text()
         assert (result["access_token"], result["remote_port"], result["server_version"]) == (REMOTE_TOKEN, 59872, "1.2.3")
         # The new source replaces the running server, the runtime is synced, and start.sh's health check finds it up.
         assert calls.read_text().splitlines() == [
-            "tmux kill-session -t agentsdock-59872", "uv sync --frozen --quiet --python >=3.11,<3.15",
+            "uv sync --frozen --quiet --python >=3.11,<3.15",
             f"curl -fsS -m 3 -H Authorization: Bearer {REMOTE_TOKEN} http://127.0.0.1:59872/api/health",
         ]
         # The only env change points the server's own settings writes (a token saved in the app) at this env,
         # whose directory the server writes only when group/others cannot.
         assert (install / "env").read_text() == (
             f"export AGENTSDOCK_AGENT_TOKEN={REMOTE_TOKEN}\nexport AGENTSDOCK_AGENT_PORT=59872\n"
-            f"export AGENTS_SERVER_CONFIG_DIR={install}\n"
+            f"export AGENTS_SERVER_CONFIG_DIR={install}\nexport AGENTSDOCK_HUB_PROVIDER_AUTH=1\n"
         )
         assert stat.S_IMODE(install.stat().st_mode) & 0o022 == 0
 
         # A token handed over by the hub lands in env once, without echoing it.
         token = "sk-ant-oat01-" + "t" * 40
-        for _ in range(2):
-            proc = bootstrap(f"AGENTSDOCK_CLAUDE_TOKEN={token}\n".encode())
+        for proof in ("b" * 64, "c" * 64):
+            proc = bootstrap(f"AGENTSDOCK_CLAUDE_TOKEN={token}\n".encode(), proof)
             assert proc.returncode == 0 and token not in proc.stdout.decode() + proc.stderr.decode(), proc.stderr.decode()
+            assert proof_path.read_text() == proof
         assert (install / "env").read_text().count(f"export CLAUDE_CODE_OAUTH_TOKEN={token}\n") == 1
         assert (install / "env").read_text().count("export AGENTS_SERVER_CONFIG_DIR=") == 1
         assert stat.S_IMODE((install / "env").stat().st_mode) == 0o600

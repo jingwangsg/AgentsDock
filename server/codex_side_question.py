@@ -172,7 +172,7 @@ class NativeCodexSideChat:
                  provider_selection: dict | None = None, cwd: str | None = None,
                  fork_overrides: dict | None = None, turn_overrides: dict | None = None,
                  server_request_handler=None, durable: bool = False,
-                 resume_state: dict | None = None, persist_state=None):
+                 resume_state: dict | None = None, persist_state=None, external_login=None):
         if not isinstance(parent_thread_id, str) or not parent_thread_id.strip():
             raise SideQuestionError(409, "The parent Codex conversation is not available yet")
         self.parent_thread_id = parent_thread_id
@@ -187,6 +187,7 @@ class NativeCodexSideChat:
         self.resume_state = deepcopy(resume_state)
         self.persist_state = persist_state
         self.env = isolated_environment(env)
+        self.external_login = external_login
         self.provider_config = {}
         self.provider_turn_overrides = {}
         self.sensitive_values = ()
@@ -261,7 +262,7 @@ class NativeCodexSideChat:
             process_stream_limit=MAX_OUTPUT_BYTES, notification_queue_limit=512,
             sensitive_values=self.sensitive_values,
             protected_env_keys=self.protected_env_keys,
-            server_request_handler=self._handle_server_request,
+            server_request_handler=self._handle_server_request, external_login=self.external_login,
             on_process_started=lambda _pid, _group: self._process_started.set(),
             **client_options,
         )
