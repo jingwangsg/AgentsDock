@@ -4,7 +4,8 @@
 
 - A hub deployment enrolls the SSH remote for Codex and Cursor sign-in. The remote runs each turn in its own workspace with a provider access token issued through the hub. The hub retains the refresh credential.
 - The Mac and Android server menus support updating Cursor alongside Claude Code and Codex. New Chat uses the selected server's runtime catalog. Cursor turn notifications open the originating chat and server.
-- Verified real Codex and Cursor replies in the desktop app through an isolated hub, SSH tunnel and remote server. The local installation packages are desktop build 149 and Android sideload build 91.
+- An isolated hub and SSH-managed server completed real Codex and Cursor turns with an empty remote login store. The remote still had no native login files after both turns. An active request on an earlier server completed before the deployment replaced its process.
+- Desktop build 149 and Android sideload build 91 were built from `99cce719`. Both clients updated Cursor on the selected server. In the Android emulator, sending a Cursor message and pressing Home during the run produced an OS notification. Tapping it reopened the originating chat and its reply. The mobile app keeps an existing primary server connection for running turns while its process can execute. iOS device notification delivery was not exercised.
 
 ## 2026-11-23 — Cursor remembers the first chat after a fresh CLI login
 
