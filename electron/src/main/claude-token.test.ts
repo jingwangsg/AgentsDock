@@ -31,21 +31,33 @@ describe('native Claude token transport', () => {
     for (const header of ['origin', 'cookie', 'authorization']) expect(calls[0].headers[header]).toBeUndefined()
   })
 
-  it('runs a CLI update through the native admin route under a mounted remote prefix', async () => {
+  it.each(['claude', 'cursor'] as const)('updates %s through the native admin route under a mounted remote prefix', async backend => {
     const calls: Array<{ method?: string; url?: string; headers: IncomingMessage['headers'] }> = []
     await withServer((req, res) => {
       calls.push({ method: req.method, url: req.url, headers: req.headers })
-      res.end(JSON.stringify({ output: 'Claude Code is up to date', diagnostic: { backend: 'claude', status: 'ready', available: true, message: '' } }))
+      res.end(JSON.stringify({ output: 'Up to date', diagnostic: { backend, status: 'ready', available: true, message: '' } }))
     }, async url => {
       const client = new AgentServerClient(`${url}/api/remote/abc123`, 'synthetic-admin-token')
       try {
-        await expect(client.updateRuntimeCli('claude')).resolves.toMatchObject({ output: 'Claude Code is up to date' })
-        await expect(client.updateRuntimeCli('cursor' as 'claude')).rejects.toThrow('Privileged native control route is invalid.')
+        await expect(client.updateRuntimeCli(backend)).resolves.toMatchObject({ output: 'Up to date', diagnostic: { backend } })
+        await expect(client.updateRuntimeCli('unknown' as 'claude')).rejects.toThrow('Privileged native control route is invalid.')
       } finally { client.dispose() }
     })
-    expect(calls.map(call => [call.method, call.url])).toEqual([['POST', '/api/remote/abc123/api/admin/runtimes/claude/update']])
+    expect(calls.map(call => [call.method, call.url])).toEqual([['POST', `/api/remote/abc123/api/admin/runtimes/${backend}/update`]])
     expect(calls[0].headers['x-agentsdock-token']).toBe('synthetic-admin-token')
     expect(calls[0].headers.authorization).toBeUndefined()
+  })
+
+  it('explains when an older server rejects Cursor updates', async () => {
+    await withServer((_req, res) => {
+      res.statusCode = 422
+      res.end(JSON.stringify({ detail: [{ msg: 'Input should be claude or codex' }] }))
+    }, async url => {
+      const client = new AgentServerClient(url, 'synthetic-admin-token')
+      try {
+        await expect(client.updateRuntimeCli('cursor')).rejects.toThrow('Update this AgentsServer')
+      } finally { client.dispose() }
+    })
   })
 
   it.each([[400, 'INVALID'], [413, 'INVALID'], [401, 'FAILED'], [500, 'FAILED']])(

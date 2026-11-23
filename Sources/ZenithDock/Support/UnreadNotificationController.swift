@@ -116,6 +116,7 @@ final class UnreadNotificationController: NSObject {
         case "job_ran":
             return "A scheduled job posted an update."
         default:
+            if backend.lowercased() == "cursor" { return "Cursor posted a new response." }
             let name = backend.lowercased() == "claude" ? "Claude" : "Codex"
             return "\(name) posted a new response."
         }

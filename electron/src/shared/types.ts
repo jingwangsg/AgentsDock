@@ -2244,7 +2244,7 @@ export interface ServerRunningChats {
 
 /** One server's step in Settings → Server "Update & redeploy all". */
 export type ServerUpdateAllProgress = { profileId: string } & (
-  | { step: 'restart' | 'claude' | 'codex' }
+  | { step: 'restart' | 'claude' | 'codex' | 'cursor' }
   /** The hub's deploy log line. */
   | { step: 'redeploy'; message: string }
   /** The redeploy error, if any, then each CLI's version or error. */

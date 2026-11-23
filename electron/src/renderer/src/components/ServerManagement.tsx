@@ -37,6 +37,11 @@ const emptyDraft = (): ServerDraft => ({
 })
 
 interface RowWork { kind: 'redeploy' | 'cli' | 'ssh' | 'visibility'; text: string; working?: boolean; failed?: boolean; confirm?: boolean }
+const cliProgressMessages = {
+  claude: 'updateAll.updatingClaude',
+  codex: 'updateAll.updatingCodex',
+  cursor: 'updateAll.updatingCursor',
+}
 
 /** The saved order after dragging one server onto another's place; the local server stays first. */
 export function serverOrderAfterDrag(profiles: PublicServerProfile[], hubId: string | null, activeId: string, overId: string): string[] | null {
@@ -348,7 +353,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
       setBusy(null)
     }
   }
-  const updateCli = async (profile: PublicServerProfile, backend: 'claude' | 'codex') => {
+  const updateCli = async (profile: PublicServerProfile, backend: 'claude' | 'codex' | 'cursor') => {
     noteRow(profile.id, { kind: 'cli', working: true, text: t('runtimeUpdate.updating') })
     try {
       const { output, diagnostic } = await window.agentsDock.servers.updateCli(profile.id, backend)
@@ -372,7 +377,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
       if (progress.step === 'restart') noteRow(progress.profileId, { kind: 'redeploy', working: true, text: t('updateAll.restarting') })
       else if (progress.step === 'redeploy') noteRow(progress.profileId, { kind: 'redeploy', working: true, text: progress.message })
       else if (progress.step === 'done') noteRow(progress.profileId, { kind: 'cli', failed: progress.failed, text: progress.message })
-      else noteRow(progress.profileId, { kind: 'cli', working: true, text: t(progress.step === 'claude' ? 'updateAll.updatingClaude' : 'updateAll.updatingCodex') })
+      else noteRow(progress.profileId, { kind: 'cli', working: true, text: t(cliProgressMessages[progress.step]) })
     })
     try {
       const running = await window.agentsDock.remoteServers.updateAll(force)
@@ -489,6 +494,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
                 <DropdownMenu.Content className="menu-content" align="end" sideOffset={4}>
                   <DropdownMenu.Item className="menu-item" onSelect={() => void updateCli(profile, 'claude')}>{t('runtimeUpdate.claude')}</DropdownMenu.Item>
                   <DropdownMenu.Item className="menu-item" onSelect={() => void updateCli(profile, 'codex')}>{t('runtimeUpdate.codex')}</DropdownMenu.Item>
+                  <DropdownMenu.Item className="menu-item" onSelect={() => void updateCli(profile, 'cursor')}>{t('runtimeUpdate.cursor')}</DropdownMenu.Item>
                 </DropdownMenu.Content>
               </DropdownMenu.Portal>
             </DropdownMenu.Root>

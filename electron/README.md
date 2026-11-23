@@ -84,6 +84,10 @@ Server identity scopes sessions, preferences, timeline rows, read state, jobs,
 files, and pins so aliases for one server share data without contaminating a
 different server.
 
+## Cursor CLI
+
+Choose **Update Cursor** from the selected server's CLI update menu to install or update Cursor. For a standalone server, run `cursor-agent login` as its server user. A remote deployed by a hub with provider sign-in support uses the hub user's Cursor login. After **Recheck CLIs** reports Cursor ready, choose **New Cursor Chat** from the folder menu.
+
 ## OpenCode (optional beta backend)
 
 OpenCode appears in the chat backend picker. A matching standalone

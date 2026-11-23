@@ -1864,8 +1864,8 @@ export class AppService {
     }
   }
 
-  /** Server list "Update CLI": updates Claude Code or Codex on any saved server, active or not. */
-  async updateServerRuntimeCli(profileId: string, backend: 'claude' | 'codex'): Promise<RuntimeCliUpdate> {
+  /** Server list "Update CLI": updates the selected CLI on any saved server, active or not. */
+  async updateServerRuntimeCli(profileId: string, backend: 'claude' | 'codex' | 'cursor'): Promise<RuntimeCliUpdate> {
     // An undefined id would fall back to the active profile in SettingsStore.
     const profile = typeof profileId === 'string' ? this.settings.getProfile(profileId) : undefined
     if (!profile) throw new Error('Unknown server profile.')
@@ -2009,7 +2009,7 @@ export class AppService {
       const updateClis = async (profile: PublicServerProfile, redeployError?: string) => {
         const results = redeployError ? [`redeploy: ${redeployError}`] : []
         let failed = Boolean(redeployError)
-        for (const backend of ['claude', 'codex'] as const) {
+        for (const backend of ['claude', 'codex', 'cursor'] as const) {
           onProgress({ profileId: profile.id, step: backend })
           try {
             results.push((await this.updateServerRuntimeCli(profile.id, backend)).diagnostic.version ?? backend)
@@ -8289,7 +8289,7 @@ export class AppService {
     if (onScreen || !session || !profile || skipRunChatBanner) return
     this.showProfileNotification({
       title: session.title,
-      body: t('notifications.turnFinished'),
+      body: t(session.backend === 'cursor' ? 'notifications.cursorTurnFinished' : 'notifications.turnFinished'),
       profileId: scope.profileId,
       serverIdentity: profile.serverIdentity ?? null,
       sessionId

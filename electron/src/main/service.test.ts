@@ -10214,7 +10214,7 @@ describe('server profile lifecycle', () => {
     const r1 = Object.assign(fakeClient({ health: async () => ({ ok: true, active: [] }) }), {
       updateRuntimeCli: vi.fn(async (backend: string) => {
         if (backend === 'codex') throw new Error('`codex update` exited with 1.')
-        return { output: '', diagnostic: { available: true, version: 'claude 9.9' } }
+        return { output: '', diagnostic: { available: true, version: `${backend} 9.9` } }
       })
     })
     const r2 = Object.assign(fakeClient(), {
@@ -10255,20 +10255,23 @@ describe('server profile lifecycle', () => {
       { profileId: 'b', step: 'restart' },
       { profileId: 'b', step: 'claude' },
       { profileId: 'b', step: 'codex' },
-      { profileId: 'b', step: 'done', failed: false, message: 'claude 9.9 · codex 9.9' }
+      { profileId: 'b', step: 'cursor' },
+      { profileId: 'b', step: 'done', failed: false, message: 'claude 9.9 · codex 9.9 · cursor 9.9' }
     ])
     expect(steps(remote1.id)).toEqual([
       { profileId: remote1.id, step: 'redeploy', message: 'Installing on r1' },
       { profileId: remote1.id, step: 'claude' },
       { profileId: remote1.id, step: 'codex' },
-      { profileId: remote1.id, step: 'done', failed: true, message: 'claude 9.9 · codex: `codex update` exited with 1.' }
+      { profileId: remote1.id, step: 'cursor' },
+      { profileId: remote1.id, step: 'done', failed: true, message: 'claude 9.9 · codex: `codex update` exited with 1. · cursor 9.9' }
     ])
     // A failed redeploy still updates that server's CLIs.
     expect(steps(remote2.id)).toEqual([
       { profileId: remote2.id, step: 'redeploy', message: 'Installing on r2' },
       { profileId: remote2.id, step: 'claude' },
       { profileId: remote2.id, step: 'codex' },
-      { profileId: remote2.id, step: 'done', failed: true, message: 'redeploy: ssh: connect to host r2.example: Connection refused · claude 9.9 · codex 9.9' }
+      { profileId: remote2.id, step: 'cursor' },
+      { profileId: remote2.id, step: 'done', failed: true, message: 'redeploy: ssh: connect to host r2.example: Connection refused · claude 9.9 · codex 9.9 · cursor 9.9' }
     ])
   })
 
@@ -11233,16 +11236,17 @@ describe('server profile lifecycle', () => {
     })
   })
 
-  it('notifies once from a streamed turn end unless the chat is open in a focused window', async () => {
+  it.each([['codex', 'Response finished'], ['cursor', 'Cursor turn finished']] as const)(
+    'notifies once from a streamed %s turn end unless the chat is open in a focused window', async (backend, body) => {
     electronHarness.notificationSupported = true
     const streams = new Map<string, { onEvent: (event: Event) => void; onState: (connected: boolean, error?: string) => void }>()
     const client = fakeClient({
-      sessionPage: async sessionId => ({ ...emptyTimelinePage(sessionId), session: { id: sessionId, title: 'Open chat', backend: 'codex' } }),
+      sessionPage: async sessionId => ({ ...emptyTimelinePage(sessionId), session: { id: sessionId, title: 'Open chat', backend } }),
       stream: (sessionId, _after, onEvent, onState) => { streams.set(sessionId, { onEvent, onState }); return vi.fn() }
     })
     const { service } = createProfileService({ 'http://a.test:7850': [client] })
     Object.assign(service, { validatedGeneration: 1 })
-    ;(service as unknown as { sessions: Session[] }).sessions = [{ id: 'chat', title: 'Open chat', backend: 'codex' }]
+    ;(service as unknown as { sessions: Session[] }).sessions = [{ id: 'chat', title: 'Open chat', backend }]
     let focused = false
     service.addWindow({
       isDestroyed: () => false, isFocused: () => focused, on: vi.fn(),
@@ -11255,7 +11259,7 @@ describe('server profile lifecycle', () => {
 
     streams.get('chat')!.onEvent(turnEnd(3))
     expect(electronHarness.notifications).toHaveLength(1)
-    expect(electronHarness.notifications[0].options).toEqual({ title: 'Open chat', body: 'Response finished', silent: false })
+    expect(electronHarness.notifications[0].options).toEqual({ title: 'Open chat', body, silent: false })
     // A redelivered terminal is the same turn.
     streams.get('chat')!.onEvent(turnEnd(3))
     expect(electronHarness.notifications).toHaveLength(1)

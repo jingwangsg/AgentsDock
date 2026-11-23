@@ -883,8 +883,16 @@ export class AgentServerClient {
     }
   }
   /** The server stops the CLI after 10 minutes; a download can take several. */
-  updateRuntimeCli(backend: 'claude' | 'codex'): Promise<RuntimeCliUpdate> {
-    return this.privilegedNativeRequest(`/api/admin/runtimes/${backend}/update`, { method: 'POST' }, 11 * 60_000, 200)
+  async updateRuntimeCli(backend: 'claude' | 'codex' | 'cursor'): Promise<RuntimeCliUpdate> {
+    try {
+      return await this.privilegedNativeRequest(`/api/admin/runtimes/${backend}/update`, { method: 'POST' }, 11 * 60_000, 200)
+    } catch (error) {
+      if (backend === 'cursor' && error instanceof ServerError
+        && (error.status === 422 || (error.status === 404 && error.detail === 'Not Found'))) {
+        throw new Error('Update this AgentsServer to enable Cursor CLI updates.')
+      }
+      throw error
+    }
   }
   codexServerSubagents(): Promise<CodexSubagentsConfiguration> {
     return this.privilegedNativeRequest('/api/admin/codex/subagents')
@@ -3570,7 +3578,7 @@ function isPrivilegedNativeControlTarget(
   }
   if (path === '/api/admin/codex/auth') return !target.search && method === 'GET'
   if (path === '/api/admin/claude/token') return !target.search && method === 'PUT'
-  if (/^\/api\/admin\/runtimes\/(claude|codex)\/update$/.test(path)) return !target.search && method === 'POST'
+  if (/^\/api\/admin\/runtimes\/(claude|codex|cursor)\/update$/.test(path)) return !target.search && method === 'POST'
   if (path === '/api/admin/codex/provider') return !target.search && ['GET', 'PUT', 'DELETE'].includes(method)
   if (path === '/api/admin/codex/provider/test') return !target.search && method === 'POST'
   if (path === '/api/admin/codex/provider/models') return method === 'GET' && (!target.search
