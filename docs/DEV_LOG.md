@@ -3,6 +3,7 @@
 ## 2026-11-25 — Keep Gemini visible in folder chat menus
 
 - Desktop and mobile folder menus show Gemini on servers that support it. When the CLI is unavailable, selecting the entry explains the server diagnostic. When health reports that Gemini has recovered, both clients refresh a previously unavailable model catalog.
+- Verified with macOS build 152 and Android sideload build 94 from `49e22009`. In each packaged client, a folder menu explained a simulated budget failure and created no chat. After the same isolated server reported recovery, the menu created a Gemini chat without restarting the client.
 
 ## 2026-11-24 — Native Gemini CLI chats on desktop and mobile
 
