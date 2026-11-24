@@ -6,6 +6,7 @@
 - Managed remotes reach the model gateway over their existing Hub SSH connection. Each remote receives a separate gateway token. A standalone installation reads its own credential.
 - Verified with Gemini CLI 0.71.1, an isolated AgentsServer, Electron and an Android emulator. Both clients completed a tool call and a follow-up. Both clients updated the CLI. Android reopened the originating chat from its completion notification. OpenSSH isolation, native Stop, queued resume and scoped chat delivery were exercised with a local model fixture. Production inference acceptance remains pending.
 - Local macOS build 150 and Android sideload build 92 were built from client commit `f031cce7`. The packaged Electron renderer and installed Android APK each completed two turns against the isolated server and model fixture.
+- Repacked macOS build 151 and Android sideload build 93 from `4363e934`. The packaged Electron runtime files, Android JavaScript bundle and Android native libraries matched builds 150 and 92 byte for byte.
 
 ## 2026-11-23 — Explain Cursor provider exhaustion and preserve recoverable sessions
 
