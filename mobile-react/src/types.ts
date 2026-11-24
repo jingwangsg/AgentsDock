@@ -510,6 +510,8 @@ export interface RuntimeBackendCatalog {
   model_source?: string | null
   effort_source?: string | null
   default_model?: string | null
+  // Cursor can rule out unlisted models only after a complete discovery or a known plan restriction.
+  model_list_complete?: boolean
   default_effort?: string | null
   diagnostic?: RuntimeDiagnostic | null
 }

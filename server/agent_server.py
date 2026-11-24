@@ -62445,16 +62445,24 @@ def discover_cursor_catalog(*, executable: str | None = None) -> dict[str, Any]:
         )
 
     if not parsed:
-        # Never regress below the one value already confirmed to work.
+        # Free accounts can only select Auto. For other accounts a failed listing
+        # supplies no evidence that an already selected model has been withdrawn.
         return {
-            "models": [runtime_option("auto", "Auto")],
+            "models": unique_runtime_options([runtime_option("auto", "Auto")]),
+            "model_list_complete": False,
             "efforts": [],
             "model_source": model_source if "failed" in model_source else f"{model_source} empty",
             "effort_source": "none",
-            "default_model": "auto",
+            "default_model": None,
             "default_effort": None,
         }
-    default_entry = next((model for model in parsed if model.get("is_default")), parsed[0])
+    if current_label:
+        # about may include parameters (such as context size) absent from the
+        # listing's labels. Keep the native label without inventing a model ID.
+        matches = [m for m in parsed if " ".join(m["label"].split()).casefold() == current_label.casefold()]
+        default_entry = matches[0] if len(matches) == 1 else None
+    else:
+        default_entry = next((model for model in parsed if model.get("is_default")), parsed[0])
     locked_reason = "Requires a paid Cursor plan - this account is on the free plan, which can only use Auto"
     model_options = [
         runtime_option(
@@ -62466,11 +62474,11 @@ def discover_cursor_catalog(*, executable: str | None = None) -> dict[str, Any]:
         for model in parsed
     ]
     return {
-        "models": unique_runtime_options(model_options, default_entry["label"]),
+        "models": unique_runtime_options(model_options, current_label or default_entry["label"]),
         "efforts": [],
         "model_source": model_source,
         "effort_source": "none",
-        "default_model": str(default_entry.get("id") or "auto"),
+        "default_model": default_entry["id"] if default_entry else None,
         "default_effort": None,
     }
 
@@ -62519,11 +62527,12 @@ def discover_runtime_backend_catalog(backend: str, *, force_runtime_probe: bool 
         )
     elif backend == BACKEND_CURSOR:
         catalog = discover_cursor_catalog(executable=executable) if ready and not runtime_catalog_budget_expired() else {
-            "models": [runtime_option("auto", "Auto")],
+            "models": unique_runtime_options([runtime_option("auto", "Auto")], current_label),
+            "model_list_complete": is_free_tier,
             "efforts": [],
             "model_source": "Runtime refresh deadline" if ready else "Cursor runtime unavailable",
             "effort_source": "none",
-            "default_model": "auto",
+            "default_model": None,
             "default_effort": None,
         }
         catalog.update({
@@ -62534,10 +62543,16 @@ def discover_runtime_backend_catalog(backend: str, *, force_runtime_probe: bool 
         catalog = discover_opencode_catalog(executable=executable) if ready and not runtime_catalog_budget_expired() else {
             "models": [],
             "efforts": [],
+    current_label = None
             "model_source": "Runtime refresh deadline" if ready else "OpenCode runtime unavailable",
             "effort_source": "none",
             "default_model": "",
             "default_effort": None,
+            # --list-models marks the provider's router as default even after /model
+            # selects a different model and reasoning effort in the user's CLI.
+            model_row = re.search(r"^[ \t]*Model(?:[ \t]*:[ \t]*|[ \t]+)([^\r\n]+)$", about_output, re.I | re.M)
+            if model_row:
+                current_label = " ".join(model_row.group(1).split())[:256] or None
         }
         catalog.update({
             "permission_modes": list(OPENCODE_PERMISSION_MODES),
@@ -70380,6 +70395,7 @@ async def run_cursor_process(
                 await append_turn_finished_event(session_id, {
                     "run_id": run_id,
                     "backend": BACKEND_CURSOR,
+        CURSOR_ANSI_ESCAPE_RE,
                     "exit_code": None,
                     "result_text": "",
                     "is_error": True,
@@ -70991,26 +71007,25 @@ async def run_cursor_process(
     )
     cursor_auth_failed = cursor_auth_state == "unauthenticated"
     cursor_auth_validation_error = cursor_auth_state == "error"
-    cursor_auth_failure_message = (
-        "Cursor authentication failed. Sign in as the server user or configure "
-        "CURSOR_API_KEY, then click Recheck CLIs."
-    )
-    cursor_auth_validation_message = (
-        "Cursor could not validate the failed provider request. Check the "
-        "server network and Cursor credentials, then click Recheck CLIs."
-    )
-    logical_failure_message = (
-        cursor_logical_failure_message(result_text)
-        if turn_is_error
-        else None
-    )
-    cursor_failure_message = (
-        cursor_auth_failure_message
-        if cursor_auth_failed
-        else cursor_auth_validation_message
-        if cursor_auth_validation_error
-        else logical_failure_message
-    )
+    auth_message = None
+    if cursor_auth_failed:
+        auth_message = (
+            "Cursor authentication failed. Sign in as the server user or configure "
+            "CURSOR_API_KEY, then click Recheck CLIs."
+        )
+    elif cursor_auth_validation_error:
+        auth_message = (
+            "Cursor could not validate the failed provider request. Check the "
+            "server network and Cursor credentials, then click Recheck CLIs."
+        )
+    provider_failure = auth_message
+    if resource_exhausted:
+        provider_failure = (
+            "Cursor's model provider returned RESOURCE_EXHAUSTED. Wait briefly and try again. "
+            "If it recurs, select another available model in this chat."
+        )
+    elif turn_is_error and not provider_failure:
+        provider_failure = cursor_logical_failure_message(result_text)
 
     if timeout_error and not stopped:
         await append_event(session_id, "error", {
@@ -71030,48 +71045,17 @@ async def run_cursor_process(
             "exit_code": proc.returncode,
             **run_event_metadata(run_id),
         })
-    elif turn_is_error and not stopped:
+    elif not stopped and (turn_is_error or (proc.returncode not in (0, None) and not terminal_exit_forced)):
         await append_event(session_id, "error", {
             "run_id": run_id,
-            "message": cursor_failure_message,
-            "exit_code": proc.returncode,
-            **run_event_metadata(run_id),
-        })
-    elif (
-        not stopped
-        and proc.returncode not in (0, None)
-        and not terminal_exit_forced
-    ):
-        await append_event(session_id, "error", {
-            "run_id": run_id,
-            "message": (
-                cursor_auth_failure_message
-                if cursor_auth_failed
-                else cursor_auth_validation_message
-                if cursor_auth_validation_error
-                else f"Cursor exited {proc.returncode}. {stderr_diagnostic}"
-            ),
+            "message": provider_failure or f"Cursor exited {proc.returncode}. {stderr_diagnostic}",
             "exit_code": proc.returncode,
             **run_event_metadata(run_id),
         })
 
     runtime_failure_reason = (
-        (
-            cursor_auth_failure_message
-            if cursor_auth_failed
-            else cursor_auth_validation_message
-            if cursor_auth_validation_error
-            else None
-        )
-        or timeout_error
-        or stream_error
-        or protocol_error
-        or (logical_failure_message if turn_is_error else None)
-        or (
-            f"Cursor exited {proc.returncode}. {stderr_diagnostic}"
-            if proc.returncode not in (0, None)
-            else None
-        )
+        auth_message or timeout_error or stream_error or protocol_error or provider_failure
+        or (f"Cursor exited {proc.returncode}. {stderr_diagnostic}" if proc.returncode not in (0, None) else None)
     )
     if not stopped and (
         timeout_error
@@ -71079,8 +71063,20 @@ async def run_cursor_process(
         or protocol_error
         or turn_is_error
         or (
+    # Accept only the native error envelope. Provider stderr and result details
+    # can quote the prompt, tool output or credentials and must stay private.
+    resource_exhausted = (
+        not (stopped or timeout_error or stream_error or protocol_error or terminal_exit_forced)
+        and (turn_is_error or proc.returncode not in (0, None))
+        and re.match(
+            r"^(?:(?:RetriableError|NonRetriableError|ConnectError|Error):[ \t]*)?\[resource_exhausted\](?:\s|$)",
+            CURSOR_ANSI_ESCAPE_RE.sub("", (result_text if turn_is_error else "") or stderr_text).strip(),
+            re.IGNORECASE,
+        ) is not None
+    )
             proc.returncode not in (0, None)
             and not terminal_exit_forced
+        and not resource_exhausted
         )
     ):
         record_runtime_failure(
@@ -71105,17 +71101,24 @@ async def run_cursor_process(
         and terminal_event_seen
         and provider_started
     )
-    if provider_id and successful_terminal:
+    # A provider limit can end the first turn after tools have already run.
+    # Bind that ID only if Cursor saved a conversation for this exact workspace.
+    resumable_failure = False
+    if (resource_exhausted and provider_started and provider_id and not sess.get("cursor_session_id")
+            and not standalone_provider_context):
+        with suppress(OSError):
+            resumable_failure = await asyncio.to_thread(cursor_history.find_session, provider_id, cwd) is not None
+    if provider_id and (successful_terminal or resumable_failure):
         persisted = await persist_run_provider_session(
             session_id,
             run_id,
             BACKEND_CURSOR,
             provider_id,
-            cursor_instruction_hash=instruction_hash,
+            cursor_instruction_hash=instruction_hash if successful_terminal else None,
             standalone_provider_context=standalone_provider_context,
             emit_event=True,
         )
-        if persisted and memory_injected:
+        if persisted and successful_terminal and memory_injected:
             async with STORE._lock:
                 current = STORE.sessions.get(session_id)
                 if (
@@ -71256,6 +71259,8 @@ def opencode_provider_instructions(
 def opencode_instruction_hash(
     session_id: str,
     sess: dict[str, Any],
+        # The clients' latest-run banner reads the terminal event first.
+        **({"message": provider_failure} if resource_exhausted else {}),
     manifest_path: Path,
 ) -> str:
     payload = (

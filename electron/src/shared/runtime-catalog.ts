@@ -231,8 +231,15 @@ export function runtimeSelectionError(
   }
   if (backend === 'opencode' && !opencodeBackendAvailable(health, catalog)) return opencodeBackendUnavailableReason(health, catalog)
   const selected = model?.trim()
-  if (backend === 'cursor' && selected && !catalog?.backends.cursor?.models.some(option => option.value === selected)) {
-    return `${selected} is not offered by Cursor on this AgentsServer. Choose an available model before running Cursor work.`
+  if (backend === 'cursor' && selected) {
+    const cursor = catalog?.backends.cursor
+    // Older servers identify a partial list only by its discovery source.
+    const source = cursor?.model_source ?? ''
+    const partialList = source === 'Runtime refresh deadline' || / --list-models (?:failed|empty)$/.test(source)
+    const complete = cursor?.model_list_complete ?? !partialList
+    if (complete && !cursor?.models.some(option => option.value === selected)) {
+      return `${selected} is not offered by Cursor on this AgentsServer. Choose an available model before running Cursor work.`
+    }
   }
   if (backend === 'opencode' && selected && !catalog?.backends.opencode?.models.some(option => option.value === selected)) {
     return t('opencode.modelUnavailable', { model: selected })

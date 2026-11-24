@@ -156,6 +156,15 @@ test('a chat backend is switchable only before a provider session exists', () =>
   assert.equal(isBackendLocked({ session_id: 'legacy-1' }), true)
 })
 
+test('a temporary Cursor listing failure cannot rule out a saved model', () => {
+  const backend = { available: true, models: [{ value: 'auto', label: 'Auto' }], efforts: [] }
+  for (const model_source of ['cursor-agent --list-models failed', 'agent --list-models empty', 'Runtime refresh deadline']) {
+    const backends = { cursor: { ...backend, model_source } }
+    assert.equal(runtimeSelectionError(cursorHealth(2), { backends }, 'cursor', 'gemini-4-argon-high'), null)
+    assert.match(runtimeSelectionError(cursorHealth(2), { backends: { cursor: { ...backends.cursor, model_list_complete: true } } }, 'cursor', 'gemini-4-argon-high') ?? '', /not offered/)
+  }
+})
+
 test('locked and unknown Cursor models cannot be admitted', () => {
   const locked: RuntimeCatalog = {
     ...cursorCatalog,

@@ -63,8 +63,15 @@ export function runtimeModelLockReason(catalog: RuntimeCatalog | null | undefine
 export function runtimeSelectionError(health: Health | null | undefined, catalog: RuntimeCatalog | null | undefined, backend: Backend, model?: string | null): string | null {
   if (backend === 'cursor' && !cursorBackendAvailable(health, catalog)) return cursorBackendUnavailableReason(health, catalog)
   const selected = model?.trim()
-  if (backend === 'cursor' && selected && !catalog?.backends.cursor?.models.some(option => option.value === selected)) {
-    return `${selected} is not offered by Cursor on this AgentsServer. Choose an available model before running Cursor work.`
+  if (backend === 'cursor' && selected) {
+    const cursor = catalog?.backends.cursor
+    // Older servers identify a partial list only by its discovery source.
+    const source = cursor?.model_source ?? ''
+    const partialList = source === 'Runtime refresh deadline' || / --list-models (?:failed|empty)$/.test(source)
+    const complete = cursor?.model_list_complete ?? !partialList
+    if (complete && !cursor?.models.some(option => option.value === selected)) {
+      return `${selected} is not offered by Cursor on this AgentsServer. Choose an available model before running Cursor work.`
+    }
   }
   return runtimeModelLockReason(catalog, backend, model)
 }

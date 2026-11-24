@@ -299,6 +299,13 @@ describe('optional Cursor backend admission', () => {
     }, cursorCatalog)).toEqual(['claude', 'codex'])
   })
 
+  it('defers a saved Cursor selection to the CLI when model discovery is incomplete', () => {
+    const cursor = { ...cursorCatalog.backends.cursor!, model_source: 'cursor-agent --list-models failed' }
+    const selected = 'gemini-4-argon-high'
+    expect(runtimeSelectionError(cursorHealth, { backends: { cursor } }, 'cursor', selected)).toBeNull()
+    expect(runtimeSelectionError(cursorHealth, { backends: { cursor: { ...cursor, model_list_complete: true } } }, 'cursor', selected)).toMatch(/not offered/)
+  })
+
   it('fails closed for Cursor work when either capability signal disappears', () => {
     expect(runtimeSelectionError(cursorHealth, cursorCatalog, 'cursor', 'auto')).toBeNull()
     expect(runtimeSelectionError({ ok: true }, cursorCatalog, 'cursor', 'auto')).toMatch(/Cursor is unavailable/)

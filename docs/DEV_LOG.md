@@ -1,5 +1,17 @@
 # Public development log
 
+## 2026-11-23 — Explain Cursor provider exhaustion and preserve recoverable sessions
+
+- A failed native request reporting `[resource_exhausted]` now records a fixed diagnostic on both the error and the terminal event. Clients can display the provider code without exposing stderr or private provider text. A failed turn still has an empty assistant result.
+- If the first turn hits this limit, AgentsServer keeps the native session ID only after verifying that Cursor saved the conversation in the original workspace. The next user message can resume that session. An error does not mark instructions or fork memory as delivered.
+- Verified with an isolated server and Android build 91. A controlled failure after a real Cursor turn displayed the provider reason. A manual follow-up reused the same native ID, recalled a code word and cleared the latest-run warning. Provider capacity and quotas are enforced upstream. This change requires an AgentsServer update.
+
+## 2026-11-23 — Keep a selected Cursor model usable after a catalog timeout
+
+- When Cursor was signed in but model discovery timed out, the server returned only Auto. Sending from a chat pinned to another model then reported that the model was unavailable. The desktop and mobile clients now let Cursor validate the saved selection when the list is incomplete. A complete listing, an explicit plan restriction and an unavailable runtime still enforce their existing checks.
+- The default option displays the active model reported by `agent about`, including its reasoning effort. The native model list can mark Auto as the default even when the CLI is configured to run a named model.
+- Verified the same pinned Argon High chat from an isolated Electron app and iPhone simulator. Both sent through an authenticated AgentsServer while its model-list command timed out, and both displayed real Cursor replies. The Codex native default completed a separate GPT-6.2 Sol turn. Availability is source only.
+
 ## 2026-11-23 — Hub sign-in for managed agents and Cursor on desktop and mobile
 
 - A hub deployment enrolls the SSH remote for Codex and Cursor sign-in. The remote runs each turn in its own workspace with a provider access token issued through the hub. The hub retains the refresh credential.
