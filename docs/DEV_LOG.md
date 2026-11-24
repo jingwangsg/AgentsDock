@@ -1,5 +1,9 @@
 # Public development log
 
+## 2026-11-25 — Keep Gemini visible in folder chat menus
+
+- Desktop and mobile folder menus show Gemini on servers that support it. When the CLI is unavailable, selecting the entry explains the server diagnostic. When health reports that Gemini has recovered, both clients refresh a previously unavailable model catalog.
+
 ## 2026-11-24 — Native Gemini CLI chats on desktop and mobile
 
 - Desktop and mobile clients can create Gemini chats, select a model and tool permissions, import native conversations by workspace, and update the CLI on the selected server. The server streams text and tool activity and retains the native identity for follow-ups.

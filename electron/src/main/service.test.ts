@@ -9364,6 +9364,27 @@ describe('server profile lifecycle', () => {
     expect(client.runtimeCatalog).not.toHaveBeenCalled()
   })
 
+  it('refreshes a blocked Gemini catalog once when health reports ready on the same server', async () => {
+    const blocked = { models: [], efforts: [], available: false }
+    const health: Health = { ok: true, runtimes: { gemini: { backend: 'gemini', status: 'ready', available: true, message: 'Ready' } } }
+    const catalog = { ...runtimeCatalog, backends: { ...runtimeCatalog.backends, gemini: {
+      ...blocked, available: true, models: [{ value: 'gemini-test', label: 'Gemini test' }]
+    } } }
+    const client = fakeClient({ health: async () => health, runtimeCatalog: async () => catalog })
+    const { service } = createProfileService({ 'http://a.test:7850': [client] }, cache => {
+      cache.putPreference('profile:a', 'runtimeCatalog:v1', {
+        ...runtimeCatalog, backends: { ...runtimeCatalog.backends, gemini: blocked }
+      })
+    })
+    const payload = await service.bootstrap()
+    await service.refreshServer('a', payload.profileGeneration)
+    await settleBackgroundWork()
+    await service.refreshServer('a', payload.profileGeneration)
+    await settleBackgroundWork()
+
+    expect(client.runtimeCatalog.mock.calls).toEqual([[false, false]])
+  })
+
   it('refetches the model list when the server comes back as a new instance', async () => {
     // Upgrading a provider CLI only takes effect for a fresh server process,
     // and the catalog is cached on disk for 15 minutes - so after restarting

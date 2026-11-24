@@ -1561,7 +1561,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     const sessionsRequest = Promise.allSettled([scope.client.sessions()] as const)
     // The catalog takes the server seconds to build (it probes the CLIs) and changes only with them: kept across
     // reconnects to the same server process, read again after a restart. RuntimeHealth's Refresh rechecks the CLIs.
-    const heldRuntime = health.server_instance_id && runtimeServerInstance === health.server_instance_id ? get().runtime : null
+    const cachedRuntime = get().runtime
+    const heldRuntime = health.server_instance_id && runtimeServerInstance === health.server_instance_id
+      && !(health.runtimes?.gemini?.status === 'ready' && !cachedRuntime?.backends.gemini?.available) ? cachedRuntime : null
     const optionalRequests = Promise.allSettled([heldRuntime ?? scope.client.runtimeCatalog(), scope.client.jobs()] as const)
     void optionalRequests.then(([runtimeResult, jobsResult]) => {
       if (NativeAppState.currentState !== 'active' || !connectionIsCurrent(scope)) return
@@ -1843,7 +1845,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (NativeAppState.currentState !== 'active' || !validatedRevisionIsCurrent(scope, acceptedValidationRevision)) return
       let mergedSessions = sessions
       let sessionsChanged = false
-      const activeBeforePoll = get().activeSessionIds
+      const previous = get()
+      if (health.runtimes?.gemini?.status === 'ready' && previous.health?.runtimes?.gemini?.status !== 'ready'
+        && previous.runtime && !previous.runtime.backends.gemini?.available) {
+        reloadRuntimeIfUnchanged(get, set, previous.runtime)
+      }
+      const activeBeforePoll = previous.activeSessionIds
       set(state => {
         const merged = mergeSessionState(sessions, state.sessions, sessionRead)
         mergedSessions = merged
@@ -5497,11 +5504,11 @@ function stopForegroundRefreshTimer(): void {
  * keep every chat on "Server model" and the model picker disabled until a reconnect. Silent, like the
  * connect path's catalog load: a background retry must not raise the error banner.
  */
-function reloadMissingRuntime(get: () => AppState, set: (value: Partial<AppState>) => void): void {
-  if (!get().connected || get().runtime) return
+function reloadRuntimeIfUnchanged(get: () => AppState, set: (value: Partial<AppState>) => void, previous: RuntimeCatalog | null = null): void {
+  if (!get().connected || get().runtime !== previous) return
   const scope = captureConnection()
   void scope.client.runtimeCatalog().then(runtime => {
-    if (!connectionIsCurrent(scope) || !scope.client.isValidated || get().runtime) return
+    if (!connectionIsCurrent(scope) || !scope.client.isValidated || NativeAppState.currentState !== 'active' || get().runtime !== previous) return
     runtimeServerInstance = get().health?.server_instance_id
     set({ runtime })
   }).catch(() => undefined)
@@ -5519,7 +5526,7 @@ function startForegroundRefreshTimer(get: () => AppState, set: (value: Partial<A
     if (periodicRefreshInFlight) return
     periodicRefreshInFlight = true
     const operation = get().connected ? get().refreshSessions() : get().reconnect()
-    reloadMissingRuntime(get, set)
+    reloadRuntimeIfUnchanged(get, set)
     void operation.finally(() => { periodicRefreshInFlight = false })
   }, FOREGROUND_REFRESH_MS)
 }
@@ -5680,7 +5687,7 @@ function installAppLifecycle(
         // most; the health read then takes the connection offline as before, and no receipt is written to it.
         void get().syncSelectedSession('recovery')
         await get().refreshSessions()
-        reloadMissingRuntime(get, set)
+        reloadRuntimeIfUnchanged(get, set)
       } else await get().reconnect()
       const selectedSessionId = get().selectedSessionId
       const selectedSyncInFlight = Boolean(

@@ -3,6 +3,7 @@ import { afterEach, test } from 'node:test'
 import React from 'react'
 import { act, create } from 'react-test-renderer'
 import { lists } from 'react-native-draggable-flatlist'
+import { Alert } from './component-mocks/react-native'
 import { resetComponentStore, useAppStore } from './component-mocks/app-store'
 import { Sidebar } from '../src/components/Sidebar'
 import type { Health, Session, Surface } from '../src/types'
@@ -68,6 +69,19 @@ const otherDeviceReorders = async (folderOrder: string[]) => { await act(async (
 afterEach(async () => {
   if (tree) await act(async () => { tree!.unmount() })
   tree = null
+})
+
+test('a supported Gemini CLI stays visible and explains a blocked runtime', async () => {
+  const message = 'The NVIDIA Inference Hub budget for this credential is exhausted.'
+  await renderSidebar({ ok: true, capabilities: { gemini_backend: { available: true, version: 1 } },
+    runtimes: { gemini: { backend: 'gemini', status: 'error', available: false, message } } })
+  const actions = menu('folder-actions-Work').props.actions as Array<{ id: string; title: string }>
+  const gemini = actions.filter(action => action.title.startsWith('New Gemini CLI chat'))
+  assert.equal(gemini.length, 1)
+  assert.match(gemini[0].title, /unavailable/i)
+  Alert.__reset()
+  await folderAction('Work', gemini[0].id)
+  assert.equal(Alert.__calls[0]?.message, message)
 })
 
 test('with a shared folder order, a rename sends the renamed order before moving the chats', async () => {

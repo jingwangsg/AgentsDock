@@ -16,7 +16,7 @@ import { isHiddenRunChat, sessionUnread } from '@shared/chat-visibility'
 import { folderIsWithin, folderOwnName, folderParent, folderPathIn, folderSegments, folderTree } from '@shared/folders'
 import { completedPrefixForkAvailable } from '@shared/session-fork'
 import { localSessionImportSupported } from '@shared/local-session-import'
-import { readyChatBackends } from '@shared/runtime-catalog'
+import { geminiBackendSupported, readyChatBackends, runtimeSelectionError } from '@shared/runtime-catalog'
 import { trackEvent } from '../lib/analytics'
 import { activeEmergencyAlert } from '../lib/emergency-alert'
 import { backendLabel, shortRelativeTime, workingDirectoryTail } from '../lib/format'
@@ -416,6 +416,7 @@ function FolderHeader({ section, collapsed, headerSessions, drop, onToggle, supp
     </div>
   )
   if (section.kind !== 'folder') return header
+  const geminiError = geminiBackendSupported(health) ? runtimeSelectionError(health, runtimeCatalog, 'gemini') : null
   // `folders` is the rendered order (folderOrder, then folders only chats know about), so a reorder
   // saves the full list and unlisted folders keep their place. A folder is reordered among the
   // folders of its parent, with its subfolders. A folder holding only tabs is not in `folders`
@@ -435,6 +436,9 @@ function FolderHeader({ section, collapsed, headerSessions, drop, onToggle, supp
           {readyChatBackends(health, runtimeCatalog).map(backend => (
             <MenuItem key={backend} icon={Plus} label={t('ui.sidebar.newBackendChat', { backend: backendLabel(backend) })} onSelect={() => void useAppStore.getState().requestNewChat({ folder: section.title, backend })} />
           ))}
+          {geminiError && <MenuItem icon={Plus}
+            label={t('ui.sidebar.newBackendChat', { backend: backendLabel('gemini') }) + t('ui.Dialogs.unavailable_77649d6')}
+            title={geminiError} onSelect={() => useAppStore.getState().setError(geminiError)} />}
           <MenuItem icon={SquareTerminal} label={t('ui.sidebar.newTerminal')} onSelect={() => void useAppStore.getState().createSurface('terminal', section.title)} />
           <MenuItem icon={Globe} label={t('ui.sidebar.newBrowser')} onSelect={() => void useAppStore.getState().createSurface('browser', section.title)} />
           <ContextMenu.Separator className="menu-separator" />

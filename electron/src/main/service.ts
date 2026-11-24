@@ -6553,6 +6553,10 @@ export class AppService {
       this.cache.recordServerVersion(scope.namespace, serverVersion)
       this.setProfileRuntime(scope.profileId, { serverVersion })
     }
+    // A credential can recover without a server restart. Let the next ordinary
+    // catalog read replace a cached unavailable Gemini entry on that transition.
+    if (health.runtimes?.gemini?.status === 'ready' && this.health?.runtimes?.gemini?.status !== 'ready'
+      && !this.runtimeCatalog?.backends.gemini?.available) this.runtimeRefreshNextAt = 0
     this.health = health
     this.validatedGeneration = scope.generation
     this.onServerReachable?.(scope.profileId, health)
