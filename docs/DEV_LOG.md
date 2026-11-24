@@ -1,5 +1,9 @@
 # Public development log
 
+## 2026-11-25 — Give Gemini native file tools access to the chat's Canvas directory
+
+- AgentsServer prepares the Canvas authoring guide and SDK declarations for Gemini and includes that chat's directory in the CLI workspace. In a disposable chat, the desktop composer sent a Canvas request to live Argon. The CLI read the guides, wrote the TSX with its native file tool, ran the checker and returned a report the server could render.
+
 ## 2026-11-25 — Default new Gemini chats to Full access
 
 - New Gemini chats start with native file and shell tools enabled. Desktop and mobile show the server's default until a chat has its own selection. The desktop permission picker now sends that selection to the server.

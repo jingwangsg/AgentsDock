@@ -61408,7 +61408,7 @@ def probe_runtime(backend: str) -> dict[str, Any]:
             version = safe_runtime_version(runtime_command([exe, "--version"]).stdout)
             help_text = runtime_command([exe, "--help"]).stdout
             if not version or "Gemini CLI" not in help_text or any(
-                flag not in help_text for flag in ("--session-id", "--resume", "--approval-mode", "stream-json")
+                flag not in help_text for flag in ("--session-id", "--resume", "--approval-mode", "--include-directories", "stream-json")
             ):
                 raise RuntimeError("Incompatible Gemini CLI")
             supports_thinking = True
@@ -71823,9 +71823,9 @@ async def run_gemini(
             })
             runtime_context += f"\nUse the run-bound MCP server {name} and its run tool for authorized AgentsDock actions."
         stream.secrets = tuple(protected)
-        context = "\n\n".join(part for part in (session_prompt_addendum(sess), memory, runtime_context) if part)
-        if context:
-            prompt = build_memory_augmented_prompt(gemini_history.CONTEXT_LABEL, context, prompt)
+        canvas_guidance = await asyncio.to_thread(agentsdock_canvas.prompt_section, STATE_DIR, session_id)
+        context = "\n\n".join(part for part in (session_prompt_addendum(sess), canvas_guidance, memory, runtime_context) if part)
+        prompt = build_memory_augmented_prompt(gemini_history.CONTEXT_LABEL, context, prompt)
         native_env = agent_runner_env(session_id)
         env = resources.enter_context(gemini_agent_client.native_environment(native_env, access, mcp, cwd=cwd, effort=sess.get("effort")))
         add_provider_no_proxy_environment(env, "127.0.0.1")
@@ -71833,6 +71833,14 @@ async def run_gemini(
             sess["_gemini_executable"], sess.get("model") or sess["_gemini_default_model"],
             sess.get("gemini_permission_mode") or gemini_agent_client.DEFAULT_PERMISSION_MODE, native_id, bool(resume),
         )
+        canvas_dir = agentsdock_canvas.session_dir(STATE_DIR, session_id).resolve()
+        if canvas_dir.is_dir():
+            if "," in str(canvas_dir):
+                # Gemini splits this flag on commas, even when passed as one argv element.
+                alias = Path(resources.enter_context(tempfile.TemporaryDirectory(dir="/tmp", prefix="ad-canvas-"))) / "canvas"
+                alias.symlink_to(canvas_dir, target_is_directory=True)
+                canvas_dir = alias
+            cmd.extend(["--include-directories", str(canvas_dir)])
         baseline = await capture_git_baseline(session_id, run_id, cwd)
         spawn = asyncio.create_task(asyncio.create_subprocess_exec(
             sys.executable, str(CURSOR_PROCESS_GUARD), "--parent-pid", str(os.getpid()), "--", *cmd,

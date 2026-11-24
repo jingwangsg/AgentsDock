@@ -56,7 +56,7 @@ class GeminiRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.enterContext(patch.object(auth, "socket_path", return_value=socket_path))
         self.enterContext(patch.multiple(server, HUB_PROVIDER_INSTALL=root, RUNTIME_DIAGNOSTICS={}, RUNTIME_DIAGNOSTIC_GENERATIONS={}))
         self.enterContext(patch.object(server.shutil, "which", return_value="/fixture/gemini"))
-        help_text = "Gemini CLI --session-id --resume --approval-mode stream-json"
+        help_text = "Gemini CLI --session-id --resume --approval-mode --include-directories stream-json"
         output = {"--version": "0.71.1", "--help": help_text}
         self.enterContext(patch.object(server, "runtime_command", side_effect=lambda cmd: SimpleNamespace(stdout=output[cmd[-1]])))
         self.enterContext(patch.object(gemini_gateway, "models", return_value=[gemini.DEFAULT_MODEL, "gcp/google/gemini-fixture"]))
@@ -95,7 +95,7 @@ class GeminiRuntimeTests(unittest.IsolatedAsyncioTestCase):
         with (patch.object(server, "HUB_PROVIDER_INSTALL", None),
               patch.object(server.shutil, "which", return_value="/fixture/gemini"),
               patch.object(server, "runtime_command", side_effect=[
-                  SimpleNamespace(stdout="0.71.1"), SimpleNamespace(stdout="Gemini CLI --session-id --resume --approval-mode stream-json")
+                  SimpleNamespace(stdout="0.71.1"), SimpleNamespace(stdout="Gemini CLI --session-id --resume --approval-mode --include-directories stream-json")
               ]),
               patch.object(gemini_gateway, "credential", return_value="fixture"),
               patch.object(gemini_gateway, "models", side_effect=gemini_gateway.GatewayError(422, budget=True))):

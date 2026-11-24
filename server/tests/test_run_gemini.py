@@ -141,6 +141,18 @@ class GeminiRunnerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(native_id in argv, not standalone)
             self.assertEqual(self.session["gemini_session_id"], native_id)
 
+    async def test_canvas_contract_is_scoped_to_the_chat_and_kept_out_of_imported_prompts(self):
+        run, task = self.run_turn("Create a Canvas")
+        await task
+        directory = server.STATE_DIR / "canvases" / self.sid
+        self.assertTrue((directory / "AUTHORING.md").is_file())
+        self.assertTrue((directory / "sdk.d.ts").is_file())
+        argv = next(e["argv"] for e in self.events(run) if e["type"] == "process_started")
+        self.assertEqual(argv[argv.index("--include-directories") + 1], str(directory))
+        source, items = server.gemini_initial_history(self.session["gemini_session_id"], str(self.root))
+        self.assertIn(str(directory / "AUTHORING.md"), source.read_text())
+        self.assertEqual(items, [{"kind": "user", "text": "Create a Canvas"}])
+
     async def test_history_import_projects_only_the_user_prompt(self):
         self.session.update(memory_seed="PRIVATE MEMORY", system_prompt="PRIVATE INSTRUCTIONS")
         _, task = self.run_turn("original user message")
