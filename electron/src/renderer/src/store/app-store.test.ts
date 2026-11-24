@@ -685,8 +685,11 @@ describe('session refresh identity', () => {
   })
 })
 
-describe('provider scheduled-jobs access session updates', () => {
-  it('preserves the server-enforced mode in the renderer-to-server patch', async () => {
+describe('session permission updates', () => {
+  it.each<Partial<Session>>([
+    { provider_jobs_access: 'read_only' },
+    { gemini_permission_mode: 'plan' }
+  ])('passes the selected permission through to the server: %o', async patch => {
     const session = { ...sessionFor('chat-1'), provider_jobs_access: 'full' as const }
     const update = vi.fn().mockImplementation(async (_sessionId: string, patch: Partial<Session>) => ({
       ...session,
@@ -704,10 +707,10 @@ describe('provider scheduled-jobs access session updates', () => {
       error: null
     })
 
-    await useAppStore.getState().updateSession('chat-1', { provider_jobs_access: 'read_only' })
+    await useAppStore.getState().updateSession('chat-1', patch)
 
-    expect(update).toHaveBeenCalledWith('chat-1', { provider_jobs_access: 'read_only' })
-    expect(useAppStore.getState().sessions[0].provider_jobs_access).toBe('read_only')
+    expect(update).toHaveBeenCalledWith('chat-1', patch)
+    expect(useAppStore.getState().sessions[0]).toMatchObject(patch)
   })
 })
 

@@ -2596,6 +2596,22 @@ class AgentCrossChatRouteTests(unittest.IsolatedAsyncioTestCase):
             await refused(await issue("run_wake", user_turn=False), 403, title="Wake")
             self.assertEqual(set(agent_server.STORE.sessions), before)
 
+    async def test_chats_new_inherits_gemini_parent_tool_permissions(self) -> None:
+        agent_server.STORE.sessions["source"].update(backend="gemini", gemini_permission_mode="plan", cwd=str(self.root))
+        agent_server.CURRENT_TURNS["source"] = {"run_id": "run_plan"}
+        authority = await agent_server.issue_cross_chat_capability(
+            "source", "run_plan", [], source_user_instruction="Start one agent.", source_is_user_turn=True,
+            actions={"agent_cross_chat_routes"}, provider_route_snapshot=[], async_route_v1=True, chat_routes_live=True,
+        )
+        token = json.loads(authority.read_text())["provider_capability"]
+        with (patch.dict(agent_server.RUNTIME_DIAGNOSTICS, {"gemini": {"status": "ready"}}),
+              patch.object(agent_server.STORE, "save", AsyncMock()),
+              patch.object(agent_server, "append_agent_handoff_route_audit", AsyncMock())):
+            chat = (await agent_server.create_provider_chat(
+                agent_server.ProviderNewChatRequest(title="Plan child"), self.provider_request(token, method="POST"),
+            ))["chat"]
+        self.assertEqual(agent_server.STORE.sessions[chat["chat_id"]]["gemini_permission_mode"], "plan")
+
     async def test_chats_new_keeps_a_custom_endpoints_model_and_effort(self) -> None:
         # The endpoint's own catalog settles its models' efforts: "none" is in it although the built-in table
         # does not list it for gpt-5.4-mini.

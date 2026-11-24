@@ -3743,7 +3743,7 @@ function RuntimeMenu({
             <DropdownMenu.Separator className="menu-separator" />
             <DropdownMenu.Label className="menu-label">{t('gemini.permissions')}</DropdownMenu.Label>
             {catalog?.backends.gemini.permission_modes?.map(mode => <DropdownMenu.CheckboxItem key={mode} className="menu-item"
-              disabled={running || admitting} checked={(session.gemini_permission_mode ?? 'default') === mode}
+              disabled={running || admitting} checked={(session.gemini_permission_mode ?? catalog.backends.gemini.default_permission_mode ?? 'default') === mode}
               onCheckedChange={() => void useAppStore.getState().updateSession(session.id, { gemini_permission_mode: mode })}>{t(`gemini.permission.${mode}`)}</DropdownMenu.CheckboxItem>)}
           </>}
           {!window.agentsDock.sharedChat && session.backend !== 'gemini' && session.backend !== 'cursor' && session.backend !== 'opencode' && <>

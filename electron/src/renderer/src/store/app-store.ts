@@ -5366,6 +5366,7 @@ function normalizeSessionPatch(patch: Partial<Session>) { return {
   system_prompt: patch.system_prompt,
   subagent_limit: patch.subagent_limit,
   provider_jobs_access: patch.provider_jobs_access ?? undefined,
+  gemini_permission_mode: patch.gemini_permission_mode,
   pinned: patch.pinned ?? undefined,
   archived: patch.archived ?? undefined
 } }

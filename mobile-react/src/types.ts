@@ -506,6 +506,7 @@ export interface RuntimeDiagnostic {
 }
 export interface RuntimeBackendCatalog {
   permission_modes?: ('default' | 'plan' | 'full_access')[]
+  default_permission_mode?: 'default' | 'plan' | 'full_access'
   models: RuntimeOption[]
   efforts: RuntimeOption[]
   available?: boolean

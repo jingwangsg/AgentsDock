@@ -138,10 +138,13 @@ class StandaloneRunChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ran[0][2]["run_session_id"], run_chat_id)
         self.assertEqual(ran[0][2]["run_id"], "run_standalone")
 
-    async def test_idle_parent_also_starts_a_new_run_chat(self) -> None:
+    async def test_idle_gemini_parent_passes_its_permissions_to_the_new_run_chat(self) -> None:
         store = agent_server.JobStore()
-        store.jobs = {"job_standalone": due_job("job_standalone", "standalone")}
-        sessions = {PARENT: parent_session()}
+        store.jobs = {"job_standalone": {**due_job("job_standalone", "standalone"), "backend": None}}
+        sessions = {PARENT: {
+            **parent_session(), "backend": "gemini", "model": None, "effort": None,
+            "gemini_permission_mode": "plan",
+        }}
         start_turn = AsyncMock(return_value={"run_id": "run_standalone"})
         events = AsyncMock()
         with (
@@ -157,6 +160,7 @@ class StandaloneRunChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["run_id"], "run_standalone")
         run_chat_id = start_turn.await_args.args[0]
         self.assertEqual(set(sessions), {PARENT, run_chat_id})
+        self.assertEqual(sessions[run_chat_id]["gemini_permission_mode"], "plan")
         self.assertEqual(start_turn.await_args.kwargs["provider_context_mode"], "chat")
         ran = [call.args for call in events.await_args_list if call.args[1] == "job_ran"]
         self.assertEqual(len(ran), 1)

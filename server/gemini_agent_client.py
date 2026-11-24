@@ -12,6 +12,7 @@ from gemini_gateway import ARGON_EFFORTS, ARGON_MODEL, EFFORT_HEADER, MODEL, Gat
 from gemini_history import local_sessions, public_messages, session_id
 
 DEFAULT_MODEL = ARGON_MODEL
+DEFAULT_PERMISSION_MODE = "full_access"
 PERMISSIONS = {"default": "default", "plan": "plan", "full_access": "yolo"}
 MCP_SERVER_NAME = "agentsdock_internal_provider_9f3a2c71"
 

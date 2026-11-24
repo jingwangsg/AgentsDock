@@ -11235,7 +11235,7 @@ class SessionStore:
             "cursor_session_id": cursor_session_id,
             "gemini_session_id": gemini_id,
             "gemini_session_cwd": str(Path(session_cwd).resolve()) if gemini_id else None,
-            "gemini_permission_mode": req.gemini_permission_mode or "default",
+            "gemini_permission_mode": req.gemini_permission_mode or gemini_agent_client.DEFAULT_PERMISSION_MODE,
             "opencode_session_id": opencode_session_id,
             "opencode_session_cwd": (
                 session_cwd
@@ -11472,7 +11472,7 @@ class SessionStore:
                     CURSOR_DEFAULT_PERMISSION_MODE,
                     set(CURSOR_PERMISSION_MODES),
                 ),
-                ("gemini_permission_mode", "default", gemini_agent_client.PERMISSIONS),
+                ("gemini_permission_mode", gemini_agent_client.DEFAULT_PERMISSION_MODE, gemini_agent_client.PERMISSIONS),
                 (
                     "opencode_permission_mode",
                     OPENCODE_DEFAULT_PERMISSION_MODE,
@@ -13738,6 +13738,9 @@ class JobStore:
                     cwd=parent.get("cwd"),
                     backend=run_backend,
                     codex_provider=parent.get("codex_provider") if same_backend else None,
+                    gemini_permission_mode=(
+                        parent.get("gemini_permission_mode") if run_backend == parent_backend == BACKEND_GEMINI else None
+                    ),
                     model=parent.get("model") if same_backend else None,
                     effort=parent.get("effort") if same_backend else None,
                     subagent_limit=parent.get("subagent_limit") if same_backend else None,
@@ -62664,7 +62667,8 @@ def discover_runtime_backend_catalog(backend: str, *, force_runtime_probe: bool 
         default = gemini_agent_client.DEFAULT_MODEL if gemini_agent_client.DEFAULT_MODEL in names else next(iter(names), None)
         catalog = {"models": unique_runtime_options([runtime_option(name, name) for name in names], default),
                    "default_model": default, "efforts": [], "model_source": "NVIDIA Inference Hub",
-                   "permission_modes": list(gemini_agent_client.PERMISSIONS), "default_permission_mode": "default"}
+                   "permission_modes": list(gemini_agent_client.PERMISSIONS),
+                   "default_permission_mode": gemini_agent_client.DEFAULT_PERMISSION_MODE}
         if diagnostic.get("_gemini_thinking_level") and gemini_gateway.ARGON_MODEL in names:
             catalog["model_efforts"] = {
                 gemini_gateway.ARGON_MODEL: [runtime_option(e, e.title()) for e in gemini_gateway.ARGON_EFFORTS],
@@ -71827,7 +71831,7 @@ async def run_gemini(
         add_provider_no_proxy_environment(env, "127.0.0.1")
         cmd = gemini_agent_client.command(
             sess["_gemini_executable"], sess.get("model") or sess["_gemini_default_model"],
-            sess.get("gemini_permission_mode") or "default", native_id, bool(resume),
+            sess.get("gemini_permission_mode") or gemini_agent_client.DEFAULT_PERMISSION_MODE, native_id, bool(resume),
         )
         baseline = await capture_git_baseline(session_id, run_id, cwd)
         spawn = asyncio.create_task(asyncio.create_subprocess_exec(
@@ -97834,6 +97838,7 @@ async def create_provider_chat(req: ProviderNewChatRequest, request: Request) ->
             backend=backend,
             model=model,
             effort=effort,
+            gemini_permission_mode=source.get("gemini_permission_mode") if backend == source_backend == BACKEND_GEMINI else None,
             codex_provider="custom" if custom else None,
         )))["session"]
         # load-bearing: a staged pair stays hidden until an event carrying its admission id is durable, and no

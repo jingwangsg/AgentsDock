@@ -1,5 +1,9 @@
 # Public development log
 
+## 2026-11-25 — Default new Gemini chats to Full access
+
+- New Gemini chats start with native file and shell tools enabled. Desktop and mobile show the server's default until a chat has its own selection. The desktop permission picker now sends that selection to the server.
+
 ## 2026-11-25 — Select Gemini reasoning per chat
 
 - The model menu offers Low, Medium and High for Argon on desktop and mobile. The selection is saved with the chat and applies to subsequent generation requests. Server default leaves the Gemini CLI's native reasoning settings in effect.

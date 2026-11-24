@@ -107,6 +107,16 @@ class GeminiRunnerTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(.01)
         self.fail("Gemini test tool did not start")
 
+    async def test_tool_permissions_default_to_full_access_and_respect_explicit_modes(self):
+        for selected, expected in ((None, "yolo"), ("plan", "plan"), ("default", "default")):
+            with self.subTest(selected=selected):
+                if selected is not None:
+                    self.session["gemini_permission_mode"] = selected
+                run, task = self.run_turn("ok")
+                await task
+                argv = next(e["argv"] for e in self.events(run) if e["type"] == "process_started")
+                self.assertEqual(argv[argv.index("--approval-mode") + 1], expected)
+
     async def test_streamed_content_usage_repeated_text_and_native_resume(self):
         run, task = self.run_turn("delta")
         await task

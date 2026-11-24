@@ -67,6 +67,7 @@ class GeminiRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 with self.subTest(grant=field):
                     catalog = await asyncio.to_thread(server.discover_runtime_backend_catalog, "gemini", force_runtime_probe=True)
                     self.assertTrue(catalog["available"])
+                    self.assertEqual(catalog["default_permission_mode"], "full_access")
                     self.assertEqual(catalog["default_model"], gemini.DEFAULT_MODEL)
                     choices = {model: [row["value"] for row in rows] for model, rows in catalog.get("model_efforts", {}).items()}
                     self.assertEqual(choices, {gemini.DEFAULT_MODEL: ["low", "medium", "high"]} if supported else {})
@@ -85,9 +86,10 @@ class GeminiRuntimeTests(unittest.IsolatedAsyncioTestCase):
         store = server.SessionStore()
         store.sessions["chat"] = {"id": "chat", "backend": "gemini", "folder": "General"}
         with patch.object(store, "save", AsyncMock()):
-            chat = await store.update("chat", {"gemini_permission_mode": "plan"})
-        self.assertEqual(server.public_session(chat)["gemini_permission_mode"], "plan")
-        self.assertEqual(store.sessions["chat"]["gemini_permission_mode"], "plan")
+            for selected, expected in (("plan", "plan"), ("default", "default"), (None, "full_access")):
+                chat = await store.update("chat", {"gemini_permission_mode": selected})
+                self.assertEqual(server.public_session(chat)["gemini_permission_mode"], expected)
+                self.assertEqual(store.sessions["chat"]["gemini_permission_mode"], expected)
 
     def test_catalog_exhaustion_reports_the_hub_reason(self):
         with (patch.object(server, "HUB_PROVIDER_INSTALL", None),

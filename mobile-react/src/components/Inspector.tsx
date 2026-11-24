@@ -221,7 +221,7 @@ export function Inspector({ sessionId, onDigest, onJob, onTerminal, onProcesses,
       {session.backend !== 'cursor' && (session.backend !== 'gemini' || effortOptions.length > 0) ? <Field label="Effort"><ChoiceField value={session.effort ?? ''} options={effortOptions} onChange={effort => { if (scopeIsCurrent()) void update(sessionId, { effort }, profileGeneration) }} /></Field> : null}
       {selectionError ? <Text accessibilityRole="alert" style={[styles.hint, { color: colors.orange }]}>{selectionError}</Text> : null}
       {session.backend === 'gemini' && runtime?.backends.gemini?.permission_modes?.length ? <Field label="Gemini tool permissions"><ChoiceField
-        disabled={!connected || running || admitting || stopping} value={session.gemini_permission_mode ?? 'default'}
+        disabled={!connected || running || admitting || stopping} value={session.gemini_permission_mode ?? runtime.backends.gemini.default_permission_mode ?? 'default'}
         options={runtime.backends.gemini.permission_modes.map(value => ({ value, label: value === 'full_access' ? 'Full access (auto-approve tools)' : value === 'plan' ? 'Plan only' : 'Gemini default' }))}
         onChange={value => { if (scopeIsCurrent()) void update(sessionId, { gemini_permission_mode: value as Session['gemini_permission_mode'] }, profileGeneration) }} /></Field> : null}
       <Field label="Agent jobs"><ChoiceField disabled={!jobsAccess.available} value={jobsAccess.effective} options={jobsAccessOptions} onChange={value => { if (scopeIsCurrent() && jobsAccess.available) void update(sessionId, { provider_jobs_access: value as ProviderJobsAccess }, profileGeneration) }} /></Field>
