@@ -218,7 +218,7 @@ export function Inspector({ sessionId, onDigest, onJob, onTerminal, onProcesses,
       <SectionHeader title="Session" />
       <Field label="Name"><TextInput value={title} onChangeText={setTitle} onBlur={() => { const clean = title.trim(); if (scopeIsCurrent() && clean && clean !== session.title) void update(sessionId, { title: clean }, profileGeneration) }} style={[styles.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surface }]} /></Field>
       <Field label="Model"><ChoiceField value={session.model ?? ''} options={modelOptions} onChange={model => { if (scopeIsCurrent()) void update(sessionId, { model, effort: runtimeEffortAfterModelChange(runtime, session.backend, model, session.effort) }, profileGeneration) }} /></Field>
-      {session.backend !== 'gemini' && session.backend !== 'cursor' ? <Field label="Effort"><ChoiceField value={session.effort ?? ''} options={effortOptions} onChange={effort => { if (scopeIsCurrent()) void update(sessionId, { effort }, profileGeneration) }} /></Field> : null}
+      {session.backend !== 'cursor' && (session.backend !== 'gemini' || effortOptions.length > 0) ? <Field label="Effort"><ChoiceField value={session.effort ?? ''} options={effortOptions} onChange={effort => { if (scopeIsCurrent()) void update(sessionId, { effort }, profileGeneration) }} /></Field> : null}
       {selectionError ? <Text accessibilityRole="alert" style={[styles.hint, { color: colors.orange }]}>{selectionError}</Text> : null}
       {session.backend === 'gemini' && runtime?.backends.gemini?.permission_modes?.length ? <Field label="Gemini tool permissions"><ChoiceField
         disabled={!connected || running || admitting || stopping} value={session.gemini_permission_mode ?? 'default'}

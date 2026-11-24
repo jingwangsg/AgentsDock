@@ -82,7 +82,8 @@ def request(install, backend, previous="", refresh=False):
             port = result.get("port")
             if type(port) is not int or not 1 <= port <= 65535:
                 raise HubLoginError(FAILURE)
-            return {"accessToken": result["accessToken"], "port": port}
+            return {"accessToken": result["accessToken"], "port": port,
+                    "supportsThinkingLevel": result.get("supportsThinkingLevel") is True}
         if backend == "codex":
             if not isinstance(result.get("chatgptAccountId"), str) or not result["chatgptAccountId"]:
                 raise HubLoginError(FAILURE)

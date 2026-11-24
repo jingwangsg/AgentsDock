@@ -8,10 +8,10 @@ from pathlib import Path
 import re
 import tempfile
 
-from gemini_gateway import MODEL, GatewayError
+from gemini_gateway import ARGON_EFFORTS, ARGON_MODEL, EFFORT_HEADER, MODEL, GatewayError
 from gemini_history import local_sessions, public_messages, session_id
 
-DEFAULT_MODEL = "gcp/google/gemini-4-argon"
+DEFAULT_MODEL = ARGON_MODEL
 PERMISSIONS = {"default": "default", "plan": "plan", "full_access": "yolo"}
 MCP_SERVER_NAME = "agentsdock_internal_provider_9f3a2c71"
 
@@ -42,7 +42,9 @@ def read_native_settings(path):
 
 
 @contextmanager
-def native_environment(env, access, mcp=None, *, cwd):
+def native_environment(env, access, mcp=None, *, cwd, effort=None):
+    if effort and (effort not in ARGON_EFFORTS or not access.get("supportsThinkingLevel")):
+        raise GeminiConfigurationError("The Gemini gateway cannot apply this reasoning level. Update the hub or select Server default.")
     env = {
         **env,
         "GEMINI_CLI_AUTH_OVERRIDE": "gemini-api-key",
@@ -51,7 +53,7 @@ def native_environment(env, access, mcp=None, *, cwd):
         "GOOGLE_GENAI_API_VERSION": "v1beta",
         "GOOGLE_GENAI_USE_VERTEXAI": "false",
         "GOOGLE_GENAI_USE_GCA": "false",
-        "GEMINI_CLI_CUSTOM_HEADERS": "",
+        "GEMINI_CLI_CUSTOM_HEADERS": f"{EFFORT_HEADER}: {effort}" if effort else "",
         "GOOGLE_GEMINI_BASE_URL": f"http://127.0.0.1:{access['port']}",
     }
     native_home = Path(env.get("GEMINI_CLI_HOME") or env["HOME"])

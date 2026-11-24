@@ -16,8 +16,11 @@ HUB = "https://inference-api.nvidia.com"
 # Captured from the server configuration before spawning any provider.
 hub_key = ""
 MODEL = re.compile(r"gcp/google/(?:eccn-)?gemini-[A-Za-z0-9._-]{1,100}")
-GENERATE = re.compile(r"/v1beta/models/" + MODEL.pattern
-                      + r":(?:streamGenerateContent|generateContent|countTokens)(?:\?alt=sse)?")
+ARGON_MODEL = "gcp/google/gemini-4-argon"
+ARGON_EFFORTS = ("low", "medium", "high")
+EFFORT_HEADER = "X-AgentsDock-Gemini-Effort"
+GENERATE = re.compile(r"/v1beta/models/(?P<model>" + MODEL.pattern
+                      + r"):(?P<method>streamGenerateContent|generateContent|countTokens)(?:\?alt=sse)?")
 MAX_BODY = 16 * 1024 * 1024
 
 
@@ -118,7 +121,8 @@ def open_gateway(config_dir):
                 return
             catalog = self.command == "GET" and self.path == "/v1/models"
             # Match the entire origin-form target before appending it to the authenticated origin.
-            if not catalog and not (self.command == "POST" and GENERATE.fullmatch(self.path)):
+            generate = GENERATE.fullmatch(self.path) if self.command == "POST" else None
+            if not catalog and not generate:
                 self.reply(404, {"error": {"code": 404, "message": "Unsupported Gemini operation."}})
                 return
             if not catalog:
@@ -131,6 +135,20 @@ def open_gateway(config_dir):
                 body = self.rfile.read(length)
                 if len(body) != length or revoked.is_set():
                     return
+                # The scoped CLI header wins over workspace settings only on this
+                # model's generation requests. Default, helper models and token counts pass through.
+                effort = self.headers.get(EFFORT_HEADER)
+                if effort is not None and generate["model"] == ARGON_MODEL and generate["method"] != "countTokens":
+                    if effort not in ARGON_EFFORTS:
+                        raise GatewayError(400)
+                    try:
+                        data = json.loads(body)
+                        thinking = data.setdefault("generationConfig", {}).setdefault("thinkingConfig", {})
+                        thinking.pop("thinkingBudget", None)
+                        thinking["thinkingLevel"] = effort.upper()
+                        body = json.dumps(data, separators=(",", ":")).encode()
+                    except (ValueError, TypeError, AttributeError, RecursionError):
+                        raise GatewayError(400) from None
 
             key = credential(config_dir)
             if not key:
@@ -178,7 +196,7 @@ def open_gateway(config_dir):
         thread = Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True)
         thread.start()
         try:
-            yield {"port": httpd.server_port, "accessToken": token}
+            yield {"port": httpd.server_port, "accessToken": token, "supportsThinkingLevel": True}
         finally:
             revoked.set()
             httpd.shutdown()

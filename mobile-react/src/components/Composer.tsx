@@ -332,7 +332,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       case 'goal': return codexGoalsAvailable || claudeGoalsAvailable
       case 'compact': return backend === 'codex' ? codexRuntime.supported : backend === 'claude' && claudeRuntime.supported
       case 'model': return hasModelChoices
-      case 'reasoning': return backend !== 'gemini' && backend !== 'cursor' && runtimeEffortOptions(runtime, backend, model, effort).some(option => Boolean(option.value))
+      case 'reasoning': return backend !== 'cursor' && runtimeEffortOptions(runtime, backend, model, effort).some(option => option.value !== (effort ?? ''))
       case 'mcp': return backend === 'claude'
       case 'schedule': return health?.capabilities?.scheduled_jobs?.available === true
       default: return true
@@ -1502,7 +1502,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       {!welcome && backend ? <ComposerRuntimeSheet
         section={runtimeSheetSection}
         models={runtimeCatalogOptions(runtime, backend, 'models', model)}
-        efforts={backend === 'gemini' || backend === 'cursor' ? [] : runtimeEffortOptions(runtime, backend, model, effort)}
+        efforts={backend === 'cursor' ? [] : runtimeEffortOptions(runtime, backend, model, effort)}
         model={model}
         effort={effort}
         onPickModel={value => {

@@ -26,7 +26,7 @@ export function ComposerRuntimeSheet({ section, models, efforts, model, effort, 
   const colors = usePalette()
   const scroll = useRef<ScrollView>(null)
   if (!section) return null
-  const hasEfforts = efforts.some(option => Boolean(option.value))
+  const hasEfforts = efforts.some(option => option.value !== (effort ?? ''))
   return <Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={onClose}>
     <ModalSafeArea testID="composer-runtime-sheet" style={[styles.sheet, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
       <View style={[styles.header, { borderBottomColor: colors.border }]}>

@@ -1,5 +1,9 @@
 # Public development log
 
+## 2026-11-25 — Select Gemini reasoning per chat
+
+- The model menu offers Low, Medium and High for Argon on desktop and mobile. The selection is saved with the chat and applies to subsequent generation requests. Server default leaves the Gemini CLI's native reasoning settings in effect.
+
 ## 2026-11-25 — Keep Gemini visible in folder chat menus
 
 - Desktop and mobile folder menus show Gemini on servers that support it. When the CLI is unavailable, selecting the entry explains the server diagnostic. When health reports that Gemini has recovered, both clients refresh a previously unavailable model catalog.

@@ -289,6 +289,9 @@ export function runtimeEffortOptions(
   customCatalog?: RuntimeBackendCatalog['custom_provider']
 ): RuntimeOption[] {
   const scoped = modelEfforts(catalog, backend, model, codexProvider, customCatalog)
+  if (backend === 'gemini' && !scoped?.length) {
+    return current?.trim() ? [{ value: '', label: 'Server default' }] : []
+  }
   if (!scoped) return runtimeCatalogOptions(catalog, backend, 'efforts', current, codexProvider, customCatalog)
   const backendCatalog = runtimeBackendCatalogFor(catalog, backend, codexProvider, customCatalog)
   const configuredDefault = backendCatalog?.default_effort?.trim()
@@ -309,9 +312,10 @@ export function runtimeEffortAfterModelChange(
   codexProvider?: CodexProvider,
   customCatalog?: RuntimeBackendCatalog['custom_provider']
 ): string | null {
-  if (backend === 'gemini' || backend === 'cursor' || backend === 'opencode') return null
+  if (backend === 'cursor' || backend === 'opencode') return null
   const selected = current?.trim() || ''
   const scoped = modelEfforts(catalog, backend, model, codexProvider, customCatalog)
+  if (backend === 'gemini') return selected && scoped?.some(option => option.value === selected) ? selected : null
   if (scoped === null || !selected) return selected || null
   if (!scoped.length) return null
   const supported = scoped.map(option => option.value).filter(Boolean)

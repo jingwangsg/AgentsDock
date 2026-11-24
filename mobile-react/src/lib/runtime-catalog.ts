@@ -142,6 +142,9 @@ function modelEfforts(catalog: RuntimeCatalog | null | undefined, backend: strin
 
 export function runtimeEffortOptions(catalog: RuntimeCatalog | null | undefined, backend: string, model?: string | null, current?: string | null): RuntimeOption[] {
   const scoped = modelEfforts(catalog, backend, model)
+  if (backend === 'gemini' && !scoped?.length) {
+    return current?.trim() ? [{ value: '', label: 'Server default' }] : []
+  }
   if (!scoped) return runtimeCatalogOptions(catalog, backend, 'efforts', current)
   const configuredDefault = catalog?.backends[backend]?.default_effort?.trim()
   return [
@@ -151,9 +154,10 @@ export function runtimeEffortOptions(catalog: RuntimeCatalog | null | undefined,
 }
 
 export function runtimeEffortAfterModelChange(catalog: RuntimeCatalog | null | undefined, backend: string, model: string | null, current?: string | null): string | null {
-  if (backend === 'gemini' || backend === 'cursor') return null
+  if (backend === 'cursor') return null
   const selected = current?.trim() || ''
   const scoped = modelEfforts(catalog, backend, model)
+  if (backend === 'gemini') return selected && scoped?.some(option => option.value === selected) ? selected : null
   if (!scoped?.length || !selected) return selected || null
   const supported = scoped.map(option => option.value).filter(Boolean)
   if (supported.includes(selected)) return selected

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Health, RuntimeCatalog } from '../types'
+import { runtimeChipLabel } from './runtime-chip'
 import { readyChatBackends,
   cursorBackendSupported,
   isBackendLocked,
@@ -223,4 +224,27 @@ test('gates Gemini independently of other CLIs and admits only this server’s m
   assert.equal(runtimeSelectionError(health, runtime, 'gemini', 'gcp/google/gemini'), null)
   assert.equal(Boolean(runtimeSelectionError(health, runtime, 'gemini', 'gemini-through-cursor')), true)
   assert.equal(runtimeEffortAfterModelChange(runtime, 'gemini', 'gcp/google/gemini', 'high'), null)
+})
+
+test('Gemini reasoning and chip follow the capabilities of the selected or default model', () => {
+  const argon = 'gcp/google/gemini-4-argon'
+  const flash = 'gcp/google/gemini-3.8-flash'
+  const levels = [{ value: 'low', label: 'Low' }, { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }]
+  const runtime: RuntimeCatalog = { backends: { gemini: {
+    models: [{ value: argon, label: 'Argon' }, { value: flash, label: 'Flash' }],
+    default_model: argon, efforts: [], model_efforts: { [argon]: levels },
+  } } }
+  for (const model of [null, argon]) {
+    assert.deepEqual(runtimeEffortOptions(runtime, 'gemini', model, 'xhigh'), [{ value: '', label: 'Server default' }, ...levels])
+    for (const { value, label } of levels) {
+      assert.equal(runtimeEffortAfterModelChange(runtime, 'gemini', model, value), value)
+      assert.equal(runtimeChipLabel(runtime, 'gemini', model, value), `Argon · ${label}`)
+    }
+    assert.equal(runtimeEffortAfterModelChange(runtime, 'gemini', model, 'xhigh'), null)
+    assert.equal(runtimeChipLabel(runtime, 'gemini', model, null), 'Argon')
+  }
+  assert.deepEqual(runtimeEffortOptions(runtime, 'gemini', flash, 'high'), [{ value: '', label: 'Server default' }])
+  assert.deepEqual(runtimeEffortOptions(runtime, 'gemini', flash, null), [])
+  assert.equal(runtimeEffortAfterModelChange(runtime, 'gemini', flash, 'high'), null)
+  assert.equal(runtimeChipLabel(runtime, 'gemini', flash, 'high'), 'Flash')
 })

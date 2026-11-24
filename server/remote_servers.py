@@ -1282,7 +1282,7 @@ class Tunnel:
                                 await forward.wait()
                         if forward.returncode or not output.strip().isdigit() or not 1 <= int(output) <= 65535:
                             raise OSError("Gemini SSH forward unavailable")
-                        gemini_access = {"port": int(output), "accessToken": gateway["accessToken"]}
+                        gemini_access = {**gateway, "port": int(output)}
                         resources.enter_context(opening.pop_all())
                 return gemini_access
 

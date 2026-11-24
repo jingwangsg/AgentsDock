@@ -854,9 +854,9 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
       return codexGoalsAvailable
     }
     if (command.id === 'reasoning') {
-      return session.backend !== 'gemini' && session.backend !== 'cursor' && session.backend !== 'opencode'
+      return session.backend !== 'cursor' && session.backend !== 'opencode'
         && runtimeEffortOptions(catalog, session.backend, session.model, session.effort, session.codex_provider, session.codex_provider_catalog)
-        .some(option => Boolean(option.value))
+        .some(option => option.value !== (session.effort ?? ''))
     }
     if (command.id === 'mcp') return session.backend === 'claude' && claudeMcpAvailable
     if (command.id === 'compact') {
@@ -3290,7 +3290,7 @@ function NewAgentDialog({
   const customCatalog = codexProvider === 'custom' ? session.codex_provider_catalog : undefined
   const models = runtimeCatalogOptions(catalog, backend, 'models', model || null, codexProvider, customCatalog)
   const efforts = runtimeEffortOptions(catalog, backend, model || null, effort || null, codexProvider, customCatalog)
-  const hasReasoning = backend !== 'gemini' && backend !== 'cursor' && backend !== 'opencode' && efforts.some(option => Boolean(option.value))
+  const hasReasoning = backend !== 'cursor' && backend !== 'opencode' && efforts.some(option => Boolean(option.value))
   const selectModel = (value: string) => {
     setModel(value)
     setEffort(runtimeEffortAfterModelChange(catalog, backend, value || null, effort || null, codexProvider, customCatalog) || '')
@@ -3307,7 +3307,8 @@ function NewAgentDialog({
   >
     <form className="dialog-form two-column-form" onSubmit={event => {
       event.preventDefault()
-      if (trigger) onConfirm(trigger, { backend, model: model || null, effort: effort || null, server_identity: serverIdentity, folder: folder.trim() || 'General', cwd: cwd.trim() }, serverName)
+      const selectedEffort = backend === 'gemini' ? runtimeEffortAfterModelChange(catalog, backend, model, effort) : effort || null
+      if (trigger) onConfirm(trigger, { backend, model: model || null, effort: selectedEffort, server_identity: serverIdentity, folder: folder.trim() || 'General', cwd: cwd.trim() }, serverName)
     }}>
       <label><span>{t('ui.composer.newAgent.agent')}</span><select value={backend} onChange={event => selectBackend(event.target.value as Backend)}>{backends.map(option => <option value={option} key={option}>{backendLabel(option, option === 'codex' ? sourceCodexProvider : undefined)}</option>)}</select></label>
       {servers.length > 0 && <label><span>{t('ui.composer.newAgent.server')}</span><select value={serverIdentity ?? ''} onChange={event => setServerIdentity(event.target.value || null)}>
@@ -3733,7 +3734,7 @@ function RuntimeMenu({
             <DropdownMenu.Item className="menu-item" onSelect={() => { setManualModel(session.model ?? ''); setManualModelOpen(true) }}>{t('codexProvider.manualModel')}</DropdownMenu.Item>
             <CodexModelDiscovery menu sessionId={session.id} />
           </>}
-          {session.backend !== 'gemini' && session.backend !== 'cursor' && session.backend !== 'opencode' && efforts.some(option => Boolean(option.value)) && <>
+          {session.backend !== 'cursor' && session.backend !== 'opencode' && efforts.some(option => option.value !== (session.effort ?? '')) && <>
             <DropdownMenu.Separator className="menu-separator" />
             <DropdownMenu.Label className="menu-label">Reasoning</DropdownMenu.Label>
             {efforts.map(option => <DropdownMenu.CheckboxItem data-runtime-section="reasoning" key={option.value || 'default'} className="menu-item" checked={(session.effort ?? '') === option.value} onCheckedChange={() => void useAppStore.getState().updateSession(session.id, { effort: option.value || null })}>{option.label}</DropdownMenu.CheckboxItem>)}

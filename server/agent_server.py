@@ -7682,6 +7682,12 @@ def normalize_runtime_effort_for_model(
     provider will ignore or reject later.
     """
     normalized = normalize_runtime_effort(backend, effort, strict=strict)
+    if normalized and backend == BACKEND_GEMINI:
+        if (not model or model == gemini_gateway.ARGON_MODEL) and normalized in gemini_gateway.ARGON_EFFORTS:
+            return normalized
+        if strict:
+            raise HTTPException(400, "Unsupported reasoning level for this Gemini model.")
+        return None
     if normalized is None or str(backend or "").strip().lower() != BACKEND_CODEX:
         return normalized
 
@@ -61402,8 +61408,10 @@ def probe_runtime(backend: str) -> dict[str, Any]:
                 flag not in help_text for flag in ("--session-id", "--resume", "--approval-mode", "stream-json")
             ):
                 raise RuntimeError("Incompatible Gemini CLI")
+            supports_thinking = True
             if HUB_PROVIDER_INSTALL:
                 access = hub_provider_auth.request(HUB_PROVIDER_INSTALL, "gemini")
+                supports_thinking = access.get("supportsThinkingLevel") is True
                 base, key = f"http://127.0.0.1:{access['port']}", access["accessToken"]
             else:
                 base, key = gemini_gateway.HUB, gemini_gateway.credential(CONFIG_ENV_FILE.parent)
@@ -61422,7 +61430,7 @@ def probe_runtime(backend: str) -> dict[str, Any]:
             return runtime_diagnostic_payload(backend, "error", installed=True, authenticated=None, version=version,
                                              message="The Gemini CLI is incompatible or could not be checked.")
         return {**runtime_diagnostic_payload(backend, "ready", installed=True, authenticated=True, version=version,
-                    executable=exe), "_gemini_models": offered}
+                    executable=exe), "_gemini_models": offered, "_gemini_thinking_level": supports_thinking}
     if backend == BACKEND_OPENCODE:
         (
             resolved,
@@ -62657,6 +62665,10 @@ def discover_runtime_backend_catalog(backend: str, *, force_runtime_probe: bool 
         catalog = {"models": unique_runtime_options([runtime_option(name, name) for name in names], default),
                    "default_model": default, "efforts": [], "model_source": "NVIDIA Inference Hub",
                    "permission_modes": list(gemini_agent_client.PERMISSIONS), "default_permission_mode": "default"}
+        if diagnostic.get("_gemini_thinking_level") and gemini_gateway.ARGON_MODEL in names:
+            catalog["model_efforts"] = {
+                gemini_gateway.ARGON_MODEL: [runtime_option(e, e.title()) for e in gemini_gateway.ARGON_EFFORTS],
+            }
     elif backend == BACKEND_CLAUDE:
         catalog = parse_claude_help_catalog()
     elif backend == BACKEND_CODEX:
@@ -71811,7 +71823,7 @@ async def run_gemini(
         if context:
             prompt = build_memory_augmented_prompt(gemini_history.CONTEXT_LABEL, context, prompt)
         native_env = agent_runner_env(session_id)
-        env = resources.enter_context(gemini_agent_client.native_environment(native_env, access, mcp, cwd=cwd))
+        env = resources.enter_context(gemini_agent_client.native_environment(native_env, access, mcp, cwd=cwd, effort=sess.get("effort")))
         add_provider_no_proxy_environment(env, "127.0.0.1")
         cmd = gemini_agent_client.command(
             sess["_gemini_executable"], sess.get("model") or sess["_gemini_default_model"],
@@ -77079,14 +77091,18 @@ async def _start_turn_locked(
 
         backend = sess.get("backend") or DEFAULT_BACKEND
         runtime_status = await ensure_runtime_available(backend, session=sess)
-        if provider_context_mode == "chat":
-            sess = await STORE.mark_backend_started(session_id, str(backend))
         if backend == BACKEND_GEMINI:
             names = runtime_status.get("_gemini_models", [])
             if not names or (sess.get("model") and sess["model"] not in names):
                 raise HTTPException(409, "The selected Gemini model is not available from NVIDIA Inference Hub.")
-            sess = {**sess, "_gemini_executable": runtime_status["_executable"],
-                    "_gemini_default_model": gemini_agent_client.DEFAULT_MODEL if gemini_agent_client.DEFAULT_MODEL in names else names[0]}
+            default = gemini_agent_client.DEFAULT_MODEL if gemini_agent_client.DEFAULT_MODEL in names else names[0]
+            if sess.get("effort") and ((sess.get("model") or default) != gemini_gateway.ARGON_MODEL
+                                      or not runtime_status.get("_gemini_thinking_level")):
+                raise HTTPException(409, "This Gemini model or hub cannot apply reasoning levels. Select Server default.")
+        if provider_context_mode == "chat":
+            sess = await STORE.mark_backend_started(session_id, str(backend))
+        if backend == BACKEND_GEMINI:
+            sess = {**sess, "_gemini_executable": runtime_status["_executable"], "_gemini_default_model": default}
         if backend in (BACKEND_CURSOR, BACKEND_OPENCODE):
             # Keep the exact compatibility-probed executable pinned through
             # admission; mark_backend_started returns a fresh durable snapshot.

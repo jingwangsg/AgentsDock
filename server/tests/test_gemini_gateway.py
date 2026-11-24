@@ -88,6 +88,43 @@ class GeminiGatewayTests(unittest.TestCase):
         self.assertEqual((path, body, sent["Authorization"]), (PATH, native, "Bearer fixture-key"))
         self.assertFalse({"x-goog-api-key", "cookie", "x-forwarded-host"} & {k.lower() for k in sent})
 
+    def test_argon_effort_changes_only_thinking_level_on_generation(self):
+        self.upstream.finish.set()
+        self.assertIs(self.access["supportsThinkingLevel"], True)
+        generation = {"temperature": 0.2, "thinkingConfig": {"includeThoughts": True, "thinkingBudget": 512}}
+        native = {"contents": [{"parts": [{"text": "hello"}]}], "generationConfig": generation}
+        body = json.dumps(native, indent=2).encode()
+        argon = "/v1beta/models/gcp/google/gemini-4-argon:"
+        for level, method in (("low", "streamGenerateContent?alt=sse"), ("medium", "generateContent"),
+                              ("high", "streamGenerateContent?alt=sse")):
+            headers = {**self.headers, gateway.EFFORT_HEADER: level}
+            with self.subTest(level=level), self.request(path=argon + method, body=body, headers=headers) as response:
+                self.assertEqual(response.status, 200)
+                response.read()
+                path, forwarded_headers, forwarded_body = self.upstream.calls[-1]
+                self.assertEqual(path, argon + method)
+                self.assertNotIn(gateway.EFFORT_HEADER, forwarded_headers)
+                self.assertEqual(json.loads(forwarded_body), {**native, "generationConfig": {
+                    **generation, "thinkingConfig": {"includeThoughts": True, "thinkingLevel": level.upper()},
+                }})
+
+        selected = {**self.headers, gateway.EFFORT_HEADER: "low"}
+        for path, headers in ((argon + "generateContent", self.headers), (argon + "countTokens", selected), (PATH, selected)):
+            with self.subTest(path=path), self.request(path=path, body=body, headers=headers) as response:
+                self.assertEqual(response.status, 200)
+                response.read()
+                self.assertEqual(self.upstream.calls[-1][2], body)
+                self.assertNotIn(gateway.EFFORT_HEADER, self.upstream.calls[-1][1])
+
+    def test_invalid_explicit_effort_and_malformed_generation_are_rejected_locally(self):
+        path = "/v1beta/models/gcp/google/gemini-4-argon:generateContent"
+        for level, body in (("xhigh", b"{}"), ("low", b"{"), ("high", b'{"generationConfig":{"thinkingConfig":[]}}')):
+            with self.subTest(level=level), self.request(
+                path=path, body=body, headers={**self.headers, gateway.EFFORT_HEADER: level},
+            ) as response:
+                self.assertEqual(response.status, 400)
+        self.assertFalse(self.upstream.calls)
+
     def test_authorization_and_full_request_target_checked_before_forwarding(self):
         for target, headers, status in [
             (PATH, {}, 403), (PATH, {**self.headers, "Origin": ""}, 403),

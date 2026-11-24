@@ -3014,7 +3014,7 @@ export function SessionDialog({ mode }: { mode: 'newChat' | 'resume' }) {
   }
   const modelOptions = runtimeCatalogOptions(catalog, backend, 'models', model, codex_provider)
   const effortOptions = runtimeEffortOptions(catalog, backend, model, effort, codex_provider)
-  const hasReasoning = backend !== 'gemini' && backend !== 'cursor' && backend !== 'opencode' && effortOptions.some(option => Boolean(option.value))
+  const hasReasoning = backend !== 'cursor' && backend !== 'opencode' && effortOptions.some(option => Boolean(option.value))
   const selectModel = (value: string) => {
     setModel(value)
     setEffort(runtimeEffortAfterModelChange(catalog, backend, value || null, effort, codex_provider) || '')
