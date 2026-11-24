@@ -3,6 +3,7 @@
 ## 2026-11-25 — Select Gemini reasoning per chat
 
 - The model menu offers Low, Medium and High for Argon on desktop and mobile. The selection is saved with the chat and applies to subsequent generation requests. Server default leaves the Gemini CLI's native reasoning settings in effect.
+- Packaged desktop build 153 and Android sideload build 95 selected High and Medium respectively through the composer. An isolated upstream observed the selected levels on native Gemini CLI requests. Clearing the choice restored the workspace setting. A separate live Argon call through the CLI with High completed successfully.
 
 ## 2026-11-25 — Keep Gemini visible in folder chat menus
 
