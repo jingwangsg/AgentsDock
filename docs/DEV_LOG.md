@@ -3,6 +3,7 @@
 ## 2026-11-25 — Default new Gemini chats to Full access
 
 - New Gemini chats start with native file and shell tools enabled. Desktop and mobile show the server's default until a chat has its own selection. The desktop permission picker now sends that selection to the server.
+- Verified on packaged macOS build 154 and Android build 96. Both created chats with Full access and saved an explicit Plan choice. The native CLI wrote a file and used the shell to copy its contents into a disposable Canvas directory. A separate live Argon turn also completed both file and shell tool calls.
 
 ## 2026-11-25 — Select Gemini reasoning per chat
 
