@@ -1,5 +1,11 @@
 # Public development log
 
+## 2026-11-24 — Native Gemini CLI chats on desktop and mobile
+
+- Desktop and mobile clients can create Gemini chats, select a model and tool permissions, import native conversations by workspace, and update the CLI on the selected server. The server streams text and tool activity and retains the native identity for follow-ups.
+- Managed remotes reach the model gateway over their existing Hub SSH connection. Each remote receives a separate gateway token. A standalone installation reads its own credential.
+- Verified with Gemini CLI 0.71.1, an isolated AgentsServer, Electron and an Android emulator. Both clients completed a tool call and a follow-up. Both clients updated the CLI. Android reopened the originating chat from its completion notification. OpenSSH isolation, native Stop, queued resume and scoped chat delivery were exercised with a local model fixture. Production inference acceptance remains pending.
+
 ## 2026-11-23 — Explain Cursor provider exhaustion and preserve recoverable sessions
 
 - A failed native request reporting `[resource_exhausted]` now records a fixed diagnostic on both the error and the terminal event. Clients can display the provider code without exposing stderr or private provider text. A failed turn still has an empty assistant result.

@@ -92,6 +92,14 @@ A long-lived Claude token (from `claude setup-token`) in the hub's `CLAUDE_CODE_
 
 After the hub next deploys a managed remote, ordinary Codex and Cursor chats use the hub user's native CLI logins. Sign in with `codex login` and `cursor-agent login` on the hub. The remote still runs its own CLI in its own workspace. It requests an access token over the hub's SSH connection. The hub owns renewal. A disconnected hub or unavailable login prevents new delegated work. Standalone servers keep their local sign-in, and explicitly configured custom Codex endpoints keep their own credentials.
 
+### Gemini CLI with NVIDIA Inference Hub
+
+Install **Gemini CLI** from the server's runtime settings. The installer uses npm and the Node.js version required by the selected CLI release. AgentsServer runs the native `@google/gemini-cli` executable. To use a separately managed installation, put `gemini` on the server PATH or set `GEMINI_BIN` to its executable and keep it updated there. Open Gemini CLI in the intended workspace once and trust that folder for headless use.
+
+On the Hub, store the NVIDIA Inference Hub bearer in a file named `gemini-inference-key` beside the server's configuration `env`, owned by the service user with mode `0600`. A service-supplied `AGENTSDOCK_GEMINI_INFERENCE_KEY` also works. The Hub reads its model list from NVIDIA and prefers `gcp/google/gemini-4-argon` when available. In runtime settings, select **Recheck CLIs**, then create a **Gemini CLI** chat. A budget-exhausted diagnostic requires available budget in the credential's project.
+
+After deploying a managed remote, Gemini CLI runs with its workspace, native tools, skills and history on that host. A loopback gateway reached over the Hub's SSH connection supplies model access. The NVIDIA bearer stays on the Hub. A standalone server uses its own configuration. Gemini discovers skills in the host user’s or workspace’s `.gemini/skills` and `.agents/skills` directories. Activation follows native tool permissions. On a fresh 0.71.1 profile, Full access exposed `activate_skill` and the default headless policy omitted it. Native resume requires the original server, workspace and Gemini session UUID. Import Chat copies public user and assistant text for display. Gemini resumes its full context from the native transcript.
+
 The SSH forward registry is separate from `remote-servers.json`: a forwarded service is never treated as an AgentsServer install or started by its tunnel manager. When a remote cluster is recreated under another SSH host name, update that entry's host in the private registry and restart the SSH forward service. There is no admin API or desktop UI for these forwards yet.
 
 ## Updating

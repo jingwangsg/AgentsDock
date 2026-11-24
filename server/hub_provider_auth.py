@@ -78,6 +78,11 @@ def request(install, backend, previous="", refresh=False):
                 result = json.loads(stream.readline(LIMIT))
         if not isinstance(result, dict) or not isinstance(result.get("accessToken"), str) or not result["accessToken"]:
             raise HubLoginError(FAILURE)
+        if backend == "gemini":
+            port = result.get("port")
+            if type(port) is not int or not 1 <= port <= 65535:
+                raise HubLoginError(FAILURE)
+            return {"accessToken": result["accessToken"], "port": port}
         if backend == "codex":
             if not isinstance(result.get("chatgptAccountId"), str) or not result["chatgptAccountId"]:
                 raise HubLoginError(FAILURE)
@@ -147,7 +152,7 @@ async def forward_requests(proc, key, issue):
     while line := await proc.stdout.readline():
         try:
             backend, previous, refresh = json.loads(line)
-            if backend not in ("codex", "cursor") or not isinstance(previous, str) or type(refresh) is not bool:
+            if backend not in ("codex", "cursor", "gemini") or not isinstance(previous, str) or type(refresh) is not bool:
                 raise ValueError()
             grant = await asyncio.wait_for(issue(backend, previous, refresh), 15)
         except Exception:

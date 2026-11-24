@@ -2170,7 +2170,9 @@ time.sleep(30)
                 # The reachable remote answers the real request; the others have no server behind their port.
                 return await real_update_cli(server, backend)
 
-            probes = mock.AsyncMock(side_effect=lambda server: {"active": ["c1"]} if server is remote else None)
+            probes = mock.AsyncMock(side_effect=lambda server: {"active": ["c1"], "capabilities": {
+                "gemini_backend": {"available": True, "version": 1},
+            }} if server is remote else None)
             try:
                 async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{hub_port}") as client:
                     with mock.patch.object(manager, "_deploy", fake_deploy), mock.patch.object(manager, "update_cli", update_cli), \
@@ -2197,9 +2199,9 @@ time.sleep(30)
             finally:
                 await close()
             assert order == [
-                ("redeploy", remote.id), ("cli", remote.id, "claude"), ("cli", remote.id, "codex"), ("cli", remote.id, "cursor"),
+                ("redeploy", remote.id), ("cli", remote.id, "claude"), ("cli", remote.id, "codex"), ("cli", remote.id, "cursor"), ("cli", remote.id, "gemini"),
                 ("redeploy", dead.id), ("cli", dead.id, "claude"), ("cli", dead.id, "codex"), ("cli", dead.id, "cursor"),
-                ("hub-cli", "claude"), ("hub-cli", "codex"), ("hub-cli", "cursor"), ("restart",),
+                ("hub-cli", "claude"), ("hub-cli", "codex"), ("hub-cli", "cursor"), ("hub-cli", "gemini"), ("restart",),
             ]
             messages = [entry["message"] for entry in view["log"]]
             assert f"{remote.name}: Uploading the server…" in messages and f"{remote.name}: Claude Code claude-2.0" in messages

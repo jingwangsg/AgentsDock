@@ -17,6 +17,7 @@ EXECUTION_MODULES = {
 NEW_MODULES = {
     "local_session_ownership.py",
     "cursor_history.py",
+    "gemini_history.py",
     "moved_chat_state.py",
     "workspace_git.py",
     "codex_auth.py",
@@ -31,7 +32,7 @@ NEW_MODULES = {
     "agentsdock_canvas.py", "remote_servers.py",
     "agentsdock_cli_common.py",
     "claude_goals.py",
-    "opencode_agent_client.py",
+    "opencode_agent_client.py", "gemini_agent_client.py", "gemini_gateway.py",
     "team_mail_runtime.py", "team_mail_websocket.py",
     "team_mail_grants.py",
     "claude_history_repair.py", "claude_history_provenance.py", "codex_history_repair.py", "public_chat_shares.py",
