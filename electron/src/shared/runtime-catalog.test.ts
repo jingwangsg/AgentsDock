@@ -486,3 +486,13 @@ describe('runtime diagnostics', () => {
     expect(runtimeDiagnosticCurrentError(diagnostic)).toBe('')
   })
 })
+
+it('gates Gemini independently of other CLIs and admits only this server’s models', () => {
+  const health: Health = { ok: true, capabilities: { gemini_backend: { available: true, version: 1, native_resume: true } } }
+  const runtime: RuntimeCatalog = { backends: { gemini: { available: true, models: [{ value: 'gcp/google/gemini', label: 'Gemini' }], efforts: [] } } }
+  expect(readyChatBackends(health, runtime).includes('gemini')).toBe(true)
+  expect(readyChatBackends({ ok: true }, runtime).includes('gemini')).toBe(false)
+  expect(runtimeSelectionError(health, runtime, 'gemini', 'gcp/google/gemini')).toBe(null)
+  expect(Boolean(runtimeSelectionError(health, runtime, 'gemini', 'gemini-through-cursor'))).toBe(true)
+  expect(runtimeEffortAfterModelChange(runtime, 'gemini', 'gcp/google/gemini', 'high')).toBe(null)
+})

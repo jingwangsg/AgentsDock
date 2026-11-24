@@ -12,7 +12,7 @@ export interface LanguageSettingsSnapshot {
 export type JsonPrimitive = string | number | boolean | null
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue }
 
-export type Backend = 'claude' | 'codex' | 'cursor' | 'opencode'
+export type Backend = 'claude' | 'codex' | 'cursor' | 'opencode' | 'gemini'
 export type CodexProvider = 'default' | 'custom'
 export type ChatSyncStatus = 'idle' | 'cached' | 'syncing' | 'live' | 'reconnecting' | 'offline' | 'error'
 export type ServerConnectionState = 'online' | 'degraded' | 'connecting' | 'retrying' | 'offline' | 'cached'
@@ -466,6 +466,8 @@ export interface Session {
   codex_needs_user_action?: boolean | null
   claude_transport?: string | null
   claude_permission_mode?: ClaudePermissionMode | null
+  gemini_session_id?: string | null
+  gemini_permission_mode?: 'default' | 'plan' | 'full_access' | null
   cursor_session_id?: string | null
   cursor_permission_mode?: CursorPermissionMode | null
   opencode_session_id?: string | null
@@ -573,10 +575,10 @@ export interface RuntimeBackendCatalog {
   efforts: RuntimeOption[]
   model_efforts?: Record<string, RuntimeOption[]>
   model_capabilities?: Record<string, RuntimeModelCapability>
-  model_source?: string | null
-  effort_source?: string | null
   // Cursor can rule out unlisted models only after a complete discovery or a known plan restriction.
   model_list_complete?: boolean
+  model_source?: string | null
+  effort_source?: string | null
   default_model?: string | null
   default_effort?: string | null
   diagnostic?: RuntimeDiagnostic | null
@@ -1306,6 +1308,7 @@ export interface Event extends SharedChatAttribution {
   turn_id?: string | null
   /** Exact native provider turn that accepted an in-flight user message. */
   provider_turn_id?: string | null
+  delta?: boolean
   item_id?: string | null
   status?: JsonValue
   native_steer?: boolean | null
@@ -1977,6 +1980,7 @@ export interface HealthCapabilities {
   scheduled_jobs?: ScheduledJobsCapability
   codex_controls?: InteractiveProviderCapability
   claude_controls?: InteractiveProviderCapability
+  gemini_backend?: { available: boolean; version: number; native_resume?: boolean }
   cursor_backend?: CursorBackendCapability
   opencode_backend?: OpenCodeBackendCapability
   local_provider_commands_v1?: ServerCapability & { version?: number; supported_backends?: Backend[] }
@@ -2246,7 +2250,7 @@ export interface ServerRunningChats {
 
 /** One server's step in Settings → Server "Update & redeploy all". */
 export type ServerUpdateAllProgress = { profileId: string } & (
-  | { step: 'restart' | 'claude' | 'codex' | 'cursor' }
+  | { step: 'restart' | 'claude' | 'codex' | 'cursor' | 'gemini' }
   /** The hub's deploy log line. */
   | { step: 'redeploy'; message: string }
   /** The redeploy error, if any, then each CLI's version or error. */
@@ -2780,6 +2784,7 @@ export interface BulkImportSessionResult {
   error?: string
 }
 export interface UpdateSessionInput {
+  gemini_permission_mode?: Session['gemini_permission_mode']
   title?: string
   folder?: string
   cwd?: string

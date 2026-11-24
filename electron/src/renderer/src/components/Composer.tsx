@@ -172,6 +172,8 @@ function composerHealthContractRevisions(health: Health | null): ComposerHealthC
       capabilities?.codex_controls ?? null,
       capabilities?.codex_provider_v1 ?? null,
       capabilities?.claude_controls ?? null,
+      capabilities?.gemini_backend ?? null,
+      health.runtimes?.gemini ?? null,
       capabilities?.cursor_backend ?? null,
       capabilities?.opencode_backend ?? null,
       capabilities?.local_provider_commands_v1 ?? null,
@@ -184,6 +186,8 @@ function composerHealthContractRevisions(health: Health | null): ComposerHealthC
       capabilities?.codex_provider_v1 ?? null,
       capabilities?.cross_chat_handoffs_v1 ?? null,
       capabilities?.team_all_servers_alias_v1 ?? null,
+      capabilities?.gemini_backend ?? null,
+      health.runtimes?.gemini ?? null,
       capabilities?.cursor_backend ?? null,
       capabilities?.opencode_backend ?? null,
       health.runtimes?.opencode ?? null,
@@ -352,7 +356,7 @@ function providerCommandContextKey(
   serverIdentity: string | null,
   session: Session | null | undefined
 ): string | null {
-  if (!session || session.backend === 'cursor') return null
+  if (!session || session.backend === 'gemini' || session.backend === 'cursor') return null
   return [
     profileId ?? 'local',
     profileGeneration,
@@ -390,7 +394,7 @@ function providerMetaPart(value: unknown): string | null {
 }
 
 function providerComposerCommands(snapshot: ProviderCommandsSnapshot | null, backend: Session['backend']): ComposerCommand[] {
-  if (!snapshot || snapshot.support?.available !== true || snapshot.backend !== backend || backend === 'cursor' || !Array.isArray(snapshot.commands)) return []
+  if (!snapshot || snapshot.support?.available !== true || snapshot.backend !== backend || backend === 'gemini' || backend === 'cursor' || !Array.isArray(snapshot.commands)) return []
   const seenCommands = new Set<string>()
   return snapshot.commands.flatMap((command, index) => {
     if (!command || typeof command !== 'object') return []
@@ -643,7 +647,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
   const loadProviderCommands = useCallback(async (refresh = false, discardSnapshot = false) => {
     const key = providerCommandsKey
     const list = window.agentsDock.providerCommands?.list
-    if (!key || !selectedId || !session || session.backend === 'cursor' || !connected || typeof list !== 'function') return
+    if (!key || !selectedId || !session || session.backend === 'gemini' || session.backend === 'cursor' || !connected || typeof list !== 'function') return
     if (session.backend === 'opencode' && !openCodeProviderCommandsAvailable(useAppStore.getState().health)) return
     if (!refresh) {
       const cached = providerCommandCache.get(key)
@@ -733,6 +737,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
   const supportedChatActions = useMemo(() => supportedCrossChatActions(health), [healthRevision])
   const supportedTargetBackends = useMemo(() => supportedCrossChatTargetBackends(health), [healthRevision])
   const routeHintsSupported = session?.backend !== 'opencode' && routeHintMentionsAvailable(health)
+    && (session?.backend !== 'gemini' || supportedCrossChatTargetBackends(health).includes('gemini'))
   const teamMentionsSupported = teamMessagesAvailable(health)
   const teamAllServersSupported = teamAllServersAliasAvailable(health)
   const teamMessagesAdvertised = health?.capabilities?.agent_team_messages_v1?.available === true
@@ -849,7 +854,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
       return codexGoalsAvailable
     }
     if (command.id === 'reasoning') {
-      return session.backend !== 'cursor' && session.backend !== 'opencode'
+      return session.backend !== 'gemini' && session.backend !== 'cursor' && session.backend !== 'opencode'
         && runtimeEffortOptions(catalog, session.backend, session.model, session.effort, session.codex_provider, session.codex_provider_catalog)
         .some(option => Boolean(option.value))
     }
@@ -1269,7 +1274,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
 
   const send = async (steer = false, promptOverride?: string, consumeComposer = true) => {
     if (writeDisabled) return
-    if (steer && running && session?.backend === 'opencode') { useAppStore.getState().setError(t('opencode.steerUnavailable')); return }
+    if (steer && running && (session?.backend === 'opencode' || session?.backend === 'gemini')) { useAppStore.getState().setError(t('composer.runtimeSteerUnavailable')); return }
     if (!profileIsActive(activeProfileId, profileGeneration)) return
     let steerConsent: InboundDeliveryConsent | undefined
     if (steer && selectedId) {
@@ -1637,7 +1642,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
   }
 
   const steerFirstQueued = async () => {
-    if (running && session?.backend === 'opencode') { reportActionError(t('opencode.steerUnavailable')); return }
+    if (running && (session?.backend === 'opencode' || session?.backend === 'gemini')) { reportActionError(t('composer.runtimeSteerUnavailable')); return }
     if (writeDisabled) return
     if (!selectedId || !steeringScope) return
     if (!profileIsActive(activeProfileId, profileGeneration)) return
@@ -2313,7 +2318,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
             }
             if (event.key === 'Enter' && !event.shiftKey && !event.altKey) {
               event.preventDefault()
-              const forceSend = (event.metaKey || event.ctrlKey) && !steeringPending && session.backend !== 'opencode'
+              const forceSend = (event.metaKey || event.ctrlKey) && !steeringPending && session.backend !== 'opencode' && session.backend !== 'gemini'
               if (canSend) void send(forceSend)
               else if (
                 (event.metaKey || event.ctrlKey)
@@ -2472,7 +2477,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
             }}
             title={stopping ? t("ui.Composer.Composer.stopping_agent_ec42789") : t("ui.Composer.Composer.stop_f9da57a", { "provider": String(session.title) })}
           ><span className="activity-ring" /><Square size={12} fill="currentColor" /><span className="stop-button-label">{stopping ? t("ui.Composer.Composer.stopping_bbe8574") : t("ui.Composer.Composer.stop_cae7d57")}</span></button>}
-          <ShortcutTooltip shortcut={running && session.backend !== 'opencode' ? ['sendMessage', 'steerMessage'] : 'sendMessage'} label={running ? session.backend === 'opencode' ? t("ui.Composer.Composer.queue_message_891d4ef") : activeCodexGoal ? t('composer.queueMessageDuringGoal') : t("ui.Composer.Composer.queue_message_steer_now_eea53cb") : t("ui.Composer.Composer.send_message_93a26b1")}><button className="send-button" aria-label={sessionId === undefined ? (running ? t("ui.Composer.Composer.queue_message_891d4ef") : t("ui.Composer.Composer.send_message_93a26b1")) : t(running ? 'ui.composer.queueFor' : 'ui.composer.sendTo', { title: session.title })} disabled={!canSend} onClick={() => void send()}><Send size={17} /></button></ShortcutTooltip>
+          <ShortcutTooltip shortcut={running && session.backend !== 'opencode' && session.backend !== 'gemini' ? ['sendMessage', 'steerMessage'] : 'sendMessage'} label={running ? session.backend === 'opencode' || session.backend === 'gemini' ? t("ui.Composer.Composer.queue_message_891d4ef") : activeCodexGoal ? t('composer.queueMessageDuringGoal') : t("ui.Composer.Composer.queue_message_steer_now_eea53cb") : t("ui.Composer.Composer.send_message_93a26b1")}><button className="send-button" aria-label={sessionId === undefined ? (running ? t("ui.Composer.Composer.queue_message_891d4ef") : t("ui.Composer.Composer.send_message_93a26b1")) : t(running ? 'ui.composer.queueFor' : 'ui.composer.sendTo', { title: session.title })} disabled={!canSend} onClick={() => void send()}><Send size={17} /></button></ShortcutTooltip>
         </div>
       </fieldset>
       <div className="drop-overlay" role="status" aria-label={dropActive ? t("ui.Composer.Composer.drop_to_attach_34a7a63") : undefined} aria-live="polite" aria-atomic="true" aria-hidden={!dropActive}>
@@ -3285,7 +3290,7 @@ function NewAgentDialog({
   const customCatalog = codexProvider === 'custom' ? session.codex_provider_catalog : undefined
   const models = runtimeCatalogOptions(catalog, backend, 'models', model || null, codexProvider, customCatalog)
   const efforts = runtimeEffortOptions(catalog, backend, model || null, effort || null, codexProvider, customCatalog)
-  const hasReasoning = backend !== 'cursor' && backend !== 'opencode' && efforts.some(option => Boolean(option.value))
+  const hasReasoning = backend !== 'gemini' && backend !== 'cursor' && backend !== 'opencode' && efforts.some(option => Boolean(option.value))
   const selectModel = (value: string) => {
     setModel(value)
     setEffort(runtimeEffortAfterModelChange(catalog, backend, value || null, effort || null, codexProvider, customCatalog) || '')
@@ -3728,12 +3733,19 @@ function RuntimeMenu({
             <DropdownMenu.Item className="menu-item" onSelect={() => { setManualModel(session.model ?? ''); setManualModelOpen(true) }}>{t('codexProvider.manualModel')}</DropdownMenu.Item>
             <CodexModelDiscovery menu sessionId={session.id} />
           </>}
-          {session.backend !== 'cursor' && session.backend !== 'opencode' && efforts.some(option => Boolean(option.value)) && <>
+          {session.backend !== 'gemini' && session.backend !== 'cursor' && session.backend !== 'opencode' && efforts.some(option => Boolean(option.value)) && <>
             <DropdownMenu.Separator className="menu-separator" />
             <DropdownMenu.Label className="menu-label">Reasoning</DropdownMenu.Label>
             {efforts.map(option => <DropdownMenu.CheckboxItem data-runtime-section="reasoning" key={option.value || 'default'} className="menu-item" checked={(session.effort ?? '') === option.value} onCheckedChange={() => void useAppStore.getState().updateSession(session.id, { effort: option.value || null })}>{option.label}</DropdownMenu.CheckboxItem>)}
           </>}
-          {!window.agentsDock.sharedChat && session.backend !== 'cursor' && session.backend !== 'opencode' && <>
+          {!window.agentsDock.sharedChat && session.backend === 'gemini' && Boolean(catalog?.backends.gemini?.permission_modes?.length) && <>
+            <DropdownMenu.Separator className="menu-separator" />
+            <DropdownMenu.Label className="menu-label">{t('gemini.permissions')}</DropdownMenu.Label>
+            {catalog?.backends.gemini.permission_modes?.map(mode => <DropdownMenu.CheckboxItem key={mode} className="menu-item"
+              disabled={running || admitting} checked={(session.gemini_permission_mode ?? 'default') === mode}
+              onCheckedChange={() => void useAppStore.getState().updateSession(session.id, { gemini_permission_mode: mode })}>{t(`gemini.permission.${mode}`)}</DropdownMenu.CheckboxItem>)}
+          </>}
+          {!window.agentsDock.sharedChat && session.backend !== 'gemini' && session.backend !== 'cursor' && session.backend !== 'opencode' && <>
             <DropdownMenu.Separator className="menu-separator" />
             <DropdownMenu.Label className="menu-label">{t("ui.Composer.RuntimeMenu.agent_process_4dc27ee")}</DropdownMenu.Label>
             <DropdownMenu.Item
@@ -3794,8 +3806,8 @@ function BackendMenu({ session, running, admitting }: { session: Session; runnin
       window.dispatchEvent(new CustomEvent('agentsdock:app-settings-section', { detail: 'server' }))
       useAppStore.getState().setModal('appSettings', true)
     }}><BackendMark backend="codex" size={15} />{t('codexProvider.label')}{' '}<span className="menu-item-locked-hint">{t('codexProvider.configure')}</span></DropdownMenu.Item>
-    const unavailable = backend === 'cursor' && !cursorAvailable || backend === 'opencode' && !openCodeAvailable
-    const unavailableReason = (backend === 'opencode' ? openCodeUnavailableReason : cursorUnavailableReason) || t('ui.Composer.agentUnavailableFallback')
+    const unavailable = backend === 'gemini' && Boolean(runtimeSelectionError(health, catalog, backend)) || backend === 'cursor' && !cursorAvailable || backend === 'opencode' && !openCodeAvailable
+    const unavailableReason = (backend === 'gemini' ? runtimeSelectionError(health, catalog, backend) : backend === 'opencode' ? openCodeUnavailableReason : cursorUnavailableReason) || t('ui.Composer.agentUnavailableFallback')
     if (unavailable) return <Tooltip.Root key={backend}>
       <Tooltip.Trigger asChild>
         <DropdownMenu.Item className="menu-item backend-unavailable-item" aria-disabled="true" onSelect={event => event.preventDefault()}>
@@ -4200,7 +4212,7 @@ const QueueShelf = memo(function QueueShelf({
   }
   const saveEdit = async (steer = false) => {
     if (!editing || savingEdit) return
-    if (steer && running && sourceSession?.backend === 'opencode') { reportActionError(t('opencode.steerUnavailable')); return }
+    if (steer && running && (sourceSession?.backend === 'opencode' || sourceSession?.backend === 'gemini')) { reportActionError(t('composer.runtimeSteerUnavailable')); return }
     if (!profileIsActive(profileId, profileGeneration)) return
     let steerConsent: InboundDeliveryConsent | undefined
     if (steer) {
@@ -4594,7 +4606,10 @@ function QueuedAttachment({ profileId, profileGeneration, sessionId, fileId }: {
 
 function QueuedRow({ profileId, profileGeneration, steeringScope, turn, sessionId, running, activeCodexGoal, drop, steeringPending, promotionPending, runtimeError, crossChatFence, blockingDelivery, canSkipExactDelivery, canSkipExactPeerDelivery, asyncControls, reorderable, moving, onMove, onEdit }: { profileId: string | null; profileGeneration: number; steeringScope: SteeringScope; turn: QueuedTurn; sessionId: string; running: boolean; activeCodexGoal: boolean; drop: { id: string; placement: 'before' | 'after' } | null; steeringPending: boolean; promotionPending: boolean; runtimeError: string | null; crossChatFence: QueuedTurnCrossChatFence; blockingDelivery: QueuedTurn | null; canSkipExactDelivery: boolean; canSkipExactPeerDelivery: boolean; asyncControls: boolean; reorderable: boolean; moving: boolean; onMove: (direction: 'up' | 'down') => void; onEdit: (body?: string) => void }) {
   useLocale()
-  const openCodeSteeringBlocked = useAppStore(state => running && state.sessions.find(session => session.id === sessionId)?.backend === 'opencode')
+  const steeringBlocked = useAppStore(state => {
+    const backend = state.sessions.find(session => session.id === sessionId)?.backend
+    return running && (backend === 'opencode' || backend === 'gemini')
+  })
   const agentMessage = isAsyncAgentQueuedTurn(turn)
   const senderTitle = useAppStore(state => agentMessage ? liveChatTitle(state, turn.source_session_id, turn.source_title) || t('timeline.ui.unknownAgent') : null)
   const securePeerDelivery = isSecurePeerDeliveryQueuedTurn(turn)
@@ -4722,7 +4737,7 @@ function QueuedRow({ profileId, profileGeneration, steeringScope, turn, sessionI
     catch (error) { if (profileIsActive(profileId, profileGeneration)) reportActionError(error) }
   }
   const steer = async () => {
-    if (openCodeSteeringBlocked) { reportActionError(t('opencode.steerUnavailable')); return }
+    if (steeringBlocked) { reportActionError(t('composer.runtimeSteerUnavailable')); return }
     if (!profileIsActive(profileId, profileGeneration)) return
     const steerConsent = confirmInboundDeliveryInterruption(sessionId, 'send_now')
     if (!steerConsent) return
@@ -4871,8 +4886,8 @@ function QueuedRow({ profileId, profileGeneration, steeringScope, turn, sessionI
     <button
       type="button"
       className="steer-action"
-      title={openCodeSteeringBlocked ? t('opencode.steerUnavailable') : actionTitle}
-      disabled={openCodeSteeringBlocked || steeringPending || promotionPending || Boolean(runtimeError) || remoteAgentRoute || crossChatFence.runNow}
+      title={steeringBlocked ? t('composer.runtimeSteerUnavailable') : actionTitle}
+      disabled={steeringBlocked || steeringPending || promotionPending || Boolean(runtimeError) || remoteAgentRoute || crossChatFence.runNow}
       onClick={() => void steer()}
     ><CornerDownRight size={13} /> <b>{actionLabel}</b></button>
     {blockingDelivery && canSkipBlockingDelivery && <button
@@ -4889,7 +4904,7 @@ function QueuedRow({ profileId, profileGeneration, steeringScope, turn, sessionI
   </div>
 }
 
-function isBackendLocked(session: Session): boolean { return Boolean(session.backend_locked || session.session_id || session.claude_session_id || session.codex_thread_id || session.cursor_session_id || session.opencode_session_id) }
+function isBackendLocked(session: Session): boolean { return Boolean(session.backend_locked || session.session_id || session.claude_session_id || session.codex_thread_id || session.gemini_session_id || session.cursor_session_id || session.opencode_session_id) }
 
 function sessionRuntimeAdmissionError(
   session: Session | null | undefined,

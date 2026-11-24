@@ -543,7 +543,7 @@ function SessionContextMenu({ session, unread, folders }: { session: Session; un
   const running = useAppStore(state => state.activeSessionIds.has(session.id))
   const admitting = useAppStore(state => Boolean(state.turnAdmissionTokens[session.id]))
   const liveForkSupported = useAppStore(state => completedPrefixForkAvailable(state.health, session.backend))
-  const forkBlocked = session?.backend === 'opencode' || (running || admitting) && !liveForkSupported
+  const forkBlocked = session?.backend === 'gemini' || session?.backend === 'opencode' || (running || admitting) && !liveForkSupported
   return (
     <ContextMenu.Portal>
       <ContextMenu.Content className="menu-content">
@@ -564,13 +564,13 @@ function SessionContextMenu({ session, unread, folders }: { session: Session; un
           icon={Undo2}
           label={t("ui.Sidebar.SessionContextMenu.fork_chat_bc15630")}
           disabled={forkBlocked}
-          title={session?.backend === 'opencode' ? t('opencode.forkUnavailable') : forkBlocked ? t('sessionFork.runningUnavailable') : running || admitting ? t('sessionFork.runningDescription') : undefined}
+          title={session?.backend === 'gemini' ? t('gemini.forkUnavailable') : session?.backend === 'opencode' ? t('opencode.forkUnavailable') : forkBlocked ? t('sessionFork.runningUnavailable') : running || admitting ? t('sessionFork.runningDescription') : undefined}
           onSelect={() => void useAppStore.getState().forkSession(session.id)}
         />
         <MenuItem
           icon={History}
           label={t('historyReload.menu')}
-          disabled={running || admitting || session.backend === 'opencode' || session.backend === 'cursor'}
+          disabled={running || admitting || session.backend === 'opencode' || session.backend === 'gemini' || session.backend === 'cursor'}
           title={running || admitting ? t('historyReload.busy') : undefined}
           onSelect={() => window.dispatchEvent(new CustomEvent('agentsdock:confirm-reload-history', { detail: session }))}
         />

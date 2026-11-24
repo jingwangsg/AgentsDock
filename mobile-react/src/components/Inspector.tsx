@@ -15,7 +15,7 @@ import { PROVIDER_JOBS_ACCESS_MODES, providerJobsAccessDescription, providerJobs
 import { selectConnectionNotice } from '../lib/server-profile-ui'
 import { client, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
-import type { ProviderJobsAccess, RuntimeOption } from '../types'
+import type { ProviderJobsAccess, RuntimeOption, Session } from '../types'
 import { Text, TextInput } from './AppText'
 import { MediaGrid } from './MediaGrid'
 import { IconButton, SectionHeader } from './ui'
@@ -57,6 +57,8 @@ export function Inspector({ sessionId, onDigest, onJob, onTerminal, onProcesses,
       codex_thread_id: value.codex_thread_id,
       claude_session_id: value.claude_session_id,
       cursor_session_id: value.cursor_session_id,
+      gemini_session_id: value.gemini_session_id,
+      gemini_permission_mode: value.gemini_permission_mode,
     } : undefined
   }))
   const snapshotFiles = useAppStore(state => state.snapshots[sessionId]?.files)
@@ -99,8 +101,8 @@ export function Inspector({ sessionId, onDigest, onJob, onTerminal, onProcesses,
       && state.selectedSessionId === sessionId
       && !state.workspaceAdopting
   }
-  const providerSessionId = session?.session_id?.trim() || session?.codex_thread_id?.trim() || session?.claude_session_id?.trim() || session?.cursor_session_id?.trim() || ''
-  const forkDisabled = !connected || running || stopping || admitting
+  const providerSessionId = session?.session_id?.trim() || session?.codex_thread_id?.trim() || session?.claude_session_id?.trim() || session?.gemini_session_id?.trim() || session?.cursor_session_id?.trim() || ''
+  const forkDisabled = session?.backend === 'gemini' || !connected || running || stopping || admitting
   const conversationTransfer = useFileTransfer(`${activeProfileId ?? 'none'}:${profileGeneration}:${sessionId}`)
   const downloadConversation = () => {
     if (!session || !scopeIsCurrent()) return
@@ -216,8 +218,12 @@ export function Inspector({ sessionId, onDigest, onJob, onTerminal, onProcesses,
       <SectionHeader title="Session" />
       <Field label="Name"><TextInput value={title} onChangeText={setTitle} onBlur={() => { const clean = title.trim(); if (scopeIsCurrent() && clean && clean !== session.title) void update(sessionId, { title: clean }, profileGeneration) }} style={[styles.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surface }]} /></Field>
       <Field label="Model"><ChoiceField value={session.model ?? ''} options={modelOptions} onChange={model => { if (scopeIsCurrent()) void update(sessionId, { model, effort: runtimeEffortAfterModelChange(runtime, session.backend, model, session.effort) }, profileGeneration) }} /></Field>
-      {session.backend !== 'cursor' ? <Field label="Effort"><ChoiceField value={session.effort ?? ''} options={effortOptions} onChange={effort => { if (scopeIsCurrent()) void update(sessionId, { effort }, profileGeneration) }} /></Field> : null}
+      {session.backend !== 'gemini' && session.backend !== 'cursor' ? <Field label="Effort"><ChoiceField value={session.effort ?? ''} options={effortOptions} onChange={effort => { if (scopeIsCurrent()) void update(sessionId, { effort }, profileGeneration) }} /></Field> : null}
       {selectionError ? <Text accessibilityRole="alert" style={[styles.hint, { color: colors.orange }]}>{selectionError}</Text> : null}
+      {session.backend === 'gemini' && runtime?.backends.gemini?.permission_modes?.length ? <Field label="Gemini tool permissions"><ChoiceField
+        disabled={!connected || running || admitting || stopping} value={session.gemini_permission_mode ?? 'default'}
+        options={runtime.backends.gemini.permission_modes.map(value => ({ value, label: value === 'full_access' ? 'Full access (auto-approve tools)' : value === 'plan' ? 'Plan only' : 'Gemini default' }))}
+        onChange={value => { if (scopeIsCurrent()) void update(sessionId, { gemini_permission_mode: value as Session['gemini_permission_mode'] }, profileGeneration) }} /></Field> : null}
       <Field label="Agent jobs"><ChoiceField disabled={!jobsAccess.available} value={jobsAccess.effective} options={jobsAccessOptions} onChange={value => { if (scopeIsCurrent() && jobsAccess.available) void update(sessionId, { provider_jobs_access: value as ProviderJobsAccess }, profileGeneration) }} /></Field>
       <Text style={[styles.hint, { color: colors.muted }]}>{jobsAccess.available ? `${providerJobsAccessLabel(jobsAccess.effective)}${jobsAccess.inheritedDefault ? ' (server default)' : ''}. ${providerJobsAccessDescription(jobsAccess.effective)}` : connectionNotice ?? 'Update AgentsServer to set Read-only or Blocked. Human job controls remain available.'}</Text>
       <Field label="System prompt"><TextInput value={systemPrompt} onChangeText={setSystemPrompt} onBlur={() => { const clean = systemPrompt.trim(); if (scopeIsCurrent() && clean !== (session.system_prompt ?? '')) void update(sessionId, { system_prompt: clean || null }, profileGeneration) }} multiline maxLength={12_000} placeholder="Optional per-chat instructions" placeholderTextColor={colors.muted} style={[styles.multilineInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surface }]} /></Field>
@@ -226,7 +232,7 @@ export function Inspector({ sessionId, onDigest, onJob, onTerminal, onProcesses,
     </View>
 
     <View style={styles.commandGrid}>
-      <Command icon={GitFork} label="Fork" testID="inspector-fork-chat" disabled={forkDisabled} hint={stopping ? 'Wait for the current turn to stop before forking this chat.' : running ? 'Wait for the active turn to finish before forking this chat.' : admitting ? 'Wait for the pending message to be accepted before forking this chat.' : !connected ? 'Connect to the server to fork this chat.' : undefined} onPress={() => { if (!forkDisabled && scopeIsCurrent()) void fork(sessionId, profileGeneration) }} />
+      <Command icon={GitFork} label="Fork" testID="inspector-fork-chat" disabled={forkDisabled} hint={session.backend === 'gemini' ? 'Native Gemini CLI session forks are unavailable.' : stopping ? 'Wait for the current turn to stop before forking this chat.' : running ? 'Wait for the active turn to finish before forking this chat.' : admitting ? 'Wait for the pending message to be accepted before forking this chat.' : !connected ? 'Connect to the server to fork this chat.' : undefined} onPress={() => { if (!forkDisabled && scopeIsCurrent()) void fork(sessionId, profileGeneration) }} />
       <Command icon={providerSessionId && copiedSessionId === providerSessionId ? Check : Copy} label={providerSessionId && copiedSessionId === providerSessionId ? 'Copied' : 'Copy session'} testID="inspector-copy-session-id" disabled={!providerSessionId} hint={providerSessionId ? 'Copies the full provider session ID.' : 'Available after the chat agent starts a provider session.'} onPress={() => void copySessionId()} />
       <Command icon={FileText} label="Digest" onPress={() => { if (scopeIsCurrent()) onDigest() }} />
       <Command icon={Download} label="Download conversation" testID="inspector-download-conversation" disabled={!connected || conversationTransfer.busy} onPress={downloadConversation} />

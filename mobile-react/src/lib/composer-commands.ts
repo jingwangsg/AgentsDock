@@ -147,7 +147,7 @@ export function groupComposerCommandsByCategory<T extends ComposerCommandMetadat
 /** Server-advertised inventory route; older servers simply have no palette skills. */
 export function providerCommandsAvailable(health: Health | null | undefined, backend: Backend | null | undefined): boolean {
   const capability = health?.capabilities?.local_provider_commands_v1
-  if (!backend || backend === 'cursor' || capability?.available !== true) return false
+  if (!backend || backend === 'gemini' || backend === 'cursor' || capability?.available !== true) return false
   return !Array.isArray(capability.supported_backends) || capability.supported_backends.includes(backend)
 }
 
@@ -166,7 +166,7 @@ export function providerCommandContextKey(
   serverIdentity: string | null | undefined,
   session: { id: string; backend: Backend; cwd?: string | null } | null | undefined,
 ): string | null {
-  if (!session || session.backend === 'cursor') return null
+  if (!session || session.backend === 'gemini' || session.backend === 'cursor') return null
   return [
     profileId ?? 'local',
     profileGeneration,
@@ -221,7 +221,7 @@ function providerMetaPart(value: unknown): string | null {
 
 /** Sanitizes one server inventory into palette rows; AgentsDock-owned ids win over same-named provider commands. */
 export function providerComposerCommands(snapshot: ProviderCommandsSnapshot | null, backend: Backend | null | undefined): ComposerCommand[] {
-  if (!snapshot || !backend || snapshot.support?.available !== true || snapshot.backend !== backend || backend === 'cursor' || !Array.isArray(snapshot.commands)) return []
+  if (!snapshot || !backend || snapshot.support?.available !== true || snapshot.backend !== backend || backend === 'gemini' || backend === 'cursor' || !Array.isArray(snapshot.commands)) return []
   const seenCommands = new Set<string>()
   return snapshot.commands.flatMap((command, index) => {
     if (!command || typeof command !== 'object') return []

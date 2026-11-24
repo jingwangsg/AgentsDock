@@ -53,7 +53,7 @@ export type {
 type Awaitable<T> = T | Promise<T>
 type ActionResult = boolean | void
 type CreatedProfile = string | Pick<ServerProfileListItem, 'id'>
-const cliNames: Record<Backend, string> = { claude: 'Claude Code', codex: 'Codex', cursor: 'Cursor' }
+const cliNames: Record<Backend, string> = { claude: 'Claude Code', codex: 'Codex', cursor: 'Cursor', gemini: 'Gemini CLI' }
 
 interface CommonServerProfileProps {
   profiles: readonly ServerProfileListItem[]
@@ -496,12 +496,7 @@ export function ServerProfilesManager({
     }
   }
 
-  const chooseCli = (profile: ServerProfileListItem) => Alert.alert(`Update a CLI on ${profile.name}`, undefined, [
-    ...IOS_ONLY_CANCEL,
-    { text: cliNames.claude, onPress: () => { void updateCli(profile, 'claude') } },
-    { text: cliNames.codex, onPress: () => { void updateCli(profile, 'codex') } },
-    { text: cliNames.cursor, onPress: () => { void updateCli(profile, 'cursor') } },
-  ], { cancelable: true })
+  const [cliProfile, setCliProfile] = useState<string | null>(null)
 
   const confirmRemove = (profile: ServerProfileListItem) => {
     if (busy) return
@@ -554,7 +549,9 @@ export function ServerProfilesManager({
       redeployDisabled={redeploying || Boolean(updateAll?.working)}
       onRedeploy={hubProxyRemoteId(profile.serverUrl) !== null ? () => { void redeploy(profile, false) } : undefined}
       onToggleHidden={hubProxyRemoteId(profile.serverUrl) !== null ? () => { void setHidden(profile, !profile.hidden) } : undefined}
-      onUpdateCli={() => chooseCli(profile)}
+      onUpdateCli={() => setCliProfile(cliProfile === profile.id ? null : profile.id)}
+      cliChoices={cliProfile === profile.id}
+      onChooseCli={backend => { setCliProfile(null); void updateCli(profile, backend) }}
     />
   }
 
@@ -572,7 +569,7 @@ export function ServerProfilesManager({
       {hubAvailable ? <SecondaryButton icon={Plus} label="Add server" disabled={Boolean(busy) || deployBusy || Boolean(updateAll?.working)} onPress={openDeploy} /> : null}
     </View>
     {hubAvailable && onUpdateAll ? <View style={styles.updateAll}>
-      <SecondaryButton icon={RotateCw} label="Update & redeploy all" accessibilityLabel="Redeploy every remote server from the hub, update Claude Code, Codex and Cursor on all of them, then restart the hub" busy={Boolean(updateAll?.working)} disabled={Boolean(busy) || deployBusy || redeploying || Boolean(updateAll?.working)} onPress={() => { void runUpdateAll(false) }} />
+      <SecondaryButton icon={RotateCw} label="Update & redeploy all" accessibilityLabel="Redeploy every remote server from the hub, update the supported CLIs on each server, then restart the hub" busy={Boolean(updateAll?.working)} disabled={Boolean(busy) || deployBusy || redeploying || Boolean(updateAll?.working)} onPress={() => { void runUpdateAll(false) }} />
       {updateAll ? <Text accessibilityRole={updateAll.failed ? 'alert' : undefined} style={[styles.help, { color: updateAll.failed ? colors.red : colors.muted }]}>{updateAll.text}</Text> : null}
       {updateAllLog.length ? <View style={styles.deployLog}>
         {updateAllLog.map((entry, index) => <Text key={`${entry.phase}-${index}`} style={[styles.deployLogLine, { color: colors.muted }]} numberOfLines={2}>{entry.message}</Text>)}
@@ -880,7 +877,7 @@ export function ServerProfilesManager({
 
 interface RowWork { kind: 'redeploy' | 'cli' | 'hidden'; text: string; working?: boolean; failed?: boolean }
 
-function ServerManagementRow({ profile, active, switching, disabled, removable, work, redeployDisabled, onSwitch, onEdit, onDrag, onRemove, onRedeploy, onToggleHidden, onUpdateCli }: {
+function ServerManagementRow({ profile, active, switching, disabled, removable, work, redeployDisabled, onSwitch, onEdit, onDrag, onRemove, onRedeploy, onToggleHidden, cliChoices, onChooseCli, onUpdateCli }: {
   profile: ServerProfileListItem
   active: boolean
   switching: boolean
@@ -896,6 +893,8 @@ function ServerManagementRow({ profile, active, switching, disabled, removable, 
   onRedeploy?: () => void
   onToggleHidden?: () => void
   onUpdateCli: () => void
+  cliChoices: boolean
+  onChooseCli: (backend: Backend) => void
 }) {
   const colors = usePalette()
   const status = profileConnectionLabel(profile)
@@ -926,6 +925,9 @@ function ServerManagementRow({ profile, active, switching, disabled, removable, 
       {/* Under the name, not beside Use/Edit/More: a 375 pt row has no room for two more buttons. */}
       <View style={styles.rowTools}>
         <RowTool icon={Download} label="Update CLI" accessibilityLabel={`Update a CLI on ${profile.name}`} busy={work?.kind === 'cli' && Boolean(work.working)} disabled={disabled || Boolean(work?.working)} onPress={onUpdateCli} />
+        {cliChoices && (Object.keys(cliNames) as Backend[]).map(backend => <RowTool key={backend} icon={Download}
+          label={cliNames[backend]} accessibilityLabel={`Update ${cliNames[backend]} on ${profile.name}`}
+          busy={false} disabled={disabled} onPress={() => onChooseCli(backend)} />)}
         {onRedeploy ? <RowTool icon={RotateCw} label="Redeploy" accessibilityLabel={`Redeploy ${profile.name}`} busy={work?.kind === 'redeploy' && Boolean(work.working)} disabled={disabled || redeployDisabled || Boolean(work?.working)} onPress={onRedeploy} /> : null}
         {onToggleHidden ? <RowTool icon={profile.hidden ? Eye : EyeOff} label={profile.hidden ? 'Show' : 'Hide'} accessibilityLabel={profile.hidden ? `Show ${profile.name} in the server switcher` : `Hide ${profile.name} from the server switcher`} busy={work?.kind === 'hidden' && Boolean(work.working)} disabled={disabled || Boolean(work?.working)} onPress={onToggleHidden} /> : null}
       </View>

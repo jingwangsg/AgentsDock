@@ -362,7 +362,7 @@ function parseNewChatDefaults(value: unknown): NewChatDefaults | null {
   const candidate = value as Partial<NewChatDefaults>
   if (
     candidate.version !== 1
-    || !['claude', 'codex', 'cursor', 'opencode'].includes(String(candidate.backend))
+    || !['claude', 'codex', 'cursor', 'opencode', 'gemini'].includes(String(candidate.backend))
     || candidate.codex_provider !== undefined && !['default', 'custom'].includes(candidate.codex_provider)
     || typeof candidate.folder !== 'string'
     || typeof candidate.cwd !== 'string'
@@ -1898,8 +1898,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ error: runtimeError })
       return false
     }
-    if (steer && currentTarget.backend === 'opencode' && get().activeSessionIds.has(sessionId)) {
-      set({ error: t('opencode.steerUnavailable') }); return false
+    if (steer && (currentTarget.backend === 'opencode' || currentTarget.backend === 'gemini') && get().activeSessionIds.has(sessionId)) {
+      set({ error: t('composer.runtimeSteerUnavailable') }); return false
     }
     const admissionToken = options?.admissionToken ?? get().beginTurnAdmission(sessionId)
     if (!admissionToken || get().turnAdmissionTokens[sessionId] !== admissionToken) return false
@@ -2429,6 +2429,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const current = get()
     if (current.switchingProfileId) return
     const source = current.sessions.find(session => session.id === sessionId)
+    if (source?.backend === 'gemini') { set({ error: t('gemini.forkUnavailable') }); return }
     if (source?.backend === 'opencode') { set({ error: t('opencode.forkUnavailable') }); return }
     if ((current.activeSessionIds.has(sessionId) || current.turnAdmissionTokens[sessionId])
       && !completedPrefixForkAvailable(current.health, source?.backend)) {
@@ -2706,6 +2707,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   async importHistory(sessionId) {
     if (get().switchingProfileId) return
+    if (get().sessions.find(session => session.id === sessionId)?.backend === 'gemini') { set({ error: t('gemini.historyReloadUnavailable') }); return }
     if (get().sessions.find(session => session.id === sessionId)?.backend === 'opencode') {
       set({ error: t('opencode.importUnavailable') }); return
     }

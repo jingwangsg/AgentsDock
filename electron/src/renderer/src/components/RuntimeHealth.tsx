@@ -5,6 +5,8 @@ import { AlertTriangle, CheckCircle2, CircleHelp, RefreshCw, XCircle } from 'luc
 import { CodexWriterRelease, isActiveWriterError } from './CodexWriterRelease'
 import type { Backend, CodexProvider, Event, RuntimeCatalog, RuntimeDiagnostic } from '@shared/types'
 import {
+  geminiBackendSupported,
+  runtimeSelectionError,
   opencodeBackendAvailable,
   opencodeBackendUnavailableReason,
   cursorBackendAvailable,
@@ -28,6 +30,7 @@ export const RuntimeHealthNotice = memo(function RuntimeHealthNotice({ backend, 
 export function RuntimeHealthPanel() {
   useLocale()
   const { refreshing, recheck } = useRuntimeRecheck()
+  const geminiAdvertised = useAppStore(state => geminiBackendSupported(state.health))
   const cursorAdvertised = useAppStore(state => Boolean(
     state.health?.capabilities?.cursor_backend
   ))
@@ -42,6 +45,7 @@ export function RuntimeHealthPanel() {
       <RuntimeStatus backend="claude" />
       <RuntimeStatus backend="codex" />
       {cursorAdvertised && <RuntimeStatus backend="cursor" />}
+      {geminiAdvertised && <RuntimeStatus backend="gemini" />}
       <RuntimeStatus backend="opencode" />
     </div>
   </section>
@@ -129,7 +133,7 @@ function RuntimeStatus({
   useLocale()
   const health = useAppStore(state => state.health)
   const catalog = useAppStore(state => state.runtimeCatalog)
-  const cursorCapability = backend === 'opencode' ? health?.capabilities?.opencode_backend : health?.capabilities?.cursor_backend
+  const optionalCapability = backend === 'opencode' ? health?.capabilities?.opencode_backend : backend === 'cursor' ? health?.capabilities?.cursor_backend : null
   // Keep compact notices independent from ordinary live timeline growth. The
   // selector still observes a newly relevant run error, but its stable string
   // prevents every event append from rerendering this subtree.
@@ -138,7 +142,7 @@ function RuntimeStatus({
   ))
   const customCatalog = useAppStore(state => state.sessions.find(session => session.id === sessionId)?.codex_provider_catalog)
   const diagnostic = runtimeDiagnosticFor(health, catalog, backend, codexProvider, customCatalog)
-  const cursorUnavailable = backend === 'cursor' && !cursorBackendAvailable(health, catalog) || backend === 'opencode' && !opencodeBackendAvailable(health, catalog)
+  const optionalUnavailable = backend === 'gemini' && Boolean(runtimeSelectionError(health, catalog, backend)) || backend === 'cursor' && !cursorBackendAvailable(health, catalog) || backend === 'opencode' && !opencodeBackendAvailable(health, catalog)
   // Provider last_error is backend-wide, not session-scoped. Keep it in the
   // full Settings panel so a failure from one chat cannot leak into another
   // chat's compact composer notice.
@@ -149,8 +153,8 @@ function RuntimeStatus({
   const passiveClaudeAuth = backend === 'claude'
     && (diagnostic?.status === 'unknown' || diagnostic?.status === 'unauthenticated')
   const providerNeedsAttention = compact
-    ? cursorUnavailable || Boolean(diagnostic && diagnostic.status !== 'ready' && (!passiveClaudeAuth || chatError))
-    : cursorUnavailable || runtimeDiagnosticNeedsAttention(diagnostic)
+    ? optionalUnavailable || Boolean(diagnostic && diagnostic.status !== 'ready' && (!passiveClaudeAuth || chatError))
+    : optionalUnavailable || runtimeDiagnosticNeedsAttention(diagnostic)
   // Claude authenticates only with the server's CLAUDE_CODE_OAUTH_TOKEN, so a
   // missing token or an auth failure in this chat both need a new token. Older
   // servers omit the field and have no token route; a shared-chat guest cannot
@@ -160,21 +164,21 @@ function RuntimeStatus({
     && ((passiveClaudeAuth && !diagnostic.oauth_token_configured)
       || /authentication_(?:failed|error)|failed to authenticate|not authenticated/i.test(chatError))
   if (compact && !chatError && !providerNeedsAttention && !needsClaudeToken) return null
-  const tone = chatError || needsClaudeToken ? 'warning' : cursorUnavailable ? 'error' : runtimeDiagnosticTone(diagnostic)
+  const tone = chatError || needsClaudeToken ? 'warning' : optionalUnavailable ? 'error' : runtimeDiagnosticTone(diagnostic)
   const Icon = tone === 'ready' ? CheckCircle2 : tone === 'error' ? XCircle : tone === 'warning' ? AlertTriangle : CircleHelp
-  const provider = backend === 'claude' ? 'Claude Code' : backend === 'cursor' ? 'Cursor' : backend === 'opencode' ? 'OpenCode' : codexProvider === 'custom' ? t('codexProvider.label') : 'Codex'
-  const cursorUnavailableDetail = cursorUnavailable
-    ? (backend === 'opencode' ? opencodeBackendUnavailableReason(health, catalog) : cursorBackendUnavailableReason(health, catalog)) || ''
+  const provider = backend === 'gemini' ? 'Gemini CLI' : backend === 'claude' ? 'Claude Code' : backend === 'cursor' ? 'Cursor' : backend === 'opencode' ? 'OpenCode' : codexProvider === 'custom' ? t('codexProvider.label') : 'Codex'
+  const optionalUnavailableDetail = optionalUnavailable
+    ? (backend === 'gemini' ? runtimeSelectionError(health, catalog, backend) : backend === 'opencode' ? opencodeBackendUnavailableReason(health, catalog) : cursorBackendUnavailableReason(health, catalog)) || ''
     : ''
   const detail = chatError
-    || cursorUnavailableDetail
+    || optionalUnavailableDetail
     || (!compact ? runtimeDiagnosticCurrentError(diagnostic) : '')
     || diagnostic?.message
     || `${provider} has not been checked yet.`
-  const label = compact && chatError ? 'Latest chat error' : needsClaudeToken ? t('claudeToken.label') : cursorUnavailable ? 'Unavailable' : runtimeDiagnosticLabel(diagnostic)
-  const cursorAction = diagnostic?.action?.trim() || cursorCapability?.action?.trim()
-  const action = cursorUnavailable
-    ? cursorAction && !cursorUnavailableDetail.includes(cursorAction) ? cursorAction : undefined
+  const label = compact && chatError ? 'Latest chat error' : needsClaudeToken ? t('claudeToken.label') : optionalUnavailable ? 'Unavailable' : runtimeDiagnosticLabel(diagnostic)
+  const optionalAction = diagnostic?.action?.trim() || optionalCapability?.action?.trim()
+  const action = optionalUnavailable
+    ? optionalAction && !optionalUnavailableDetail.includes(optionalAction) ? optionalAction : undefined
     : diagnostic?.action
   return <div className={`runtime-health-row ${tone} ${compact ? 'compact' : ''}`} role={tone === 'error' ? 'alert' : 'status'}>
     <Icon size={compact ? 15 : 17} />

@@ -165,6 +165,7 @@ export function errorMessage(error: unknown): string {
 }
 
 export function backendLabel(backend: Backend): string {
+  if (backend === 'gemini') return 'Gemini CLI'
   return backend === 'codex' ? 'Codex' : backend === 'cursor' ? 'Cursor' : 'Claude'
 }
 

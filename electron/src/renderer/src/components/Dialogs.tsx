@@ -10,7 +10,7 @@ import type { AgentFile, AppUpdateStatus, AppUpdateTrack, Backend, BulkImportSes
 import { isHiddenRunChat } from '@shared/chat-visibility'
 import { folderOwnName, folderParent, folderPath, folderPathIn, folderSegments, folderTree } from '@shared/folders'
 import { fuzzyScore } from '@shared/fuzzy'
-import { LOCAL_SESSION_IMPORT_HARD_LIST_LIMIT, cursorLocalSessionImportSupported, localSessionImportCapability, localSessionImportKey, localSessionImportListLimit, localSessionImportSupported } from '@shared/local-session-import'
+import { LOCAL_SESSION_IMPORT_HARD_LIST_LIMIT, snapshotImportSupported, localSessionImportCapability, localSessionImportKey, localSessionImportListLimit, localSessionImportSupported } from '@shared/local-session-import'
 import { DEFAULT_SERVER_URL } from '@shared/server-url'
 import { opencodeBackendAvailable, opencodeBackendUnavailableReason, chatBackendSelection, codexCustomProviderAvailable, cursorBackendAvailable, cursorBackendUnavailableReason, runtimeCatalogOptions, runtimeEffortAfterModelChange, runtimeEffortOptions, runtimeSelectionError, selectableChatBackendChoices, selectableChatBackends, type ChatBackendChoice } from '@shared/runtime-catalog'
 import { trackEvent } from '../lib/analytics'
@@ -2976,7 +2976,7 @@ export function SessionDialog({ mode }: { mode: 'newChat' | 'resume' }) {
   const [systemPrompt, setSystemPrompt] = useState('')
   const [saving, setSaving] = useState(false)
   const folders = useMemo(() => [...new Set(sessions.map(session => session.folder || 'General'))].sort(), [sessions])
-  const backendOptions = useMemo(() => selectableChatBackendChoices(health, catalog).filter(choice => mode !== 'resume' || choice !== 'opencode'), [catalog, health, mode])
+  const backendOptions = useMemo(() => selectableChatBackendChoices(health, catalog).filter(choice => mode !== 'resume' || (choice !== 'opencode' && (choice !== 'gemini' || health?.capabilities?.gemini_backend?.native_resume === true))), [catalog, health, mode])
   useEffect(() => {
     if (!open) return
     setTitle(mode === 'newChat' ? 'New chat' : 'Resumed chat')
@@ -3014,7 +3014,7 @@ export function SessionDialog({ mode }: { mode: 'newChat' | 'resume' }) {
   }
   const modelOptions = runtimeCatalogOptions(catalog, backend, 'models', model, codex_provider)
   const effortOptions = runtimeEffortOptions(catalog, backend, model, effort, codex_provider)
-  const hasReasoning = backend !== 'cursor' && backend !== 'opencode' && effortOptions.some(option => Boolean(option.value))
+  const hasReasoning = backend !== 'gemini' && backend !== 'cursor' && backend !== 'opencode' && effortOptions.some(option => Boolean(option.value))
   const selectModel = (value: string) => {
     setModel(value)
     setEffort(runtimeEffortAfterModelChange(catalog, backend, value || null, effort, codex_provider) || '')
@@ -3022,25 +3022,25 @@ export function SessionDialog({ mode }: { mode: 'newChat' | 'resume' }) {
   const runtimeError = runtimeSelectionError(health, catalog, backend, model, codex_provider)
   const cursorAvailable = cursorBackendAvailable(health, catalog)
   const cursorUnavailableReason = cursorBackendUnavailableReason(health, catalog)
-  const resumeDescription = backend === 'cursor'
+  const resumeDescription = backend === 'gemini' ? t('gemini.resumeDescription') : backend === 'cursor'
     ? 'Continue an existing Cursor provider session. Earlier provider messages stay in Cursor and are not imported into this timeline.'
     : 'Import a rough transcript and continue from an existing Claude or Codex provider session.'
   return <DialogShell open={open} onOpenChange={value => useAppStore.getState().setModal(mode, value)} title={mode === 'newChat' ? t("ui.Dialogs.SessionDialog.new_chat_db18382") : t("ui.Dialogs.SessionDialog.resume_a_provider_session_424066b")} description={mode === 'resume' ? resumeDescription : t("ui.Dialogs.SessionDialog.choose_the_workspace_and_runtime_for_this__0b9283f")}>
     <form onSubmit={submit} className="dialog-form two-column-form">
       {importSupported && <button type="button" className="import-chats-entry span-two" onClick={() => { const store = useAppStore.getState(); store.setModal(mode, false); store.setModal('importChats', true) }}>
         <Import size={16} aria-hidden="true" />
-        <span className="import-chats-entry-copy"><strong>{t("ui.Dialogs.SessionDialog.import_an_existing_chat_from_your_computer_d8901ee")}</strong><small>{cursorLocalSessionImportSupported(health) ? t('ui.Dialogs.ImportChatsDialog.supported_cli_history') : mode === 'resume' ? t("ui.Dialogs.SessionDialog.pick_from_your_local_claude_code_codex_his_15e10b3") : t("ui.Dialogs.SessionDialog.bring_in_your_local_claude_code_codex_hist_9108394")}</small></span>
+        <span className="import-chats-entry-copy"><strong>{t("ui.Dialogs.SessionDialog.import_an_existing_chat_from_your_computer_d8901ee")}</strong><small>{snapshotImportSupported(health, 'gemini') ? t('gemini.browseHistory') : snapshotImportSupported(health, 'cursor') ? t('ui.Dialogs.ImportChatsDialog.supported_cli_history') : mode === 'resume' ? t("ui.Dialogs.SessionDialog.pick_from_your_local_claude_code_codex_his_15e10b3") : t("ui.Dialogs.SessionDialog.bring_in_your_local_claude_code_codex_hist_9108394")}</small></span>
         <ArrowRight size={14} aria-hidden="true" />
       </button>}
-      {mode === 'resume' && <label className="span-two"><span>{backendOptions.includes('cursor') ? t("ui.Dialogs.SessionDialog.claude_session_codex_thread_or_cursor_sess_d3b661c") : t("ui.Dialogs.SessionDialog.claude_session_or_codex_thread_id_55530f4")}</span><input value={providerId} onChange={event => setProviderId(event.target.value)} placeholder={t("ui.Dialogs.SessionDialog.session_id_cb9ac5c")} required /></label>}
+      {mode === 'resume' && <label className="span-two"><span>{backendOptions.includes('gemini') ? t('ui.Dialogs.SessionDialog.session_id_cb9ac5c') : backendOptions.includes('cursor') ? t("ui.Dialogs.SessionDialog.claude_session_codex_thread_or_cursor_sess_d3b661c") : t("ui.Dialogs.SessionDialog.claude_session_or_codex_thread_id_55530f4")}</span><input value={providerId} onChange={event => setProviderId(event.target.value)} placeholder={t("ui.Dialogs.SessionDialog.session_id_cb9ac5c")} required /></label>}
       <label className="span-two"><span>{t("ui.Dialogs.SessionDialog.chat_name_09c3e4c")}</span><input value={title} onChange={event => setTitle(event.target.value)} autoFocus /></label>
       <label><span>{t("ui.Dialogs.SessionDialog.folder_74ccd43")}</span><input value={folder} onChange={event => setFolder(event.target.value)} list="folder-list" /><datalist id="folder-list">{folders.map(item => <option key={item}>{item}</option>)}</datalist></label>
       <WorkingDirectoryInput value={cwd} onChange={setCwd} defaultCwd={defaultCwd} available={directoryCompletionAvailable} showBrowseButton />
       <fieldset className="span-two"><legend>{t("ui.Dialogs.SessionDialog.backend_2fb4019")}</legend><div className="segmented session-backend-choices">{backendOptions.map(value => {
         const selection = chatBackendSelection(value)
         const needsConfiguration = value === 'codex-custom' && !codexCustomProviderAvailable(health, catalog)
-        const unavailable = value === 'cursor' && !cursorAvailable || value === 'opencode' && !opencodeBackendAvailable(health, catalog)
-        return <button type="button" className={backendChoice === value ? 'active' : ''} key={value} aria-pressed={backendChoice === value} title={needsConfiguration ? t('codexProvider.configure') : unavailable ? (value === 'opencode' ? opencodeBackendUnavailableReason(health, catalog) : cursorUnavailableReason) ?? undefined : undefined} onClick={() => {
+        const unavailable = value === 'gemini' && Boolean(runtimeSelectionError(health, catalog, value)) || value === 'cursor' && !cursorAvailable || value === 'opencode' && !opencodeBackendAvailable(health, catalog)
+        return <button type="button" className={backendChoice === value ? 'active' : ''} key={value} aria-pressed={backendChoice === value} title={needsConfiguration ? t('codexProvider.configure') : unavailable ? (value === 'gemini' ? runtimeSelectionError(health, catalog, value) : value === 'opencode' ? opencodeBackendUnavailableReason(health, catalog) : cursorUnavailableReason) ?? undefined : undefined} onClick={() => {
           if (needsConfiguration) {
             useAppStore.getState().setModal(mode, false)
             window.dispatchEvent(new CustomEvent('agentsdock:app-settings-section', { detail: 'server' }))
@@ -3114,7 +3114,7 @@ interface ResumeByIdMatch {
 }
 
 function sessionProviderIds(session: Session): string[] {
-  return [session.session_id, session.claude_session_id, session.codex_thread_id, session.cursor_session_id, session.opencode_session_id]
+  return [session.session_id, session.claude_session_id, session.codex_thread_id, session.cursor_session_id, session.gemini_session_id, session.opencode_session_id]
     .map(value => value?.trim())
     .filter((value): value is string => Boolean(value))
 }
@@ -3179,7 +3179,7 @@ export function ImportChatsDialog() {
     if (!open) return () => { requestEpoch.current += 1 }
     const state = useAppStore.getState()
     const seed = state.sessions.find(session => session.id === state.selectedSessionId && !session.archived)
-    const availableBackends = selectableChatBackends(state.health, state.runtimeCatalog).filter(backend => backend !== 'opencode')
+    const availableBackends = selectableChatBackends(state.health, state.runtimeCatalog).filter(backend => backend !== 'opencode' && (backend !== 'gemini' || health?.capabilities?.gemini_backend?.native_resume === true))
     setResumeBackend(seed && seed.backend !== 'opencode' && availableBackends.includes(seed.backend) ? seed.backend : availableBackends.includes('codex') ? 'codex' : availableBackends[0] ?? 'codex')
     setResumeCwd(seed?.cwd?.trim() || state.health?.default_cwd?.trim() || '')
     if (!supported) {
@@ -3475,7 +3475,7 @@ export function ImportChatsDialog() {
 
   const operationBusy = importing || resumingById
 
-  return <DialogShell open={open} onOpenChange={value => useAppStore.getState().setModal('importChats', value)} initialFocusRef={searchRef} title={t("ui.Dialogs.ImportChatsDialog.import_chat_ed32942")} description={cursorLocalSessionImportSupported(health) ? t('ui.Dialogs.ImportChatsDialog.cursor_snapshot_history') : t("ui.Dialogs.ImportChatsDialog.bring_in_your_local_claude_code_and_codex__0ffcba9")}>
+  return <DialogShell open={open} onOpenChange={value => useAppStore.getState().setModal('importChats', value)} initialFocusRef={searchRef} title={t("ui.Dialogs.ImportChatsDialog.import_chat_ed32942")} description={snapshotImportSupported(health, 'gemini') ? t('gemini.snapshotHistory') : snapshotImportSupported(health, 'cursor') ? t('ui.Dialogs.ImportChatsDialog.cursor_snapshot_history') : t("ui.Dialogs.ImportChatsDialog.bring_in_your_local_claude_code_and_codex__0ffcba9")}>
     <div className="dialog-form import-chats-dialog">
       <form className="import-chats-resume" onSubmit={event => void submitResumeById(event)}>
         <div className="import-chats-resume-heading">
@@ -3494,7 +3494,7 @@ export function ImportChatsDialog() {
               setOwnerRows([])
             }}
             aria-label={t("ui.Dialogs.ImportChatsDialog.session_id_cb9ac5c")}
-            placeholder={t("ui.Dialogs.ImportChatsDialog.paste_a_claude_codex_or_cursor_session_id_70d374e")}
+            placeholder={t('ui.Dialogs.SessionDialog.session_id_cb9ac5c')}
             maxLength={256}
           />
           <button type="submit" className="primary-button" disabled={!resumeId.trim() || operationBusy || loading}>
@@ -3512,7 +3512,7 @@ export function ImportChatsDialog() {
         </div>}
         {resumeNeedsDetails && resumeMatches.length === 0 && <div className="import-chats-resume-details">
           <small>{t("ui.Dialogs.ImportChatsDialog.this_id_was_not_found_in_local_history_con_dca866c")}</small>
-          <label><span>Agent</span><select aria-label="Agent" value={resumeBackend} disabled={operationBusy} onChange={event => setResumeBackend(event.target.value as Backend)}>{selectableChatBackends(health, useAppStore.getState().runtimeCatalog).filter(backend => backend !== 'opencode').map(backend => <option value={backend} key={backend}>{backendLabel(backend)}</option>)}</select></label>
+          <label><span>Agent</span><select aria-label="Agent" value={resumeBackend} disabled={operationBusy} onChange={event => setResumeBackend(event.target.value as Backend)}>{selectableChatBackends(health, useAppStore.getState().runtimeCatalog).filter(backend => backend !== 'opencode' && (backend !== 'gemini' || health?.capabilities?.gemini_backend?.native_resume === true)).map(backend => <option value={backend} key={backend}>{backendLabel(backend)}</option>)}</select></label>
           <label><span>{t("ui.Dialogs.ImportChatsDialog.working_directory_865e85c")}</span><input aria-label={t("ui.Dialogs.ImportChatsDialog.working_directory_865e85c")} value={resumeCwd} disabled={operationBusy} onChange={event => setResumeCwd(event.target.value)} placeholder={health?.default_cwd || '/path/to/project'} /></label>
         </div>}
         {resumeError && <small className="import-chats-resume-error" role="alert">{resumeError}</small>}
@@ -4582,8 +4582,8 @@ export function JobDialog() {
     <form onSubmit={submit} className="dialog-form job-form">
       <label><span>{t("ui.Dialogs.JobDialog.title_7e8cd20")}</span><input value={title} onChange={event => setTitle(event.target.value)} required /></label>
       <fieldset><legend>{t("ui.Dialogs.JobDialog.backend_2fb4019")}</legend><div className="segmented">{selectableBackends.map(value => {
-        const unavailable = value === 'cursor' && !cursorBackendAvailable(health, catalog) || value === 'opencode' && !opencodeBackendAvailable(health, catalog)
-        return <button type="button" key={value} className={backend === value ? 'active' : ''} aria-pressed={backend === value} aria-describedby={unavailable ? `job-${value}-runtime-help` : undefined} disabled={unavailable} title={unavailable ? (value === 'opencode' ? opencodeBackendUnavailableReason(health, catalog) : cursorUnavailableReason) ?? undefined : undefined} onClick={() => setBackend(value)}><BackendMark backend={value} size={14} />{backendLabel(value, value === session?.backend ? session.codex_provider : undefined)}{unavailable ? t("ui.Dialogs.unavailable_77649d6") : ''}</button>
+        const unavailable = value === 'gemini' && Boolean(runtimeSelectionError(health, catalog, value)) || value === 'cursor' && !cursorBackendAvailable(health, catalog) || value === 'opencode' && !opencodeBackendAvailable(health, catalog)
+        return <button type="button" key={value} className={backend === value ? 'active' : ''} aria-pressed={backend === value} aria-describedby={unavailable ? `job-${value}-runtime-help` : undefined} disabled={unavailable} title={unavailable ? (value === 'gemini' ? runtimeSelectionError(health, catalog, value) : value === 'opencode' ? opencodeBackendUnavailableReason(health, catalog) : cursorUnavailableReason) ?? undefined : undefined} onClick={() => setBackend(value)}><BackendMark backend={value} size={14} />{backendLabel(value, value === session?.backend ? session.codex_provider : undefined)}{unavailable ? t("ui.Dialogs.unavailable_77649d6") : ''}</button>
       })}</div>{selectableBackends.includes('cursor') && !cursorBackendAvailable(health, catalog) && cursorUnavailableReason
         ? <small id="job-cursor-runtime-help" className="runtime-option-help">{cursorUnavailableReason}</small>
         : null}{selectableBackends.includes('opencode') && !opencodeBackendAvailable(health, catalog)

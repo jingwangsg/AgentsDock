@@ -8,8 +8,8 @@ const REQUIRED_BACKENDS = ['claude', 'codex'] as const
  * agent has started (server sets `backend_locked`, or any provider session id
  * is present), switching would orphan that transcript, so the picker locks.
  */
-export function isBackendLocked(session: Pick<Session, 'backend_locked' | 'session_id' | 'claude_session_id' | 'codex_thread_id' | 'cursor_session_id'>): boolean {
-  return Boolean(session.backend_locked || session.session_id || session.claude_session_id || session.codex_thread_id || session.cursor_session_id)
+export function isBackendLocked(session: Pick<Session, 'backend_locked' | 'session_id' | 'claude_session_id' | 'codex_thread_id' | 'cursor_session_id' | 'gemini_session_id'>): boolean {
+  return Boolean(session.backend_locked || session.session_id || session.claude_session_id || session.codex_thread_id || session.gemini_session_id || session.cursor_session_id)
 }
 const EFFORT_ORDER = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const
 export const CURSOR_BACKEND_CAPABILITY_VERSION = 2
@@ -17,6 +17,11 @@ export const CURSOR_BACKEND_CAPABILITY_VERSION = 2
 export function runtimeCatalogHasSelectableModels(catalog: RuntimeCatalog | null | undefined): catalog is RuntimeCatalog {
   if (!catalog?.backends) return false
   return REQUIRED_BACKENDS.every(backend => catalog.backends[backend]?.models?.some(option => Boolean(option.value.trim())))
+}
+
+export function geminiBackendSupported(health: Health | null | undefined): boolean {
+  const capability = health?.capabilities?.gemini_backend
+  return capability?.available === true && capability.version === 1
 }
 
 export function cursorBackendSupported(health: Health | null | undefined): boolean {
@@ -32,12 +37,13 @@ export function cursorBackendAvailable(health: Health | null | undefined, catalo
 }
 
 export function selectableChatBackends(health: Health | null | undefined): Backend[] {
-  return cursorBackendSupported(health) ? ['claude', 'codex', 'cursor'] : ['claude', 'codex']
+  return ['claude', 'codex', ...(cursorBackendSupported(health) ? ['cursor' as const] : []),
+    ...(geminiBackendSupported(health) ? ['gemini' as const] : [])]
 }
 
 /** Backends a chat can start on this server right now: the server supports Cursor everywhere, but only a host with a ready Cursor CLI can run one. */
 export function readyChatBackends(health: Health | null | undefined, catalog: RuntimeCatalog | null | undefined): Backend[] {
-  return selectableChatBackends(health).filter(backend => backend !== 'cursor' || cursorBackendAvailable(health, catalog))
+  return selectableChatBackends(health).filter(backend => backend === 'gemini' ? !runtimeSelectionError(health, catalog, backend) : backend !== 'cursor' || cursorBackendAvailable(health, catalog))
 }
 
 export function cursorBackendUnavailableReason(health: Health | null | undefined, catalog: RuntimeCatalog | null | undefined): string | null {
@@ -61,6 +67,14 @@ export function runtimeModelLockReason(catalog: RuntimeCatalog | null | undefine
 }
 
 export function runtimeSelectionError(health: Health | null | undefined, catalog: RuntimeCatalog | null | undefined, backend: Backend, model?: string | null): string | null {
+  if (backend === 'gemini') {
+    if (!geminiBackendSupported(health)) return 'Update this AgentsServer to use Gemini CLI.'
+    const runtime = catalog?.backends.gemini
+    const diagnostic = runtimeDiagnosticFor(health, catalog, backend)
+    if (diagnostic && (!diagnostic.available || diagnostic.status !== 'ready')) return diagnostic.message || diagnostic.action || 'Gemini CLI is unavailable on this server.'
+    if (!runtime?.available || !runtime.models.some(option => option.value)) return 'Gemini CLI model availability has not been confirmed on this server.'
+    if (model?.trim() && !runtime.models.some(option => option.value === model.trim())) return 'Select a Gemini model offered by this server’s NVIDIA Inference Hub account.'
+  }
   if (backend === 'cursor' && !cursorBackendAvailable(health, catalog)) return cursorBackendUnavailableReason(health, catalog)
   const selected = model?.trim()
   if (backend === 'cursor' && selected) {
@@ -137,7 +151,7 @@ export function runtimeEffortOptions(catalog: RuntimeCatalog | null | undefined,
 }
 
 export function runtimeEffortAfterModelChange(catalog: RuntimeCatalog | null | undefined, backend: string, model: string | null, current?: string | null): string | null {
-  if (backend === 'cursor') return null
+  if (backend === 'gemini' || backend === 'cursor') return null
   const selected = current?.trim() || ''
   const scoped = modelEfforts(catalog, backend, model)
   if (!scoped?.length || !selected) return selected || null

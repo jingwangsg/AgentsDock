@@ -59,6 +59,11 @@ export function runtimeCatalogHasSelectableModels(catalog: RuntimeCatalog | null
   )
 }
 
+export function geminiBackendSupported(health: Health | null | undefined): boolean {
+  const capability = health?.capabilities?.gemini_backend
+  return capability?.available === true && capability.version === 1
+}
+
 /** True when this server understands the Cursor backend contract.
  *
  * Support and readiness are deliberately separate. A current server should
@@ -92,13 +97,15 @@ export function selectableChatBackends(
   _catalog: RuntimeCatalog | null | undefined
 ): Backend[] {
   return ['claude', 'codex', ...(cursorBackendSupported(health) ? ['cursor' as const] : []),
-    ...(opencodeBackendSupported(health) ? ['opencode' as const] : [])]
+    ...(opencodeBackendSupported(health) ? ['opencode' as const] : []),
+    ...(geminiBackendSupported(health) ? ['gemini' as const] : [])]
 }
 
 /** Backends a chat can start on this server right now: the optional Cursor and OpenCode only while their CLI is ready. */
 export function readyChatBackends(health: Health | null | undefined, catalog: RuntimeCatalog | null | undefined): Backend[] {
   return selectableChatBackends(health, catalog).filter(backend => (
     backend === 'cursor' ? cursorBackendAvailable(health, catalog)
+      : backend === 'gemini' ? !runtimeSelectionError(health, catalog, backend)
       : backend === 'opencode' ? opencodeBackendAvailable(health, catalog)
         : true
   ))
@@ -218,6 +225,14 @@ export function runtimeSelectionError(
   codexProvider?: CodexProvider,
   customCatalog?: RuntimeBackendCatalog['custom_provider']
 ): string | null {
+  if (backend === 'gemini') {
+    if (!geminiBackendSupported(health)) return t('gemini.unsupportedServer')
+    const runtime = catalog?.backends.gemini
+    const diagnostic = runtimeDiagnosticFor(health, catalog, backend)
+    if (diagnostic && (!diagnostic.available || diagnostic.status !== 'ready')) return diagnostic.message || diagnostic.action || t('gemini.notReady')
+    if (!runtime?.available || !runtime.models.some(option => option.value)) return t('gemini.notReady')
+    if (model?.trim() && !runtime.models.some(option => option.value === model.trim())) return t('gemini.modelUnavailable')
+  }
   if (backend === 'codex' && codexProvider === 'custom') {
     if (!codexCustomProviderSupported(health)) return health ? t('codexProvider.update') : t('serverConnection.availableOnceConnected')
     if (!codexCustomProviderAvailable(health, catalog, customCatalog)) return t('codexProvider.unavailable')
@@ -294,7 +309,7 @@ export function runtimeEffortAfterModelChange(
   codexProvider?: CodexProvider,
   customCatalog?: RuntimeBackendCatalog['custom_provider']
 ): string | null {
-  if (backend === 'cursor' || backend === 'opencode') return null
+  if (backend === 'gemini' || backend === 'cursor' || backend === 'opencode') return null
   const selected = current?.trim() || ''
   const scoped = modelEfforts(catalog, backend, model, codexProvider, customCatalog)
   if (scoped === null || !selected) return selected || null

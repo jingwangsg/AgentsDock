@@ -185,6 +185,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       claude_session_id: session.claude_session_id,
       codex_thread_id: session.codex_thread_id,
       cursor_session_id: session.cursor_session_id,
+      gemini_session_id: session.gemini_session_id,
       cwd: session.cwd,
     } : null
   }))
@@ -271,6 +272,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
   const supportedChatActions = useMemo(() => supportedCrossChatActions(health), [health])
   const supportedTargetBackends = useMemo(() => supportedCrossChatTargetBackends(health), [health])
   const routeHintsSupported = routeHintMentionsAvailable(health)
+    && (backend !== 'gemini' || supportedCrossChatTargetBackends(health).includes('gemini'))
   const requestReplySupportedForSource = supportedChatActions.includes('request_reply')
     && Boolean(backend && supportedTargetBackends.includes(backend))
   const crossChatSupported = routeHintsSupported
@@ -320,6 +322,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
     : { key: providerCommandsKey, status: 'idle' as const, snapshot: null }
   const codexGoalsAvailable = backend === 'codex' && codexRuntime.goalsSupported && codexRuntime.goalsEnabled
   const claudeGoalsAvailable = backend === 'claude' && claudeRuntime.supported && claudeRuntime.runtime?.features?.goals === true
+  const hasModelChoices = backend === 'gemini' ? Boolean(runtime?.backends.gemini?.models.some(option => option.value)) : runtimeCatalogHasSelectableModels(runtime)
   const commandAvailable = (command: ComposerCommand): boolean => {
     if (!backend) return false
     if (command.provider) return command.provider.command.kind.length > 0
@@ -328,8 +331,8 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       case 'mail': return TEAM_NETWORK_UI_ENABLED && !teamMentionsSupported
       case 'goal': return codexGoalsAvailable || claudeGoalsAvailable
       case 'compact': return backend === 'codex' ? codexRuntime.supported : backend === 'claude' && claudeRuntime.supported
-      case 'model': return runtimeCatalogHasSelectableModels(runtime)
-      case 'reasoning': return backend !== 'cursor' && runtimeEffortOptions(runtime, backend, model, effort).some(option => Boolean(option.value))
+      case 'model': return hasModelChoices
+      case 'reasoning': return backend !== 'gemini' && backend !== 'cursor' && runtimeEffortOptions(runtime, backend, model, effort).some(option => Boolean(option.value))
       case 'mcp': return backend === 'claude'
       case 'schedule': return health?.capabilities?.scheduled_jobs?.available === true
       default: return true
@@ -346,7 +349,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
   const effectiveSendBusy = !mcpCommand && (sending || admitting)
   const attachmentDisabled = networkDisabled || pickingAttachment || admissionPreflight
   const quickMessageDisabled = networkDisabled || sending || admitting
-  const providerReloadDisabled = networkDisabled || active || sending || admitting || stopping || providerReloading || !backend || backend === 'cursor'
+  const providerReloadDisabled = networkDisabled || active || sending || admitting || stopping || providerReloading || !backend || backend === 'gemini' || backend === 'cursor'
   // A brand-new chat has no provider session yet, so its coding agent can still
   // change. Once the agent starts (backend_locked or a provider session id) or a
   // turn is in flight, the backend is fixed and only reload remains.
@@ -1281,11 +1284,9 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
     id: `switch-backend:${value}`,
     title: backendLabel(value),
     state: value === backend ? 'on' : 'off',
-    attributes: value === 'cursor' && Boolean(cursorUnavailableReason) ? { disabled: true } : undefined,
+    attributes: (value === 'gemini' && Boolean(runtimeSelectionError(health, runtime, value)) || value === 'cursor' && Boolean(cursorUnavailableReason)) ? { disabled: true } : undefined,
   })) : []
-  // Model and effort live in the chip beside the provider control; the sheet
-  // only opens once the server has advertised models for every backend.
-  const runtimeSelectable = !networkDisabled && runtimeCatalogHasSelectableModels(runtime)
+  const runtimeSelectable = !networkDisabled && hasModelChoices
   const selectionError = backend ? runtimeSelectionError(health, runtime, backend, model) : null
   const runtimeActions: MenuAction[] = []
   if (backendActions.length) runtimeActions.push({ id: 'switch-backend', title: 'Backend', subactions: backendActions })
@@ -1439,7 +1440,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
             onPress={() => { if (remoteComposerScopeIsCurrent(activeProfileId, profileGeneration, sessionId)) void stopTurn(profileGeneration, sessionId) }}
             style={({ pressed }) => [styles.stop, !compactToolbar && styles.stopWide, { backgroundColor: compactToolbar ? 'transparent' : colors.red, opacity: networkDisabled || stopping ? 0.35 : pressed ? 0.65 : 1 }]}
           >{compactToolbar ? <View style={[styles.compactStopFace, { backgroundColor: `${colors.red}18`, borderColor: `${colors.red}55` }]}>{stopping ? <ActivityIndicator size="small" color={colors.red} /> : <Square size={14} color={colors.red} fill={colors.red} strokeWidth={2} />}</View> : <>{stopping ? <ActivityIndicator size="small" color={colors.textOnAccent} /> : <Square size={17} color={colors.textOnAccent} fill={colors.textOnAccent} strokeWidth={2.2} />}<Text style={[styles.stopLabel, { color: colors.textOnAccent }]}>{stopping ? 'Stopping' : 'Stop'}</Text></>}</Pressable> : null}
-          {active && hasReadyContent && !mcpCommand ? <Pressable
+          {active && backend !== 'gemini' && hasReadyContent && !mcpCommand ? <Pressable
             accessibilityRole="button"
             accessibilityLabel="Steer current turn"
             accessibilityState={{ disabled: sendDisabled, busy: sending || admitting }}
@@ -1501,7 +1502,7 @@ export function Composer({ sessionId, keyboardVisible, onSent, onOpenMcp, onShel
       {!welcome && backend ? <ComposerRuntimeSheet
         section={runtimeSheetSection}
         models={runtimeCatalogOptions(runtime, backend, 'models', model)}
-        efforts={backend === 'cursor' ? [] : runtimeEffortOptions(runtime, backend, model, effort)}
+        efforts={backend === 'gemini' || backend === 'cursor' ? [] : runtimeEffortOptions(runtime, backend, model, effort)}
         model={model}
         effort={effort}
         onPickModel={value => {
@@ -2121,6 +2122,7 @@ export function QueueShelf({ sessionId, profileId, profileGeneration, networkDis
   const update = useAppStore(state => state.updateQueued)
   const remove = useAppStore(state => state.removeQueued)
   const move = useAppStore(state => state.moveQueued)
+  const geminiRunning = useAppStore(state => state.activeSessionIds.has(sessionId) && state.sessions.find(chat => chat.id === sessionId)?.backend === 'gemini')
   const runNow = useAppStore(state => state.runQueuedNow)
   const skipDelivery = useAppStore(state => state.skipQueuedDelivery)
   const skippingDeliveryIds = useAppStore(state => state.skippingQueuedDeliveryIds ?? EMPTY_ROUTE_IDS)
@@ -2347,7 +2349,7 @@ export function QueueShelf({ sessionId, profileId, profileGeneration, networkDis
             <Pressable accessibilityRole="button" accessibilityLabel="Cancel queued message edit" disabled={Boolean(busyTurn)} onPress={cancelEdit} style={({ pressed }) => [styles.queueEditButton, { backgroundColor: colors.raised, opacity: busyTurn || pressed ? 0.5 : 1 }]}><Text style={[styles.queueEditButtonText, { color: colors.text }]}>Cancel</Text></Pressable>
             <Pressable testID={`queued-save-${turn.queued_id}`} accessibilityRole="button" accessibilityLabel="Save queued message" accessibilityState={{ disabled: networkDisabled || busy || !editText.trim() || !validEditReferences, busy }} disabled={networkDisabled || busy || !editText.trim() || !validEditReferences} onPress={() => void commitEdit(turn)} style={({ pressed }) => [styles.queueEditButton, { backgroundColor: colors.blue, opacity: networkDisabled || busy || !editText.trim() || !validEditReferences || pressed ? 0.45 : 1 }]}>{busy ? <ActivityIndicator size="small" color={colors.textOnAccent} /> : <><Check size={14} color={colors.textOnAccent} /><Text style={[styles.queueEditButtonText, { color: colors.textOnAccent }]}>Save</Text></>}</Pressable>
           </View> : <View style={styles.queueActions}>
-            <Pressable testID={`queued-send-now-${turn.queued_id}`} accessibilityRole="button" accessibilityLabel="Run queued message now" accessibilityHint={blockedByEarlierDelivery ? 'Wait for the earlier delivery barrier to finish.' : undefined} accessibilityState={{ disabled: networkDisabled || queueBusy || blockedByEarlierDelivery, busy }} disabled={networkDisabled || queueBusy || blockedByEarlierDelivery} onPress={() => void act(turn.queued_id, () => runNow(sessionId, turn.queued_id, profileGeneration)).then(sent => { if (sent && remoteComposerScopeIsCurrent(profileId, profileGeneration, sessionId)) onSent() })} style={({ pressed }) => [styles.runNow, { opacity: networkDisabled || blockedByEarlierDelivery || pressed || queueBusy && !busy ? 0.45 : 1 }]}>
+            <Pressable testID={`queued-send-now-${turn.queued_id}`} accessibilityRole="button" accessibilityLabel="Run queued message now" accessibilityHint={blockedByEarlierDelivery ? 'Wait for the earlier delivery barrier to finish.' : undefined} accessibilityState={{ disabled: networkDisabled || geminiRunning || queueBusy || blockedByEarlierDelivery, busy }} disabled={networkDisabled || geminiRunning || queueBusy || blockedByEarlierDelivery} onPress={() => void act(turn.queued_id, () => runNow(sessionId, turn.queued_id, profileGeneration)).then(sent => { if (sent && remoteComposerScopeIsCurrent(profileId, profileGeneration, sessionId)) onSent() })} style={({ pressed }) => [styles.runNow, { opacity: networkDisabled || geminiRunning || blockedByEarlierDelivery || pressed || queueBusy && !busy ? 0.45 : 1 }]}>
               {busy ? <ActivityIndicator size="small" color={colors.yellow} /> : <CornerDownRight size={14} color={colors.yellow} />}
               <Text style={{ color: colors.yellow, fontSize: 11, fontWeight: '800' }}>Run now</Text>
             </Pressable>

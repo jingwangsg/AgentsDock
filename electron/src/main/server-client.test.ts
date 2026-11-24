@@ -507,17 +507,17 @@ describe('AgentServerClient scheduled-job serialization', () => {
 describe('AgentServerClient local session import', () => {
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
-  it('adds the Cursor discovery opt-in only when explicitly requested', async () => {
+  it.each(['cursor', 'gemini'] as const)('adds the %s discovery opt-in only when explicitly requested', async backend => {
     const fetcher = vi.fn(async (_input: string | URL | Request) => new Response(JSON.stringify({ sessions: [{
-      provider_session_id: 'cursor-native', backend: 'cursor', label: 'Cursor title',
+      provider_session_id: 'native-id', backend, label: 'Native title',
       updated_at: '2026-09-20T00:00:00Z', cwd: '/work'
     }] }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
     vi.stubGlobal('fetch', fetcher)
     const client = new AgentServerClient('http://example.test:7850', 'token')
-    expect((await client.listLocalSessions(200, true))[0].backend).toBe('cursor')
-    expect(String(fetcher.mock.calls[0][0])).toContain('?limit=200&include_cursor=true')
+    expect((await client.listLocalSessions(200, backend === 'cursor', backend === 'gemini'))[0].backend).toBe(backend)
+    expect(String(fetcher.mock.calls[0][0])).toContain(`?limit=200&include_${backend}=true`)
     await client.listLocalSessions(200)
-    expect(String(fetcher.mock.calls[1][0])).not.toContain('include_cursor')
+    expect(String(fetcher.mock.calls[1][0])).not.toContain('include_')
   })
 
   it('lists local session candidates from GET /api/local-sessions', async () => {

@@ -63,7 +63,7 @@ export function NewAgentSheet({ hosts, backends, backend, model, effort, folder,
     setCwdDraft('')
   }, [open, backends.join(','), backend, folder, model, effort])
   const models = runtimeCatalogOptions(runtime, backendDraft, 'models', modelDraft || null)
-  const efforts = backendDraft === 'cursor' ? [] : runtimeEffortOptions(runtime, backendDraft, modelDraft || null, effortDraft || null)
+  const efforts = backendDraft === 'gemini' || backendDraft === 'cursor' ? [] : runtimeEffortOptions(runtime, backendDraft, modelDraft || null, effortDraft || null)
   const serverOptions = [
     { value: '', label: hosts?.localTag ? `This server · ${hosts.localTag}` : 'This server' },
     ...(hosts?.servers ?? []).map(server => ({ value: server.server_identity, label: server.name || 'Hub' })),

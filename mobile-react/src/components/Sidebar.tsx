@@ -809,7 +809,7 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
     { id: 'read-state', title: unread ? 'Mark as Read' : 'Mark as Unread', image: unread ? 'envelope.open' : 'envelope.badge' },
     { id: 'rename', title: 'Rename Chat', image: 'pencil' },
     { id: 'primary-actions', title: '', displayInline: true, subactions: [
-      { id: 'fork', title: 'Fork Chat', image: 'arrow.triangle.branch' },
+      ...(session.backend === 'gemini' ? [] : [{ id: 'fork', title: 'Fork Chat', image: 'arrow.triangle.branch' } satisfies MenuAction]),
       ...(reloadable ? [{ id: 'reload-history', title: 'Reload History…', image: 'clock.arrow.circlepath' } satisfies MenuAction] : []),
       { id: 'move-up', title: 'Move Up', image: 'arrow.up', attributes: { disabled: !canMoveUp } },
       { id: 'move-down', title: 'Move Down', image: 'arrow.down', attributes: { disabled: !canMoveDown } },

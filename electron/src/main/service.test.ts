@@ -7133,18 +7133,18 @@ describe('local session import', () => {
     const { service } = createProfileService({ 'http://a.test:7850': [client] })
 
     await expect(service.listLocalSessions()).resolves.toEqual(candidates)
-    expect(client.listLocalSessions).toHaveBeenCalledWith(500)
+    expect(client.listLocalSessions).toHaveBeenCalledWith(500, false, false)
   })
 
-  it('opts into Cursor discovery only with the advertised snapshot capability', async () => {
+  it.each(['cursor', 'gemini'] as const)('opts into %s discovery only with the advertised snapshot capability', async backend => {
     const health: Health = { ...importHealth, capabilities: {
       ...importHealth.capabilities,
-      local_session_import_cursor_v1: { available: true, version: 1, history_mode: 'initial_text_snapshot' }
+      [`local_session_import_${backend}_v1`]: { available: true, version: 1, history_mode: 'initial_text_snapshot' }
     } }
     const client = fakeClient({ health: async () => health })
     const { service } = createProfileService({ 'http://a.test:7850': [client] })
     await service.listLocalSessions()
-    expect(client.listLocalSessions).toHaveBeenCalledWith(500, true)
+    expect(client.listLocalSessions).toHaveBeenCalledWith(500, backend === 'cursor', backend === 'gemini')
   })
 
   it('rejects a Cursor import on an old server before sending any mutation', async () => {

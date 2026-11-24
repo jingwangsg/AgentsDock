@@ -214,3 +214,13 @@ test('model-scoped Ultra remains an explicit selectable reasoning option', () =>
   assert.deepEqual(runtimeEffortOptions(scoped, 'codex', 'gpt-5.6-sol').map(option => option.value), ['', 'medium', 'high', 'ultra'])
   assert.equal(runtimeEffortAfterModelChange(scoped, 'codex', 'gpt-5.6-sol', 'ultra'), 'ultra')
 })
+
+test('gates Gemini independently of other CLIs and admits only this server’s models', () => {
+  const health: Health = { ok: true, capabilities: { gemini_backend: { available: true, version: 1, native_resume: true } } }
+  const runtime: RuntimeCatalog = { backends: { gemini: { available: true, models: [{ value: 'gcp/google/gemini', label: 'Gemini' }], efforts: [] } } }
+  assert.equal(readyChatBackends(health, runtime).includes('gemini'), true)
+  assert.equal(readyChatBackends({ ok: true }, runtime).includes('gemini'), false)
+  assert.equal(runtimeSelectionError(health, runtime, 'gemini', 'gcp/google/gemini'), null)
+  assert.equal(Boolean(runtimeSelectionError(health, runtime, 'gemini', 'gemini-through-cursor')), true)
+  assert.equal(runtimeEffortAfterModelChange(runtime, 'gemini', 'gcp/google/gemini', 'high'), null)
+})

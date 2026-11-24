@@ -67,7 +67,7 @@ afterEach(async () => {
 
 test('server history is grouped by folder and imports the selection in server-sized batches', async () => {
   await render()
-  assert.deepEqual(calls.list, [[500, false]])
+  assert.deepEqual(calls.list, [[500, false, false]])
   assert.equal(byId('resume-chat-folder').length, 2)
   assert.equal(byId('resume-chat-candidate').length, 0, 'folders start collapsed')
   await press('resume-chat-folder')
@@ -263,4 +263,22 @@ test('a refresh that predates the resumed chat is followed by one that lists it'
   assert.equal(calls.refreshes, 2)
   assert.deepEqual(calls.selects, ['chat-codex-a2'])
   assert.equal(calls.opens, 1)
+})
+
+test('resumes a Gemini UUID in its original workspace with independent history opt-in', async () => {
+  const id = '7f4093df-0c04-453d-b89c-aa7c31cbcc70'
+  useAppStore.setState({ health: { ...health, capabilities: { ...health.capabilities,
+    gemini_backend: { available: true, version: 1, native_resume: true },
+    local_session_import_gemini_v1: { available: true, version: 1, history_mode: 'initial_text_snapshot' }
+  } }, runtime: { backends: { gemini: { available: true, efforts: [], models: [{ value: 'gemini-native', label: 'Gemini' }] } } } } as never)
+  await render()
+  assert.deepEqual(calls.list, [[500, false, true]])
+  await type('resume-chat-id', id)
+  await press('resume-chat-submit')
+  await press('resume-chat-backend-gemini')
+  await type('resume-chat-cwd', '/work/gemini')
+  await press('resume-chat-submit')
+  assert.equal(calls.creates[0]?.backend, 'gemini')
+  assert.equal(calls.creates[0]?.cwd, '/work/gemini')
+  assert.equal(calls.creates[0]?.providerId, id)
 })

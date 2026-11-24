@@ -341,7 +341,7 @@ export function createDefaultProfileSettings(
 
 export const DEFAULT_CHAT_DEFAULTS: ChatDefaults = { backend: 'codex', model: '', effort: '', folder: 'General', cwd: '' }
 
-const CHAT_BACKENDS: Backend[] = ['claude', 'codex', 'cursor']
+const CHAT_BACKENDS: Backend[] = ['claude', 'codex', 'cursor', 'gemini']
 
 function normalizeChatDefaults(value: unknown): ChatDefaults {
   const parsed = isRecord(value) ? value : {}

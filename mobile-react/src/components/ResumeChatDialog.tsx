@@ -6,7 +6,7 @@ import type { AgentServerClient } from '../api/AgentServerClient'
 import { dismissAppKeyboard } from '../lib/app-keyboard'
 import { backendLabel, errorMessage, formatChatDateTime } from '../lib/format'
 import { fuzzyScore } from '../lib/fuzzy'
-import { cursorLocalSessionImportSupported, localSessionImportBatchLimit, localSessionImportCapability, localSessionImportKey, localSessionImportListLimit } from '../lib/local-session-import'
+import { snapshotImportSupported, localSessionImportBatchLimit, localSessionImportCapability, localSessionImportKey, localSessionImportListLimit } from '../lib/local-session-import'
 import { runtimeSelectionError, selectableChatBackends } from '../lib/runtime-catalog'
 import { isWelcomeSession } from '../lib/welcome-session'
 import { capturedConnectionIsCurrent, client, useAppStore } from '../store/useAppStore'
@@ -65,8 +65,10 @@ function ScopedResumeChatDialog({ visible, onClose, onOpened, connection, active
   const sessions = useAppStore(state => state.sessions)
   const capability = localSessionImportCapability(health)
   const listLimit = capability ? localSessionImportListLimit(capability) : null
-  const includeCursor = cursorLocalSessionImportSupported(health)
-  const backends = selectableChatBackends(health)
+  const includeCursor = snapshotImportSupported(health, 'cursor')
+  const includeGemini = snapshotImportSupported(health, 'gemini')
+  const geminiResume = health?.capabilities?.gemini_backend?.native_resume === true
+  const backends = selectableChatBackends(health).filter(backend => backend !== 'gemini' || geminiResume)
   // Every open, close and operation takes a new epoch; a response applies only while its epoch and connection are current.
   const requestEpoch = useRef(0)
   // load-bearing: a second tap can arrive before `busy` re-renders; this ref refuses it synchronously.
@@ -111,7 +113,7 @@ function ScopedResumeChatDialog({ visible, onClose, onOpened, connection, active
     if (!visible || !connectionReady) return
     const state = useAppStore.getState()
     const seed = state.sessions.find(session => session.id === state.selectedSessionId && !session.archived && !isWelcomeSession(session.id))
-    const available = selectableChatBackends(state.health)
+    const available = selectableChatBackends(state.health).filter(backend => backend !== 'gemini' || geminiResume)
     setResumeBackend(seed && available.includes(seed.backend) ? seed.backend : available.includes('codex') ? 'codex' : available[0] ?? 'codex')
     setResumeCwd(seed?.cwd?.trim() || state.health?.default_cwd?.trim() || '')
     if (listLimit == null) {
@@ -119,11 +121,11 @@ function ScopedResumeChatDialog({ visible, onClose, onOpened, connection, active
       return
     }
     setLoading(true)
-    connection.listLocalSessions(listLimit, includeCursor)
+    connection.listLocalSessions(listLimit, includeCursor, includeGemini)
       .then(list => { if (isCurrent(epoch)) setCandidates(list) })
       .catch((error: unknown) => { if (isCurrent(epoch)) setLoadError(errorMessage(error)) })
       .finally(() => { if (isCurrent(epoch)) setLoading(false) })
-  }, [connection, connectionReady, includeCursor, listLimit, visible])
+  }, [connection, connectionReady, geminiResume, includeCursor, includeGemini, listLimit, visible])
 
   const resumeMatches = useMemo<ResumeByIdMatch[]>(() => {
     const providerId = resumeId.trim()
@@ -248,7 +250,7 @@ function ScopedResumeChatDialog({ visible, onClose, onOpened, connection, active
       setSelected(new Set())
       const importedKeys = new Set(outcome.filter(result => result.ok).map(result => localSessionImportKey(result.backend, result.provider_session_id)))
       try {
-        const refreshed = await connection.listLocalSessions(listLimit, includeCursor)
+        const refreshed = await connection.listLocalSessions(listLimit, includeCursor, includeGemini)
         if (isCurrent(epoch)) setCandidates(refreshed)
       } catch {
         if (isCurrent(epoch)) setCandidates(previous => previous.filter(candidate => !importedKeys.has(localSessionImportKey(candidate.backend, candidate.provider_session_id))))
@@ -298,6 +300,7 @@ function ScopedResumeChatDialog({ visible, onClose, onOpened, connection, active
     const state = useAppStore.getState()
     const creating = resumeNeeds === 'details'
     if (creating) {
+      if (resumeBackend === 'gemini' && state.health?.capabilities?.gemini_backend?.native_resume !== true) { setResumeError('This server does not support resuming Gemini CLI sessions by ID.'); return }
       const runtimeError = runtimeSelectionError(state.health, state.runtime, resumeBackend, null)
       if (runtimeError) { setResumeError(runtimeError); return }
     }
@@ -354,7 +357,9 @@ function ScopedResumeChatDialog({ visible, onClose, onOpened, connection, active
 
   const resumeDisabled = !resumeId.trim() || busy || loading
   const importDisabled = busy || selected.size === 0
-  const description = includeCursor
+  const description = includeGemini
+    ? `Continue Claude Code, Codex${includeCursor ? ', Cursor CLI' : ''} or Gemini CLI chats from this server. ${includeCursor ? 'Cursor and Gemini' : 'Gemini'} imports include an initial text snapshot.`
+    : includeCursor
     ? 'Continue Claude Code, Codex or Cursor CLI chats from this server. Cursor imports a text snapshot.'
     : 'Continue Claude Code or Codex CLI chats from this server.'
 
@@ -554,7 +559,7 @@ function existingMatch(session: Session, providerId: string): ResumeByIdMatch {
 }
 
 function sessionProviderIds(session: Session): string[] {
-  return [session.session_id, session.claude_session_id, session.codex_thread_id, session.cursor_session_id]
+  return [session.session_id, session.claude_session_id, session.codex_thread_id, session.cursor_session_id, session.gemini_session_id]
     .map(value => value?.trim())
     .filter((value): value is string => Boolean(value))
 }

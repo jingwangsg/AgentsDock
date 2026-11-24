@@ -10,7 +10,7 @@ export function runtimeChipLabel(catalog: RuntimeCatalog | null | undefined, bac
   const backendCatalog = catalog?.backends?.[backend]
   const selectedModel = model?.trim() || backendCatalog?.default_model?.trim() || ''
   const modelLabel = (selectedModel && backendCatalog?.models.find(option => option.value === selectedModel)?.label?.trim()) || selectedModel || 'Server model'
-  if (backend === 'cursor') return modelLabel
+  if (backend === 'gemini' || backend === 'cursor') return modelLabel
   const selectedEffort = effort?.trim() || backendCatalog?.default_effort?.trim() || ''
   if (!selectedEffort) return modelLabel
   const effortLabel = runtimeEffortOptions(catalog, backend, model, effort).find(option => option.value === selectedEffort)?.label?.trim() || selectedEffort

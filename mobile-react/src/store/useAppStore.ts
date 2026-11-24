@@ -85,7 +85,7 @@ import { publishSideChatChanged } from '../lib/side-chat'
 import { reconcileTeamReferences, requireTeamReferenceSupport, restoreFailedTeamReferences, teamMessagesAvailable, teamReferenceContractSupported, teamReferencesEqual, teamReferenceTokenPresent, validTeamReferences } from '../lib/team-references'
 import { BUILT_IN_HUB_TOKEN, DEFAULT_SERVER_URL, localHubAlive } from '../lib/server-setup'
 import { serverSearchQuery } from '../lib/server-search'
-import { runtimeSelectionError } from '../lib/runtime-catalog'
+import { geminiBackendSupported, runtimeSelectionError } from '../lib/runtime-catalog'
 import { clearCodeReviewFallbacks } from '../lib/code-review'
 import { SessionMutationReconciler, type SessionReadToken } from '../lib/session-mutation-reconciler'
 import { APP_FONT_SCALE_DEFAULT, clampAppFontScale } from '../lib/typography'
@@ -920,7 +920,7 @@ interface AppState {
   attachFiles(files: UploadRef[], expectedGeneration?: number, expectedSessionId?: string): Promise<void>
   removeUpload(fileId: string, expectedGeneration?: number, expectedSessionId?: string): void
   removeFailedUpload(fileUri: string, expectedGeneration?: number, expectedSessionId?: string): void
-  updateSession(sessionId: string, patch: Partial<Pick<Session, 'title' | 'folder' | 'cwd' | 'backend' | 'model' | 'effort' | 'system_prompt' | 'provider_jobs_access' | 'pinned' | 'archived'>>, expectedGeneration?: number): Promise<boolean>
+  updateSession(sessionId: string, patch: Partial<Pick<Session, 'title' | 'folder' | 'cwd' | 'backend' | 'model' | 'effort' | 'system_prompt' | 'provider_jobs_access' | 'gemini_permission_mode' | 'pinned' | 'archived'>>, expectedGeneration?: number): Promise<boolean>
   reloadProvider(sessionId: string, expectedGeneration?: number): Promise<ProviderReloadResult | null>
   createSession(input: CreateSessionInput, expectedGeneration?: number): Promise<boolean>
   quickCreateSession(expectedGeneration?: number, preset?: { folder: string; backend: Backend }): Promise<boolean>
@@ -1349,7 +1349,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     const server = new AgentServerClient(normalizeServerURL(profile.serverURL), await loadProfileToken(profile.id, profile.credentialVersion))
     try {
       // An admin action goes only to the server the profile pinned, as on the active connection.
-      if (profile.serverIdentity && (await server.health()).server_identity !== profile.serverIdentity) {
+      const health = profile.serverIdentity || backend === 'gemini' ? await server.health() : null
+      if (backend === 'gemini' && !geminiBackendSupported(health)) throw new Error('Update this AgentsServer to enable Gemini CLI updates.')
+      if (profile.serverIdentity && health?.server_identity !== profile.serverIdentity) {
         throw new Error('This server reports a different identity. Select it once to confirm the change, then update again.')
       }
       const { output, diagnostic } = await server.updateRuntimeCli(backend)
@@ -2894,6 +2896,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!prompt && !files.length) return false
     const session = get().sessions.find(value => value.id === sessionId)
     if (!session) return false
+    if (steer && session.backend === 'gemini' && get().activeSessionIds.has(sessionId)) {
+      set({ error: 'Gemini CLI does not support live steering. Queue the message or stop the active turn.' }); return false
+    }
     const selectionError = runtimeSelectionError(get().health, get().runtime, session.backend, session.model)
     if (selectionError) {
       set({ error: selectionError })
@@ -3444,6 +3449,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     scheduleCurrentWorkspaceSave(get)
   },
   async forkSession(sessionId, expectedGeneration) {
+    if (get().sessions.find(chat => chat.id === sessionId)?.backend === 'gemini') {
+      set({ error: 'Native Gemini CLI session forks are unavailable.' }); return
+    }
     const scope = validatedConnectionOrReport(get, set, expectedGeneration)
     if (!scope) return
     const state = get()
@@ -3922,6 +3930,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     return scope ? queueAction(scope, sessionId, () => scope.client.moveQueued(sessionId, queuedId, direction), set, get) : false
   },
   async runQueuedNow(sessionId, queuedId, expectedGeneration) {
+    if (get().activeSessionIds.has(sessionId) && get().sessions.find(chat => chat.id === sessionId)?.backend === 'gemini') {
+      set({ error: 'Gemini CLI does not support live steering. Wait for the active turn or stop it first.' }); return false
+    }
     const queuedTurns = get().snapshots[sessionId]?.queuedTurns ?? []
     const queued = queuedTurns.find(turn => turn.queued_id === queuedId)
     if (queued && !isUserQueuedTurn(queued)) {
@@ -6422,7 +6433,7 @@ async function notifyOnce(scope: ConnectionScope, session: Session, turnKey: str
     await Notifications.scheduleNotificationAsync({
       content: {
         title: session.title,
-        body: session.backend === 'cursor' ? 'Cursor turn finished' : 'Response finished',
+        body: session.backend === 'gemini' ? 'Gemini CLI turn finished' : session.backend === 'cursor' ? 'Cursor turn finished' : 'Response finished',
         data: { profileId: scope.profileId, serverIdentity: scope.namespace, sessionId: session.id },
       },
       trigger: null,
