@@ -354,6 +354,24 @@ def comment_message(value: Any) -> tuple[str, str, int]:
     return mode, text.strip(), revision
 
 
+# A question must not turn into an edit: the user chose "ask" on purpose.
+ASK_INSTRUCTION = "This is a question: answer it in your reply and do not modify the canvas."
+EDIT_INSTRUCTION = ("Change the canvas file to do what this comment asks, keep everything else unchanged, "
+                    "run the canvas check, and reply with a short summary of the change.")
+EARLIER_QUESTION = "Earlier question in this comment thread:"
+# The prompt comment_prompt builds. The HTML is bounded as comment_anchor bounds it: unbounded, a text of
+# repeated headers without the instruction is scanned to its end from each of them.
+COMMENT_PROMPT_RE = re.compile(
+    r"Canvas comment \((?:question|edit request)\) on (?P<path>[^\n]+) at revision \d+\.\n"
+    r"Selected element: <(?P<tag>[^>\n]+)> (?:inside data-canvas-id=\"(?P<canvas_id>[^\n]+)\"|\(no data-canvas-id\))\n"
+    r"(?:Element text: (?P<text>\"[^\n]*\")\n)?"
+    r"(?:Element HTML: .{0,2000}?\n)?"
+    r"(?:This continues an earlier comment thread on the same element\.\n)?"
+    r"\n(?P<instruction>" + re.escape(ASK_INSTRUCTION) + "|" + re.escape(EDIT_INSTRUCTION) + r")\n\n(?:Question|Request): (?P<body>.*)\Z",
+    re.DOTALL,
+)
+
+
 def comment_prompt(path: Path, revision: int, anchor: dict[str, Any], mode: str, body: str, *, follow_up: bool) -> tuple[str, str]:
     """(prompt for the agent, text the timeline shows for the user's message)."""
     where = f'inside data-canvas-id="{anchor["canvas_id"]}"' if anchor["canvas_id"] else "(no data-canvas-id)"
@@ -367,16 +385,7 @@ def comment_prompt(path: Path, revision: int, anchor: dict[str, Any], mode: str,
         lines.append(f"Element HTML: {anchor['html']}")
     if follow_up:
         lines.append("This continues an earlier comment thread on the same element.")
-    lines += [
-        "",
-        # A question must not turn into an edit: the user chose "ask" on purpose.
-        "This is a question: answer it in your reply and do not modify the canvas."
-        if mode == "ask" else
-        "Change the canvas file to do what this comment asks, keep everything else unchanged, "
-        "run the canvas check, and reply with a short summary of the change.",
-        "",
-        f"{'Question' if mode == 'ask' else 'Request'}: {body}",
-    ]
+    lines += ["", ASK_INSTRUCTION if mode == "ask" else EDIT_INSTRUCTION, "", f"{'Question' if mode == 'ask' else 'Request'}: {body}"]
     # The id is the nearest data-canvas-id, often a whole section, so the element's own text
     # follows it. Same format as the clients' thread labels (canvasAnchorLabel).
     text = " ".join(anchor["text"].split())[:40]
@@ -388,11 +397,35 @@ def comment_prompt(path: Path, revision: int, anchor: dict[str, Any], mode: str,
     return "\n".join(lines), display[:4096]
 
 
+def comment_display_from_prompt(prompt: str) -> str | None:
+    """The text the timeline shows for a comment's message, from the prompt its agent was sent; None for other text.
+
+    A provider's transcript holds the prompt, and history sync looks for the timeline's text in it. Only a
+    text that is the prompt, alone or after its thread's earlier exchanges: a message quoting one stays as written.
+    """
+    if prompt.startswith("Canvas comment ("):
+        match = COMMENT_PROMPT_RE.match(prompt)
+    elif prompt.startswith(EARLIER_QUESTION + "\n"):
+        match = COMMENT_PROMPT_RE.search(prompt)
+    else:
+        return None
+    if match is None:
+        return None
+    try:
+        text = json.loads(match["text"]) if match["text"] else ""
+    except ValueError:
+        return None
+    anchor = {"canvas_id": match["canvas_id"], "tag": match["tag"], "text": text, "html": ""}
+    mode = "ask" if match["instruction"] == ASK_INSTRUCTION else "edit"
+    # The display text does not name the revision.
+    return comment_prompt(Path(match["path"]), 0, anchor, mode, match["body"], follow_up=False)[1]
+
+
 def with_earlier_exchanges(prompt: str, exchanges: Iterable[tuple[str, str]]) -> str:
     """The prompt after its thread's earlier questions and answers, for an agent that has not seen them."""
     lines: list[str] = []
     for question, answer in exchanges:
-        lines += ["Earlier question in this comment thread:", question, "", "Its answer:", answer[:MAX_REPLY_CHARS], ""]
+        lines += [EARLIER_QUESTION, question, "", "Its answer:", answer[:MAX_REPLY_CHARS], ""]
     return "\n".join([*lines, prompt])
 
 

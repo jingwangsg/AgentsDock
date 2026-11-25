@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import agent_server
+import agentsdock_canvas
 
 
 def user(text: str) -> dict[str, str]:
@@ -629,6 +630,30 @@ class ProviderTranscriptSanitizerTests(unittest.TestCase):
                 timeline_through_seq=1,
             )
         self.assertEqual(fresh, [])
+
+    def test_a_canvas_comment_turn_matches_the_text_its_timeline_shows(self) -> None:
+        # 2026-11-25: each comment turn was imported again, showing the prompt its agent was sent.
+        anchor = {"canvas_id": "summary", "tag": "td", "text": "loss 2.41", "html": "<td>loss\n2.41</td>"}
+        prompt, display = agentsdock_canvas.comment_prompt(
+            Path("/state/canvases/chat/report.canvas.tsx"), 7, anchor, "edit", "make it shorter", follow_up=True)
+        # An edit request in a thread also tells the chat the thread's side chat exchanges.
+        for sent in (prompt, agentsdock_canvas.with_earlier_exchanges(prompt, [("why?", "Because.")])):
+            with self.subTest(prefixed=sent != prompt):
+                items = agent_server.parse_claude_history_events(
+                    [{"type": "user", "message": {"content": sent + legacy_provider_authority_block(compact=True)}}],
+                    None,
+                    expected_session_id=SANITIZER_CHAT_ID,
+                )
+                self.assertEqual([item["text"] for item in items], [display])
+                # After an exchange both sides hold: without one, history sync imports nothing at all.
+                events = [{"type": "turn_started", "prompt": "hello"}, {"type": "assistant_text", "text": "hi there"},
+                          {"type": "turn_started", "prompt": display}]
+                with patch.object(agent_server, "history_timeline_message_keys", side_effect=fake_history_timeline_scan(events)):
+                    fresh = agent_server.unsynced_history_items(
+                        SANITIZER_CHAT_ID, [user("hello"), assistant("hi there"), *items], timeline_through_seq=3)
+                self.assertEqual(fresh, [])
+        # Outside provider history the text is not a provider record: it stays as written.
+        self.assertEqual(agent_server.strip_agentsdock_generated_user_text(prompt), prompt)
 
 
 class UnsyncedHistoryItemsTests(unittest.TestCase):

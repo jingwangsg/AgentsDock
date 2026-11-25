@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -476,6 +477,26 @@ class CanvasCommentTests(unittest.TestCase):
         canvas.resolve_replies([{"messages": [failing]}], [{"type": "turn_finished", "run_id": "r", "exit_code": 1, "result_text": "x" * (canvas.MAX_REPLY_CHARS + 5)}])
         assert failing["reply"]["status"] == "failed"
         assert len(failing["reply"]["text"]) == canvas.MAX_REPLY_CHARS
+
+    def test_a_comments_timeline_text_is_recovered_from_the_prompt_its_agent_was_sent(self) -> None:
+        anchors = (canvas.comment_anchor({**ANCHOR, "html": "<td>loss\n2.41</td>"}),
+                   canvas.comment_anchor({"canvas_id": None, "tag": "h1", "text": ""}))
+        for anchor in anchors:
+            for mode, body, follow_up in (("ask", "为什么这么高？\nand the second line", False), ("edit", "make it shorter", True)):
+                prompt, display = canvas.comment_prompt(self.path, 7, anchor, mode, body, follow_up=follow_up)
+                assert canvas.comment_display_from_prompt(prompt) == display
+                # An edit request in a thread follows the thread's earlier exchanges.
+                assert canvas.comment_display_from_prompt(canvas.with_earlier_exchanges(prompt, [("why?", "Because.")])) == display
+                # A message that quotes the prompt is the user's own text.
+                assert canvas.comment_display_from_prompt("why so long?\n\n" + prompt) is None
+        # Text that only begins like a comment is no comment.
+        assert canvas.comment_display_from_prompt("Canvas comment (question) on a.canvas.tsx at revision 7.\nSelected element: <td>") is None
+        assert canvas.comment_display_from_prompt("why is the loss so high?") is None
+        # 0.4 MB of headers without an instruction took 5 s before the HTML was bounded.
+        headers = "Canvas comment (question) on a at revision 1.\nSelected element: <td> (no data-canvas-id)\nElement HTML: x\n" * 4000
+        started = time.monotonic()
+        assert canvas.comment_display_from_prompt(headers) is None and canvas.comment_display_from_prompt(canvas.EARLIER_QUESTION + "\n" + headers) is None
+        assert time.monotonic() - started < 2
 
     def test_a_turn_gets_the_threads_earlier_exchanges_before_its_prompt(self) -> None:
         assert canvas.with_earlier_exchanges("Request: fix it", []) == "Request: fix it"
