@@ -113,8 +113,11 @@ def has_native_history(cwd, native_id):
     if len(sessions) != 1:
         return False
     try:
-        messages = public_messages(sessions[0], max_bytes=64 * 1024 * 1024,
-                                   max_line_bytes=16 * 1024 * 1024, max_records=100_000)
+        # Native resume has no size limit, so the file's own size is the limit here. One record
+        # holds every tool result of a model step (20 MiB seen in a 96 MiB file); 64 MiB bounds
+        # the memory for one record.
+        messages = public_messages(sessions[0], max_bytes=sessions[0].size,
+                                   max_line_bytes=64 * 1024 * 1024, max_records=100_000)
         return any(role == "assistant" or not text.lstrip().startswith(("/", "?")) for role, text in messages)
     except (ValueError, OSError, RecursionError):
         return False

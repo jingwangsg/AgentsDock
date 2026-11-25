@@ -1,5 +1,10 @@
 # Public development log
 
+## 2026-11-25 — Keep completed Gemini turns that wrote a large native session file
+
+- A first Gemini turn whose native session file exceeded 64 MiB, or held a record above 16 MiB, ended with "Gemini CLI completed without saving a resumable session" and lost its final answer and native identity. The saved-session check now reads the whole file, as native resume does, and allows 64 MiB per record.
+- Verified with a guarded-subprocess test that writes a 68 MiB session file, and against a 96 MiB session file from a real research turn (largest record 20 MiB, read by the check in 0.28 s). A live turn through a restarted server has not been exercised yet.
+
 ## 2026-11-25 — Give Gemini native file tools access to the chat's Canvas directory
 
 - AgentsServer prepares the Canvas authoring guide and SDK declarations for Gemini and includes that chat's directory in the CLI workspace. In a disposable chat, the desktop composer sent a Canvas request to live Argon. The CLI read the guides, wrote the TSX with its native file tool, ran the checker and returned a report the server could render.

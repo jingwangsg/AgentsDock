@@ -47,6 +47,11 @@ if mode != 'no-history':
     (chats / f'session-test-{session[:8]}.jsonl').write_text(json.dumps({
         'sessionId': session, 'kind': 'main', 'projectHash': hashlib.sha256(cwd.encode()).hexdigest()
     }) + chr(10) + json.dumps({'id':'user-turn','type':'user','content':prompt}) + chr(10))
+    if mode == 'large-history':
+        with (chats / f'session-test-{session[:8]}.jsonl').open('a') as transcript:
+            for i in range(4):
+                transcript.write(json.dumps({'id': f'reply-{i}', 'type': 'gemini', 'content': 'A',
+                                             'toolCalls': [{'resultDisplay': 'x' * (17 * 1024 * 1024)}]}) + chr(10))
 emit(type='message', role='assistant', content='A', delta=True)
 if mode == 'wait':
     emit(type='tool_use', tool_name='read_file', tool_id='read_file__read_file_1_0', parameters={'file_path':'marker.txt'})
@@ -140,6 +145,14 @@ class GeminiRunnerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("--session-id" if standalone else "--resume", argv)
             self.assertEqual(native_id in argv, not standalone)
             self.assertEqual(self.session["gemini_session_id"], native_id)
+
+    async def test_first_turn_with_a_large_native_transcript_keeps_its_result_and_native_id(self):
+        # Each record is above 16 MiB and the file above 64 MiB: the limits that rejected a real 96 MiB transcript.
+        run, task = self.run_turn("large-history")
+        await task
+        terminal = self.events(run)[-1]
+        self.assertEqual((terminal["is_error"], terminal["result_text"]), (False, "A"))
+        self.assertTrue(self.session["gemini_session_id"])
 
     async def test_canvas_contract_is_scoped_to_the_chat_and_kept_out_of_imported_prompts(self):
         run, task = self.run_turn("Create a Canvas")
