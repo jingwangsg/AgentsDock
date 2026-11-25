@@ -66,6 +66,13 @@ Each turn launches the exact admitted executable in print mode with
 - preserves normal AgentsDock stop, queue, artifact, diff, and lifecycle
   events.
 
+A Canvas question is answered beside the chat, without a turn: the server
+copies the chat's native session under a new id (`cursor_history.copy_session`),
+resumes the copy through the same process guard with
+`--mode ask --output-format json`, reads the single result object, ends the
+process, and deletes the copy and its transcript. The chat's own session is
+only read.
+
 Contract v2 additionally launches Cursor through a small process guard. The
 guard isolates the CLI in its own process group, forwards stop signals, closes
 stdin, and ensures descendant processes are reaped. The server also emits a

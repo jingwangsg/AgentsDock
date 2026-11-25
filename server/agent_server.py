@@ -71761,6 +71761,19 @@ def opencode_helper_output_redactor(
     return redact
 
 
+def gemini_canvas_directory_flags(session_id: str, resources: ExitStack) -> list[str]:
+    """The flags that put the chat's Canvas directory in the Gemini CLI's workspace."""
+    canvas_dir = agentsdock_canvas.session_dir(STATE_DIR, session_id).resolve()
+    if not canvas_dir.is_dir():
+        return []
+    if "," in str(canvas_dir):
+        # Gemini splits this flag on commas, even when passed as one argv element.
+        alias = Path(resources.enter_context(tempfile.TemporaryDirectory(dir="/tmp", prefix="ad-canvas-"))) / "canvas"
+        alias.symlink_to(canvas_dir, target_is_directory=True)
+        canvas_dir = alias
+    return ["--include-directories", str(canvas_dir)]
+
+
 async def run_gemini(
     session_id: str, run_id: str, prompt: str, sess: dict, manifest: Path,
     *, standalone_provider_context: bool = False, runtime_context: str = "",
@@ -71833,14 +71846,7 @@ async def run_gemini(
             sess["_gemini_executable"], sess.get("model") or sess["_gemini_default_model"],
             sess.get("gemini_permission_mode") or gemini_agent_client.DEFAULT_PERMISSION_MODE, native_id, bool(resume),
         )
-        canvas_dir = agentsdock_canvas.session_dir(STATE_DIR, session_id).resolve()
-        if canvas_dir.is_dir():
-            if "," in str(canvas_dir):
-                # Gemini splits this flag on commas, even when passed as one argv element.
-                alias = Path(resources.enter_context(tempfile.TemporaryDirectory(dir="/tmp", prefix="ad-canvas-"))) / "canvas"
-                alias.symlink_to(canvas_dir, target_is_directory=True)
-                canvas_dir = alias
-            cmd.extend(["--include-directories", str(canvas_dir)])
+        cmd.extend(gemini_canvas_directory_flags(session_id, resources))
         baseline = await capture_git_baseline(session_id, run_id, cwd)
         spawn = asyncio.create_task(asyncio.create_subprocess_exec(
             sys.executable, str(CURSOR_PROCESS_GUARD), "--parent-pid", str(os.getpid()), "--", *cmd,
@@ -87466,6 +87472,138 @@ async def create_native_side_chat(session_id: str, *, persisted_state=None, pers
     return NativeSideChat()
 
 
+class CopiedSessionSideChat:
+    """Answers a Canvas question for Gemini and Cursor, which have no native side chat.
+
+    Each question resumes a copy of the chat's native session, as it stands then, in a process of its own
+    and without write tools. The chat's session is only read, and the copy is deleted once its answer
+    returns. ``history`` is not used: create_canvas_comment_side_chat puts it in the question.
+    """
+
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+
+    async def ask(self, question: str, *, history, on_step=None) -> dict[str, Any]:
+        session = dict(STORE.sessions[self.session_id])
+        backend = str(session.get("backend") or DEFAULT_BACKEND).lower()
+        requested_cwd = str(session.get("cwd") or DEFAULT_CWD)
+        cwd = existing_cwd(requested_cwd)
+        copy_id = str(uuid.uuid4())
+        env = agent_runner_env(self.session_id)
+        answer = None
+
+        def remove_copy(copying: asyncio.Future) -> None:
+            if not copying.done():
+                copying.add_done_callback(remove_copy)
+            elif not copying.cancelled() and copying.exception() is None:
+                for path in copying.result():
+                    if path.is_dir():
+                        shutil.rmtree(path, ignore_errors=True)
+                    else:
+                        path.unlink(missing_ok=True)
+
+        with ExitStack() as resources:
+            try:
+                if str(Path(requested_cwd).expanduser()) != cwd:
+                    # Both CLIs find a session by its workspace: from another one the copy would start an unrelated session.
+                    raise FileNotFoundError(requested_cwd)
+                if backend == BACKEND_GEMINI:
+                    runtime = await ensure_runtime_available(BACKEND_GEMINI, session=session)
+                    names = runtime["_gemini_models"]
+                    model = session.get("model") or (gemini_agent_client.DEFAULT_MODEL if gemini_agent_client.DEFAULT_MODEL in names else names[0])
+                    access = (await asyncio.to_thread(hub_provider_auth.request, HUB_PROVIDER_INSTALL, BACKEND_GEMINI) if HUB_PROVIDER_INSTALL
+                              else resources.enter_context(gemini_gateway.open_gateway(CONFIG_ENV_FILE.parent)))
+                    secret = access["accessToken"]
+                    env = resources.enter_context(gemini_agent_client.native_environment(env, access, cwd=cwd, effort=session.get("effort")))
+                    add_provider_no_proxy_environment(env, "127.0.0.1")
+                    # "default": without a terminal the CLI denies every tool that asks, which leaves the read tools.
+                    cmd = gemini_agent_client.command(runtime["_executable"], model, "default", copy_id, True)
+                    cmd.extend(gemini_canvas_directory_flags(self.session_id, resources))
+                    (source,) = await asyncio.to_thread(
+                        lambda: list(gemini_history.local_sessions(cwd=cwd, provider_id=session["gemini_session_id"])))
+                    copy = functools.partial(gemini_history.copy_session, source, copy_id)
+                else:
+                    if HUB_PROVIDER_INSTALL:
+                        env = await asyncio.to_thread(cursor_hub_env, env)
+                    secret = env.get("CURSOR_AUTH_TOKEN") if HUB_PROVIDER_INSTALL else None
+                    cmd = [await asyncio.to_thread(resolve_cursor_executable), "-p", "--output-format", "json", "--resume", copy_id,
+                           "--trust", "--mode", "ask", *(["--model", str(session["model"])] if session.get("model") else [])]
+                    copy = functools.partial(cursor_history.copy_session, str(session["cursor_session_id"]), copy_id, cwd)
+                copying = asyncio.ensure_future(asyncio.to_thread(copy))
+                # load-bearing: a worker thread cannot be cancelled, so a cancelled wait removes the copy when the thread is done.
+                resources.callback(remove_copy, copying)
+                await asyncio.shield(copying)
+                proc = await asyncio.create_subprocess_exec(
+                    sys.executable, str(CURSOR_PROCESS_GUARD), "--parent-pid", str(os.getpid()), "--", *cmd,
+                    stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                    cwd=cwd, env=env, limit=PROCESS_STREAM_LIMIT, start_new_session=True)
+                try:
+                    stream = gemini_agent_client.GeminiStream(copy_id, secrets=(secret,)) if backend == BACKEND_GEMINI else None
+                    # The bounds of a Gemini turn: an hour and 64 MiB of output.
+                    async with asyncio.timeout(3600):
+                        proc.stdin.write(question.encode())
+                        await proc.stdin.drain()
+                        proc.stdin.close()
+                        size = 0
+                        async for line in proc.stdout:
+                            size += len(line)
+                            if size > 64 * 1024 * 1024:
+                                raise ValueError("output limit")
+                            if stream is not None:
+                                stream.consume(line)
+                                if stream.done:
+                                    stream.text_events(end=True)
+                                    answer = None if stream.failed else "".join(stream.parts)
+                                    break
+                            elif line.startswith(b"{"):
+                                result = json.loads(line)
+                                if result.get("type") == "result":
+                                    if result["is_error"] is False:
+                                        answer = result["result"].replace(secret, "[REDACTED]") if secret else result["result"]
+                                    break
+                finally:
+                    # Not left to exit on its own: the Cursor CLI can stay up after its result.
+                    if proc.returncode is None:
+                        await terminate_process_tree(proc, grace=CURSOR_GUARD_TEARDOWN_GRACE_SECONDS)
+            except Exception as exc:
+                # Native errors can contain the prompt or a credential.
+                logger.warning("Canvas question in a copied %s session failed error_type=%s", backend, type(exc).__name__)
+                answer = None
+        if not isinstance(answer, str) or not answer.strip():
+            raise side_questions.SideQuestionError(503, "The provider did not answer in a copy of this chat")
+        return {"backend": backend, "answer": answer,
+                "context_note": "A copy of the chat's native session from when the question was asked, without write tools."}
+
+    async def close(self):
+        pass  # The copy and its process end with ask.
+
+
+async def create_canvas_comment_side_chat(session_id: str, **_persistence):
+    """Answers a Canvas question in a copy of the chat as it stands, keeping nothing for the comment thread's next question.
+
+    Claude's /btw and a Codex fork are native copies; Gemini and Cursor resume a copied session. The side
+    chat store offers a thread's saved provider state and its earlier exchanges. Only /btw replays the
+    exchanges itself, so the other handles get them in the question.
+    """
+    backend = str((STORE.sessions.get(session_id) or {}).get("backend") or DEFAULT_BACKEND).lower()
+    # load-bearing: the store's `durable` and saved state are dropped, so a Codex fork is ephemeral and
+    # bound to no earlier conversation of the chat.
+    handle = (CopiedSessionSideChat(session_id) if backend in (BACKEND_GEMINI, BACKEND_CURSOR)
+              else await create_native_side_chat(session_id))
+    if backend == BACKEND_CLAUDE:
+        return handle
+
+    class WithEarlierExchanges:
+        async def ask(self, question, *, history, on_step=None):
+            return await handle.ask(agentsdock_canvas.with_earlier_exchanges(
+                question, ((item["question"], item["response"]) for item in history)), history=[], on_step=on_step)
+
+        async def close(self):
+            await handle.close()
+
+    return WithEarlierExchanges()
+
+
 def require_side_question_admission():
     # Reuse the main provider admission boundary only during actual process
     # replacement. An ordinary update waiting for idle leaves side chats usable.
@@ -87476,7 +87614,11 @@ def require_side_question_admission():
 
 SIDE_QUESTIONS = side_questions.SideQuestions(native_factory=create_native_side_chat,
     storage_path=STATE_DIR / "side_chats.sqlite3", notify=lambda session_id, event: HUB.broadcast(session_id, event),
-    admission_check=require_side_question_admission)
+    admission_check=require_side_question_admission,
+    comment_storage_path=STATE_DIR / "canvas_comment_side_chats.sqlite3", comment_factory=create_canvas_comment_side_chat,
+    # Invalidation only, as for a client's side chat: the open Canvas reads its threads again.
+    comment_notify=lambda session_id, event: HUB.broadcast(
+        session_id, {"type": "canvas_comments_updated", "session_id": session_id}))
 app.include_router(side_questions.create_side_question_router(
     authorize=require_native_admin_control,
     session_exists=public_chat_share_session_exists,
@@ -102948,10 +103090,33 @@ async def start_canvas_comment_turn(session_id: str, prompt: str, display_prompt
     return await post_turn(session_id, TurnRequest(prompt=prompt, display_prompt=display_prompt, client_capabilities=client_capabilities))
 
 
+def canvas_comment_side_chat_available(session_id: str, prompt: str) -> bool:
+    """Whether a copy of the chat can answer a Canvas question; otherwise the comment starts a turn.
+
+    Each condition is one the side chat would fail on after the comment was accepted: a chat without a
+    native conversation to copy, Claude without the Agent SDK that carries /btw, and a question over
+    Claude's limit.
+    """
+    session = STORE.sessions.get(session_id) or {}
+    backend = str(session.get("backend") or DEFAULT_BACKEND).lower()
+    if backend == BACKEND_CODEX:
+        return bool(session_codex_thread_id(session))
+    if backend == BACKEND_CLAUDE:
+        return (bool(str(session.get("claude_session_id") or session.get("session_id") or "").strip())
+                and CLAUDE_TRANSPORT != CLAUDE_TRANSPORT_PRINT and claude_sdk_dependency_available()
+                and len(prompt) <= side_questions.MAX_QUESTION_CHARS)
+    if backend == BACKEND_GEMINI:
+        return bool(session.get("gemini_session_id"))
+    if backend == BACKEND_CURSOR:
+        return bool(session.get("cursor_session_id"))
+    return False  # OpenCode
+
+
 agentsdock_canvas.register_canvas_routes(
     app, state_dir=STATE_DIR, session_exists=lambda session_id: session_id in STORE.sessions,
     # iter_session_events is defined further down this module.
     session_events=lambda session_id: iter_session_events(session_id), start_turn=start_canvas_comment_turn,
+    side_chats=SIDE_QUESTIONS.comment_chats, side_chat_available=canvas_comment_side_chat_available,
 )
 # Hub for SSH-only remote servers: registry, tunnels, deploy, and the /api/remote/{id} proxy.
 # Only the hub on the default state directory keeps the remotes' ssh aliases: another instance, such as an

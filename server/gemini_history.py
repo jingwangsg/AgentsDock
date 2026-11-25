@@ -2,6 +2,7 @@
 from collections import OrderedDict
 from dataclasses import dataclass
 import hashlib
+import json
 import os
 import re
 from pathlib import Path
@@ -84,7 +85,8 @@ def local_sessions(*, cwd: str | None = None, provider_id: str | None = None) ->
                     remaining -= 1
                     if remaining <= 0:
                         return
-                    if not (path.name.startswith("session-") and path.suffix == ".jsonl"):
+                    # A copy answering a Canvas question (copy_session) is not a chat to resume or import.
+                    if not (path.name.startswith("session-") and path.suffix == ".jsonl") or path.name.startswith("session-copy-"):
                         continue
                     if provider_id and not path.stem.endswith("-" + provider_id[:8]):
                         continue
@@ -108,6 +110,34 @@ def local_sessions(*, cwd: str | None = None, provider_id: str | None = None) ->
                         continue
             except (ValueError, OSError):
                 continue
+
+
+def copy_session(session: Session, copy_id: str) -> list[Path]:
+    """Copy the session's complete records under another id, for the CLI to resume as a session of its own.
+
+    The source is only read, and a record its CLI is still appending is left out. Returns every path the
+    copy and its resumed run leave on disk, the copy first.
+    """
+    chats = session.path.parent
+    copy = chats / f"session-copy-{copy_id[:8]}.jsonl"
+    try:
+        with session.path.open("rb") as source, open(os.open(copy, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as target:
+            for line in source:
+                if not line.endswith(b"\n"):
+                    break
+                # The header and the metadata updates name the session, and they are short. A message that
+                # quotes the id is left as it is.
+                if len(line) < 65536 and session.provider_id.encode() in line:
+                    record = json.loads(line)
+                    for holder in (record, record.get("$set")):
+                        if isinstance(holder, dict) and holder.get("sessionId") == session.provider_id:
+                            holder["sessionId"] = copy_id
+                    line = json.dumps(record, ensure_ascii=False).encode() + b"\n"
+                target.write(line)
+    except BaseException:
+        copy.unlink(missing_ok=True)
+        raise
+    return [copy, chats / copy_id, chats.parent / "tool-outputs" / f"session-{copy_id}"]
 
 
 def read_transcript(session: Session, *, max_bytes: int, max_line_bytes: int, max_records: int):

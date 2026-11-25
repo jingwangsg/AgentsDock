@@ -102,7 +102,8 @@ NATIVE_IDLE_SECONDS = 30 * 60
 
 
 class SideQuestions:
-    def __init__(self, *, native_factory=None, storage_path=None, notify=None, admission_check=None):
+    def __init__(self, *, native_factory=None, storage_path=None, notify=None, admission_check=None,
+                 comment_storage_path=None, comment_factory=None, comment_notify=None):
         self.native_factory = native_factory
         self.admission_check = admission_check
         self.receipts: dict[tuple[str, str, str], _Receipt] = {}
@@ -110,12 +111,24 @@ class SideQuestions:
         self.cleanup_tasks: set[asyncio.Task] = set()
         self.synced = (SyncedSideChats(storage_path, native_factory=native_factory, notify=notify, admission_check=admission_check)
                        if storage_path is not None else None)
+        # One side chat per Canvas comment thread, keyed by the thread id where a client's side chat is keyed
+        # by its owner, so the threads' questions run at the same time.
+        # idle_seconds=0: every question gets a new handle, a copy of the chat as it stands then.
+        # record_steps=False: nothing shows a comment's steps, and each step would notify the clients.
+        self.comment_chats = (SyncedSideChats(comment_storage_path, native_factory=comment_factory,
+                                              notify=comment_notify, admission_check=admission_check,
+                                              idle_seconds=0, record_steps=False)
+                              if comment_storage_path is not None else None)
+
+    @property
+    def durable(self):
+        return [chats for chats in (self.synced, self.comment_chats) if chats is not None]
 
     def active_session_ids(self):
         sessions = {key[1] for key, receipt in self.receipts.items()
                     if receipt.task is not None and not receipt.task.done()}
-        if self.synced is not None:
-            sessions.update(key[1] for key, task in self.synced.tasks.items() if not task.done())
+        for chats in self.durable:
+            sessions.update(key[1] for key, task in chats.tasks.items() if not task.done())
         return sessions
 
     def active_work_labels(self):
@@ -265,12 +278,12 @@ class SideQuestions:
             if key[1] == session_id:
                 await self._close_conversation(conversation)
                 self.conversations.pop(key, None)
-        if self.synced is not None:
-            await self.synced.close_session(session_id)
+        for chats in self.durable:
+            await chats.close_session(session_id)
 
     def delete_history(self, session_id):
-        if self.synced is not None:
-            self.synced.delete_history(session_id)
+        for chats in self.durable:
+            chats.delete_history(session_id)
 
     async def store_carried_history(self, token, session_id, document):
         # load-bearing: the same owner key the side-question routes derive from the request token.
@@ -281,8 +294,8 @@ class SideQuestions:
         return self.synced.store.provider_thread_ids() if self.synced is not None else set()
 
     async def close(self):
-        if self.synced is not None:
-            await self.synced.close()
+        for chats in self.durable:
+            await chats.close()
         tasks = [receipt.task for receipt in self.receipts.values()
                  if receipt.task is not None and not receipt.task.done()]
         for task in tasks:
@@ -415,11 +428,14 @@ class SyncedSideChats:
     after an app disconnect or an unexpected process exit.
     """
 
-    def __init__(self, path, *, native_factory, notify=None, admission_check=None):
+    def __init__(self, path, *, native_factory, notify=None, admission_check=None,
+                 idle_seconds=NATIVE_IDLE_SECONDS, record_steps=True):
         self.store = SideChatStore(path)
         self.native_factory = native_factory
         self.notify = notify
         self.admission_check = admission_check
+        self.idle_seconds = idle_seconds
+        self.record_steps = record_steps
         self.locks = {}
         self.tasks = {}
         self.handles = {}
@@ -524,7 +540,7 @@ class SyncedSideChats:
             history = [{"question": item["question"], "response": item["answer"]}
                        for item in document["exchanges"] if item["status"] == "completed"][-20:]
             result = await handle.ask(question, history=history,
-                                      on_step=lambda step: self._step(key, side_chat_id, request_id, step))
+                                      on_step=(lambda step: self._step(key, side_chat_id, request_id, step)) if self.record_steps else None)
             await self._finish(key, side_chat_id, request_id, "completed", **result)
         except asyncio.CancelledError:
             failed = True
@@ -556,7 +572,7 @@ class SyncedSideChats:
             if self.tasks.get(key) is asyncio.current_task():
                 self.tasks.pop(key, None)
                 if not self.stopping:
-                    self.timers[key] = asyncio.get_running_loop().call_later(NATIVE_IDLE_SECONDS, self._expire, key)
+                    self.timers[key] = asyncio.get_running_loop().call_later(self.idle_seconds, self._expire, key)
 
     async def _step(self, key, side_chat_id, request_id, step):
         async with self._lock(key):

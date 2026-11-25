@@ -296,7 +296,7 @@ describe('CanvasPane comments and source editing', () => {
 
     await waitFor(() => expect(api.comment).toHaveBeenCalledWith('chat-1', 'report',
       { canvas_id: 'summary', tag: 'td', text: 'loss 2.41', html: '<td>loss 2.41</td>' },
-      { mode: 'ask', body: 'why so high?', revision: 1, client_capabilities: ['codex_interactive_v1'] }))
+      { mode: 'ask', body: 'why so high?', revision: 1, client_capabilities: ['codex_interactive_v1'], side_chat: true }))
     expect(await screen.findByText('Waiting for the agent…')).toBeInTheDocument()
     expect(post).toHaveBeenLastCalledWith({ source: 'agentsdock-canvas-host', call: 'set-comments', args: [
       [{ id: 'cmt_1', number: 1, canvasId: 'summary', tag: 'td', text: 'loss 2.41', label: 'summary · loss 2.41' }], 'cmt_1'] }, '*')

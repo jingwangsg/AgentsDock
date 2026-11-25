@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import sys
 import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -74,7 +75,36 @@ class CursorFixture:
         return directory, transcript
 
 
+FAKE_ASK_CLI = """#!PYTHON
+import json, sqlite3, sys
+from pathlib import Path
+config = Path(CONFIG)
+copy_id = sys.argv[sys.argv.index('--resume') + 1]
+question = sys.stdin.read()
+(store,) = config.glob('chats/*/' + copy_id + '/store.db')
+agent = json.loads(bytes.fromhex(sqlite3.connect(store).execute("SELECT value FROM meta WHERE key = '0'").fetchone()[0]))['agentId']
+(transcript,) = config.glob('projects/*/agent-transcripts')
+(transcript / copy_id).mkdir()
+print('progress that is not the result')
+print(json.dumps({'type': 'result', 'is_error': 'fail' in question, 'result': json.dumps([agent == copy_id, sys.argv[1:], question])}))
+"""
+
+
 class CursorDiscoveryTests(CursorFixture, unittest.TestCase):
+    def test_a_copied_session_is_a_session_of_its_own_and_its_source_is_only_read(self):
+        directory, transcript = self.fixture()
+        before = {path: path.read_bytes() for path in (directory / "meta.json", directory / "store.db")}
+        copy, copy_transcript = cursor_history.copy_session("native-cursor", "copy-1", str(self.cwd))
+        self.assertEqual((copy, copy_transcript), (directory.with_name("copy-1"), transcript.parent.with_name("copy-1")))
+        with sqlite3.connect(copy / "store.db") as db:
+            metadata = json.loads(bytes.fromhex(db.execute("SELECT value FROM meta WHERE key = '0'").fetchone()[0]))
+        self.assertEqual(metadata, {"agentId": "copy-1", "name": "Cursor native title"})
+        self.assertEqual((copy / "meta.json").read_bytes(), before[directory / "meta.json"])
+        self.assertEqual({path: path.read_bytes() for path in before}, before)
+        with self.assertRaises(FileNotFoundError):
+            cursor_history.copy_session("missing", "copy-2", str(self.cwd))
+        self.assertFalse(directory.with_name("copy-2").exists())
+
     def test_native_title_and_exact_identity_are_read_only(self):
         directory, transcript = self.fixture()
         paths = [directory / "meta.json", directory / "store.db", transcript]
@@ -320,6 +350,37 @@ class CursorImportTests(CursorFixture, unittest.IsolatedAsyncioTestCase):
         return server.BulkImportSessionsRequest(items=[{
             "provider_session_id": "native-cursor", "backend": "cursor", "cwd": str(self.cwd), **kwargs,
         }])
+
+    async def test_a_canvas_question_is_answered_in_a_copy_of_the_session_deleted_once_its_answer_returns(self):
+        directory = self.config / "chats" / hashlib.md5(str(self.cwd).encode(), usedforsecurity=False).hexdigest()
+        transcripts = self.config / "projects" / cursor_history.project_slug(str(self.cwd)) / "agent-transcripts"
+        before = (directory / "native-cursor" / "store.db").read_bytes()
+        script = self.root / "agent"
+        script.write_text(FAKE_ASK_CLI.replace("#!PYTHON", "#!" + sys.executable).replace("CONFIG", repr(str(self.config))))
+        script.chmod(0o700)
+        self.store.sessions["chat"] = {"id": "chat", "backend": "cursor", "cwd": str(self.cwd), "cursor_session_id": "native-cursor", "model": "auto"}
+        with patch.object(server, "resolve_cursor_executable", return_value=str(script)):
+            handle = await server.create_canvas_comment_side_chat("chat")
+            # Cursor has no native replay: the thread's earlier exchange arrives in the question.
+            answer = await handle.ask("Question: and then?", history=[{"question": "Question: why?", "response": "Because."}])
+            is_own_chat, argv, question = json.loads(answer["answer"])
+            self.assertTrue(is_own_chat)
+            # Without the copy's id: read-only ask mode on the chat's model.
+            self.assertEqual(argv[:4] + argv[5:], ["-p", "--output-format", "json", "--resume", "--trust", "--mode", "ask", "--model", "auto"])
+            self.assertEqual(question, "Earlier question in this comment thread:\nQuestion: why?\n\nIts answer:\nBecause.\n\nQuestion: and then?")
+            # Nothing of the copy is left, and the chat's store was only read.
+            self.assertEqual([path.name for path in directory.iterdir()], ["native-cursor"])
+            self.assertEqual([path.name for path in transcripts.iterdir()], ["native-cursor"])
+            self.assertEqual((directory / "native-cursor" / "store.db").read_bytes(), before)
+            with self.assertRaises(server.side_questions.SideQuestionError) as failed:
+                await handle.ask("fail", history=[])
+            self.assertEqual(failed.exception.status_code, 503)
+            self.assertEqual([path.name for path in directory.iterdir()], ["native-cursor"])
+            # Cursor finds a session by its workspace: with the chat's gone, no copy is made to resume elsewhere.
+            self.store.sessions["chat"]["cwd"] = str(self.root / "gone")
+            with self.assertRaises(server.side_questions.SideQuestionError):
+                await handle.ask("Question: why?", history=[])
+        self.assertEqual([path.name for path in directory.iterdir()], ["native-cursor"])
 
     async def test_legacy_and_opt_in_picker(self):
         self.assertEqual((await server.get_local_sessions(limit=100))["sessions"], [])

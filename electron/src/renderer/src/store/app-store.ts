@@ -780,6 +780,11 @@ export const useAppStore = create<AppState>((set, get) => ({
           } } }))
         }
         if (!visibleChatSessionIds(current.chatPanes).includes(payload.sessionId)) return
+        // The stream does not replay a comment side chat's notice sent while it was down, so the open Canvas
+        // refreshes when it is live again. Only then: 'live' is also sent again on every background refresh.
+        if (payload.state === 'live' && current.syncBySession[payload.sessionId]?.status !== 'live') {
+          window.dispatchEvent(new CustomEvent('agentsdock:canvases-changed', { detail: { sessionId: payload.sessionId } }))
+        }
         const compatible = healthIsCompatible(current.health)
         const websocketUnavailable = current.health?.websocket_runtime === false
         const websocketError = websocketUnavailable ? WEBSOCKET_RUNTIME_ERROR : null
@@ -1068,6 +1073,11 @@ export const useAppStore = create<AppState>((set, get) => ({
           typeof payload.activeSession === 'boolean'
             ? { active: payload.activeSession, runId: payload.activeRunId }
             : undefined)
+      }),
+      // A Canvas question answered in its thread's side chat starts and ends no turn, so the open Canvas refreshes on this event.
+      window.agentsDock.events.on('canvas-comments:changed', payload => {
+        if (!profileEventMatches(payload, get())) return
+        window.dispatchEvent(new CustomEvent('agentsdock:canvases-changed', { detail: { sessionId: payload.sessionId } }))
       }),
       window.agentsDock.events.on('server:reasoning-stream', payload => {
         if (!profileEventMatches(payload, get())) return

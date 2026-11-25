@@ -285,9 +285,17 @@ def save_source(path: Path, source: str, base_revision: int) -> None:
 # ---------------------------------------------------------------- comments
 #
 # A thread is anchored to one element of the rendered canvas and holds the
-# user's messages. Each message starts an ordinary chat turn; its reply is the
-# turn's final answer, read back from the chat's event log by run id (or by
-# queued id until a queued turn starts) and stored once the turn is over.
+# user's messages. By default each message starts an ordinary chat turn; its
+# reply is the turn's final answer, read back from the chat's event log by run
+# id (or by queued id until a queued turn starts) and stored once the turn is
+# over.
+#
+# A question from a client that sends `side_chat: true` is answered in the
+# thread's own side chat instead: a copy of the chat as it stands answers it,
+# the chat gets no turn, and the threads' questions run at the same time. Its
+# reply is read from the side chat's exchange whose request id is the message's
+# id. An edit request stays a chat turn: the copy cannot write on most
+# providers, and the chat would not see an edit made beside it.
 
 def read_comments(path: Path) -> list[dict[str, Any]]:
     try:
@@ -380,6 +388,14 @@ def comment_prompt(path: Path, revision: int, anchor: dict[str, Any], mode: str,
     return "\n".join(lines), display[:4096]
 
 
+def with_earlier_exchanges(prompt: str, exchanges: Iterable[tuple[str, str]]) -> str:
+    """The prompt after its thread's earlier questions and answers, for an agent that has not seen them."""
+    lines: list[str] = []
+    for question, answer in exchanges:
+        lines += ["Earlier question in this comment thread:", question, "", "Its answer:", answer[:MAX_REPLY_CHARS], ""]
+    return "\n".join([*lines, prompt])
+
+
 def resolve_replies(threads: list[dict[str, Any]], events: Any) -> bool:
     """Fill each unfinished message's reply from the chat's events; True when the file should be rewritten."""
     pending = [
@@ -429,6 +445,25 @@ def resolve_replies(threads: list[dict[str, Any]], events: Any) -> bool:
     for message in by_queue.values():
         message["reply"] = {"status": "queued"}
     return changed
+
+
+def side_chat_reply(exchange: dict[str, Any] | None) -> dict[str, Any]:
+    """A comment message's reply, from its exchange in the thread's side chat."""
+    if exchange is None:
+        # load-bearing: side chat state deleted beside the comments file would leave the message running forever.
+        return {"status": "failed", "text": "The side chat that was answering this is gone. Ask again.",
+                "finished_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    status = exchange["status"]
+    if status == "running":
+        return {"status": "running"}
+    finished_at = exchange.get("updated_at")
+    if status == "completed":
+        return {"status": "done", "text": str(exchange.get("answer") or "")[:MAX_REPLY_CHARS], "finished_at": finished_at}
+    if status in ("cancelled", "interrupted"):
+        # Interrupted: the server stopped while the side chat was answering.
+        return {"status": "cancelled" if status == "cancelled" else "stopped", "text": "", "finished_at": finished_at}
+    return {"status": "failed", "text": f"The side chat did not answer ({exchange.get('error') or status}). Ask again.",
+            "finished_at": finished_at}
 
 
 def build(path: Path) -> dict[str, Any]:
@@ -516,11 +551,19 @@ def register_canvas_routes(
     session_exists: Callable[[str], bool],
     session_events: Callable[[str], Iterable[dict[str, Any]]],
     start_turn: Callable[[str, str, str, list[str]], Awaitable[dict[str, Any]]],
+    side_chats: Any = None,
+    side_chat_available: Callable[[str, str], bool] = lambda session_id, prompt: False,
 ) -> None:
     """``start_turn(session_id, prompt, display_prompt, client_capabilities)`` admits a
-    comment's turn exactly like a composer message and returns its run_id or queued_id."""
+    comment's turn exactly like a composer message and returns its run_id or queued_id.
+
+    ``side_chats`` is the ``side_questions.SyncedSideChats`` holding one side chat per comment
+    thread; ``side_chat_available(session_id, prompt)`` tells whether the chat's provider can
+    answer this prompt in one."""
     from fastapi import Body, Header, HTTPException
     from fastapi.responses import JSONResponse, Response
+
+    from side_questions import SideQuestionError
 
     # Serializes each comments file's read-modify-write within this server.
     comment_locks: dict[str, asyncio.Lock] = {}
@@ -537,23 +580,68 @@ def register_canvas_routes(
             raise HTTPException(status_code=404, detail="comment thread not found")
         return thread
 
-    async def start_comment_turn(session_id: str, path: Path, anchor: dict[str, Any], body: dict[str, Any], *, follow_up: bool) -> dict[str, Any]:
+    async def end_side_chat(session_id: str, thread_id: str) -> None:
+        """Stop the thread's running answer and forget its exchanges."""
+        chat = await side_chats.snapshot(thread_id, session_id)
+        await side_chats.clear(thread_id, session_id, chat["side_chat_id"])
+
+    async def start_comment_reply(session_id: str, path: Path, thread_id: str, anchor: dict[str, Any], body: dict[str, Any],
+                                  *, earlier_messages: list[dict[str, Any]]) -> dict[str, Any]:
+        """Admit the message's reply, in the thread's side chat or as a chat turn."""
         try:
             mode, text, revision = comment_message(body)
         except ValueError as exc:
             raise bad_request(exc) from None
         capabilities = [value for value in body.get("client_capabilities") or [] if isinstance(value, str)][:16]
-        prompt, display_prompt = comment_prompt(path, revision, anchor, mode, text, follow_up=follow_up)
-        started = await start_turn(session_id, prompt, display_prompt, capabilities)
-        return {
+        prompt, display_prompt = comment_prompt(path, revision, anchor, mode, text, follow_up=bool(earlier_messages))
+        message = {
             "id": f"msg_{uuid.uuid4().hex[:12]}",
             "mode": mode,
             "body": text,
             "revision": revision,
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        # `side_chat`: the client refreshes its threads on `canvas_comments_updated`; one that does not
+        # would show the reply only after the chat's next turn.
+        if mode == "ask" and body.get("side_chat") is True and side_chat_available(session_id, prompt):
+            chat = await side_chats.snapshot(thread_id, session_id)
+            try:
+                await side_chats.submit(thread_id, session_id, message["id"], prompt, chat["side_chat_id"], chat["last_request_id"])
+            except SideQuestionError as exc:
+                # 409: the thread's side chat is answering, stopping, or changed since the snapshot.
+                detail = "This thread is still answering. Ask again when its reply is done." if exc.status_code == 409 else str(exc)
+                raise HTTPException(status_code=exc.status_code, detail=detail) from None
+            return {**message, "turn": None, "side_chat": True, "reply": {"status": "running"}}
+        # The chat saw none of the thread's side chat exchanges, except those an earlier turn of the thread was told.
+        unseen: list[tuple[str, str]] = []
+        for item in earlier_messages:
+            if item.get("side_chat") is not True:
+                unseen = []
+            elif (item.get("reply") or {}).get("status") == "done":
+                unseen.append((item["body"], item["reply"]["text"]))
+        started = await start_turn(session_id, with_earlier_exchanges(prompt, unseen), display_prompt, capabilities)
+        return {
+            **message,
             "turn": {"run_id": started.get("run_id"), "queued_id": started.get("queued_id")},
             "reply": {"status": "queued" if started.get("queued") else "running"},
         }
+
+    async def resolve_side_chat_replies(session_id: str, threads: list[dict[str, Any]]) -> bool:
+        """Fill each unfinished side chat message's reply; True when one finished and the file should be rewritten."""
+        changed = False
+        for thread in threads:
+            pending = [message for message in thread.get("messages") or []
+                       if isinstance(message, dict) and message.get("side_chat") is True
+                       and (message.get("reply") or {}).get("status") not in FINAL_REPLY_STATUSES]
+            if not pending:
+                continue
+            chat = await side_chats.snapshot(thread["id"], session_id)
+            exchanges = {exchange["request_id"]: exchange for exchange in chat["exchanges"]}
+            for message in pending:
+                reply = side_chat_reply(exchanges.get(message["id"]))
+                changed = changed or reply["status"] in FINAL_REPLY_STATUSES
+                message["reply"] = reply
+        return changed
 
     def resolve(session_id: str, name: str | None = None) -> tuple[Path, Path | None]:
         if not session_exists(session_id):
@@ -645,7 +733,9 @@ def register_canvas_routes(
         _, path = resolve(session_id, name)
         async with comment_lock(path):
             threads = await asyncio.to_thread(read_comments, path)
-            if await asyncio.to_thread(resolve_replies, threads, session_events(session_id)):
+            turns_changed = await asyncio.to_thread(resolve_replies, threads, session_events(session_id))
+            side_chats_changed = await resolve_side_chat_replies(session_id, threads)
+            if turns_changed or side_chats_changed:
                 await asyncio.to_thread(write_comments, path, threads)
         return {"threads": threads}
 
@@ -656,10 +746,11 @@ def register_canvas_routes(
             anchor = comment_anchor(body.get("anchor"))
         except ValueError as exc:
             raise bad_request(exc) from None
-        # The thread is stored only once its turn was admitted, so a refused turn leaves nothing behind.
-        message = await start_comment_turn(session_id, path, anchor, body, follow_up=False)
+        # The thread is stored only once its turn or side chat question was admitted, so a refused one leaves nothing behind.
+        thread_id = f"cmt_{uuid.uuid4().hex[:12]}"
+        message = await start_comment_reply(session_id, path, thread_id, anchor, body, earlier_messages=[])
         now = message["created_at"]
-        thread = {"id": f"cmt_{uuid.uuid4().hex[:12]}", "anchor": anchor, "status": "open", "created_at": now, "updated_at": now, "messages": [message]}
+        thread = {"id": thread_id, "anchor": anchor, "status": "open", "created_at": now, "updated_at": now, "messages": [message]}
         async with comment_lock(path):
             threads = await asyncio.to_thread(read_comments, path)
             threads.append(thread)
@@ -669,16 +760,25 @@ def register_canvas_routes(
     @app.post("/api/sessions/{session_id}/canvases/{name}/comments/{thread_id}/messages")
     async def reply_session_canvas_comment(session_id: str, name: str, thread_id: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
         _, path = resolve(session_id, name)
-        anchor = find_thread(await asyncio.to_thread(read_comments, path), thread_id).get("anchor") or {}
-        message = await start_comment_turn(session_id, path, comment_anchor(anchor), body, follow_up=True)
+        thread = find_thread(await asyncio.to_thread(read_comments, path), thread_id)
+        # A reply reaches the comments file only when the threads are read: fill one finished since, so an Edit is told it.
+        await resolve_side_chat_replies(session_id, [thread])
+        message = await start_comment_reply(session_id, path, thread_id, comment_anchor(thread.get("anchor") or {}), body,
+                                            earlier_messages=thread.get("messages") or [])
         async with comment_lock(path):
             threads = await asyncio.to_thread(read_comments, path)
-            thread = find_thread(threads, thread_id)
-            thread.setdefault("messages", []).append(message)
-            # Asking again reopens a resolved thread.
-            thread["status"] = "open"
-            thread["updated_at"] = message["created_at"]
-            await asyncio.to_thread(write_comments, path, threads)
+            thread = next((thread for thread in threads if thread.get("id") == thread_id), None)
+            if thread is not None:
+                thread.setdefault("messages", []).append(message)
+                # Asking again reopens a resolved thread.
+                thread["status"] = "open"
+                thread["updated_at"] = message["created_at"]
+                await asyncio.to_thread(write_comments, path, threads)
+        if thread is None:
+            # Deleted while its question was admitted: nobody will read the answer. Outside the lock, as in the delete.
+            if message.get("side_chat") is True:
+                await end_side_chat(session_id, thread_id)
+            raise HTTPException(status_code=404, detail="comment thread not found")
         return {"thread": thread}
 
     @app.patch("/api/sessions/{session_id}/canvases/{name}/comments/{thread_id}")
@@ -700,8 +800,11 @@ def register_canvas_routes(
         _, path = resolve(session_id, name)
         async with comment_lock(path):
             threads = await asyncio.to_thread(read_comments, path)
-            find_thread(threads, thread_id)
+            thread = find_thread(threads, thread_id)
             await asyncio.to_thread(write_comments, path, [thread for thread in threads if thread.get("id") != thread_id])
+        if any(message.get("side_chat") is True for message in thread.get("messages") or []):
+            # After the thread is gone, so no later question is stored in it; outside the lock, as a Codex fork takes seconds to end.
+            await end_side_chat(session_id, thread_id)
         return {"deleted": thread_id}
 
     # No return annotation: with `from __future__ import annotations` the string 'Response'
