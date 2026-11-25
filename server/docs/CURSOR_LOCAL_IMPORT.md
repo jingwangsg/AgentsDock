@@ -43,7 +43,10 @@ Verified private-format adapter for Cursor CLI `2026.09.18-9a7762b`:
    workspace, conversation presence and subagent status.
 2. Read-only `store.db`, `meta` key `0`, hex-encoded JSON: verify `agentId`, read
    `name` and reject `subagentInfo`. No blob table, encryption key or private
-   conversation content is read/decrypted.
+   conversation content is read/decrypted. The one exception outside import is
+   `copy_session`, for a Canvas question: SQLite's backup copies the whole
+   store, blobs undecoded, under a new id, and only the copy's `agentId` is
+   rewritten.
 3. Public JSONL export:
    `<data-root>/projects/<native-workspace-slug>/agent-transcripts/<id>/<id>.jsonl`.
    Data root is `CURSOR_DATA_DIR`, falling back to `~/.cursor`, independently

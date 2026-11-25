@@ -1732,25 +1732,28 @@ describe('AgentServerClient live stream', () => {
     stop()
   })
 
-  it('routes side-chat and provider usage invalidations without advancing durable history', () => {
+  it('routes side-chat, provider usage and Canvas comment invalidations without advancing durable history', () => {
     vi.useFakeTimers()
     vi.spyOn(Math, 'random').mockReturnValue(0)
     vi.stubGlobal('WebSocket', FakeWebSocket)
     const received: Event[] = []
-    const changed = vi.fn(), usage = vi.fn()
+    const changed = vi.fn(), usage = vi.fn(), comments = vi.fn()
     const client = new AgentServerClient('http://example.test:7850', 'token')
-    const stop = client.stream('chat', 5, event => received.push(event), () => {}, undefined, undefined, undefined, changed, usage)
+    const stop = client.stream('chat', 5, event => received.push(event), () => {}, undefined, undefined, undefined, changed, usage, comments)
     const socket = FakeWebSocket.instances[0]
     socket.emit('message', JSON.stringify({ type: 'side_chat_updated', session_id: 'chat', revision: 6, seq: 999 }))
     socket.emit('message', JSON.stringify({ type: 'side_chat_updated', session_id: 'other', revision: 7 }))
     socket.emit('message', JSON.stringify({ type: 'side_chat_updated', session_id: 'chat', revision: -1 }))
     socket.emit('message', JSON.stringify({ type: 'provider_usage_changed', session_id: 'chat', backend: 'claude', seq: 998 }))
     socket.emit('message', JSON.stringify({ type: 'provider_usage_changed', session_id: 'other', backend: 'codex' }))
+    socket.emit('message', JSON.stringify({ type: 'canvas_comments_updated', session_id: 'chat', seq: 997 }))
+    socket.emit('message', JSON.stringify({ type: 'canvas_comments_updated', session_id: 'other' }))
     socket.emit('message', JSON.stringify({ id: 'e6', session_id: 'chat', seq: 6, type: 'assistant_text', ts: 'now' }))
     socket.emit('close')
     vi.advanceTimersByTime(500)
     expect(changed).toHaveBeenCalledExactlyOnceWith(6)
     expect(usage).toHaveBeenCalledExactlyOnceWith('claude')
+    expect(comments).toHaveBeenCalledOnce()
     expect(received).toHaveLength(1)
     expect(String(FakeWebSocket.instances[1].url)).toContain('after=6')
     stop()

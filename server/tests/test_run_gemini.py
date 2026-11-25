@@ -6,8 +6,9 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import agent_server as server
@@ -38,6 +39,16 @@ if mode in ('failure', 'bad-stream'):
     else:
         print('SECRET-BAD-STREAM', flush=True)
     sys.exit(1)
+if mode == 'copy':
+    # A resumed copy answers with what its own records and argv say.
+    project = Path(os.environ.get('GEMINI_CLI_HOME') or os.environ['HOME']) / '.gemini/tmp/workspace'
+    (copy,) = [path for path in (project / 'chats').iterdir() if path.name.endswith('-' + session[:8] + '.jsonl')]
+    header, question = [json.loads(line) for line in copy.read_text().splitlines()]
+    (project / 'tool-outputs' / ('session-' + session)).mkdir(parents=True)
+    emit(type='message', role='assistant', delta=True, content=json.dumps(
+        [header['sessionId'] == session, question['id'], sys.argv[sys.argv.index('--approval-mode') + 1], '--include-directories' in sys.argv]))
+    emit(type='result', status='success', stats={'total_tokens':1, 'input_tokens':1, 'output_tokens':0, 'cached':0})
+    sys.exit(0)
 if mode != 'no-history':
     native = Path(os.environ.get('GEMINI_CLI_HOME') or os.environ['HOME']) / '.gemini/tmp/workspace'
     chats = native / 'chats'
@@ -153,6 +164,112 @@ class GeminiRunnerTests(unittest.IsolatedAsyncioTestCase):
         terminal = self.events(run)[-1]
         self.assertEqual((terminal["is_error"], terminal["result_text"]), (False, "A"))
         self.assertTrue(self.session["gemini_session_id"])
+
+    async def test_a_canvas_question_is_answered_in_a_copy_of_the_session_deleted_once_its_answer_returns(self):
+        _, task = self.run_turn("ok")
+        await task
+        project = self.root / "home/.gemini/tmp/workspace"
+        (original,) = (project / "chats").iterdir()
+        before = original.read_bytes()
+        runtime = {"_executable": str(self.script), "_gemini_models": [gemini.DEFAULT_MODEL]}
+        with patch.object(server, "ensure_runtime_available", AsyncMock(return_value=runtime)):
+            answer = await server.CopiedSessionSideChat(self.sid).ask("copy", history=[])
+            # The copy carried the session's records under its own id, and the CLI ran without write tools.
+            self.assertEqual(json.loads(answer["answer"]), [True, "user-turn", "default", True])
+            self.assertEqual(answer["backend"], "gemini")
+            # Nothing of the copy is left, and the chat's session was only read.
+            self.assertEqual(list((project / "chats").iterdir()), [original])
+            self.assertEqual(list((project / "tool-outputs").iterdir()), [])
+            self.assertEqual(original.read_bytes(), before)
+            with self.assertRaises(server.side_questions.SideQuestionError) as failed:
+                await server.CopiedSessionSideChat(self.sid).ask("failure", history=[])
+        self.assertEqual(failed.exception.status_code, 503)
+        self.assertEqual(list((project / "chats").iterdir()), [original])
+
+    async def test_a_question_stopped_while_its_session_is_copied_leaves_no_copy(self):
+        _, task = self.run_turn("ok")
+        await task
+        chats = self.root / "home/.gemini/tmp/workspace/chats"
+        copied, release = threading.Event(), threading.Event()
+        copy_session = server.gemini_history.copy_session
+
+        def slow_copy(session, copy_id):
+            paths = copy_session(session, copy_id)
+            copied.set()
+            release.wait(5)
+            return paths
+
+        runtime = {"_executable": str(self.script), "_gemini_models": [gemini.DEFAULT_MODEL]}
+        with patch.object(server, "ensure_runtime_available", AsyncMock(return_value=runtime)), \
+                patch.object(server.gemini_history, "copy_session", slow_copy):
+            asking = asyncio.create_task(server.CopiedSessionSideChat(self.sid).ask("copy", history=[]))
+            await asyncio.to_thread(copied.wait, 5)
+            self.assertEqual(len(list(chats.iterdir())), 2)
+            # The worker thread still holds the copy when the question is stopped.
+            asking.cancel()
+            await asyncio.gather(asking, return_exceptions=True)
+            release.set()
+            for _ in range(500):
+                if len(list(chats.iterdir())) == 1:
+                    break
+                await asyncio.sleep(0.01)
+        self.assertEqual(len(list(chats.iterdir())), 1)
+
+    async def test_a_native_side_chat_gets_the_threads_earlier_exchanges_where_it_does_not_replay_them(self):
+        asked = []
+
+        class Native:
+            async def ask(self, question, *, history, on_step=None):
+                asked.append((question, history))
+                return {"answer": "A"}
+
+            async def close(self):
+                pass
+
+        history = [{"question": "Question: why?", "response": "Because."}]
+        with patch.object(server, "create_native_side_chat", AsyncMock(return_value=Native())) as native:
+            for backend in ("claude", "codex"):
+                with patch.dict(server.STORE.sessions, {"probe": {"backend": backend}}):
+                    # The store's saved state and `durable` are not passed on: a Codex fork stays ephemeral.
+                    handle = await server.create_canvas_comment_side_chat("probe", persisted_state={"old": 1}, persist_state=None, durable=True)
+                    await handle.ask("Question: and then?", history=history)
+            self.assertEqual([call.kwargs for call in native.await_args_list], [{}, {}])
+        # Claude's /btw replays the exchanges itself.
+        self.assertEqual(asked[0], ("Question: and then?", history))
+        self.assertEqual(asked[1], ("Earlier question in this comment thread:\nQuestion: why?\n\nIts answer:\nBecause.\n\nQuestion: and then?", []))
+
+    def test_a_copied_session_leaves_out_a_record_still_being_appended_and_renames_only_the_session(self):
+        native_id, copy_id = str(uuid4()), str(uuid4())
+        chats = self.root / "chats"
+        chats.mkdir()
+        path = chats / f"session-test-{native_id[:8]}.jsonl"
+        records = [{"sessionId": native_id, "kind": "main"}, {"id": "a", "type": "user", "content": "about " + native_id},
+                   {"$set": {"sessionId": native_id, "lastUpdated": "t"}}]
+        path.write_text("".join(json.dumps(row) + "\n" for row in records) + '{"id": "b", "type": "gem')
+        copy, *_ = server.gemini_history.copy_session(server.gemini_history.Session(native_id, str(self.root), path, 0, 0), copy_id)
+        copied = [json.loads(line) for line in copy.read_text().splitlines()]
+        self.assertEqual(copy.name, f"session-copy-{copy_id[:8]}.jsonl")
+        self.assertEqual(copied, [{"sessionId": copy_id, "kind": "main"}, records[1], {"$set": {"sessionId": copy_id, "lastUpdated": "t"}}])
+
+    def test_a_canvas_question_gets_a_side_chat_only_where_a_copy_of_the_chat_can_answer(self):
+        def available(session, prompt="why?"):
+            with patch.dict(server.STORE.sessions, {"probe": session}):
+                return server.canvas_comment_side_chat_available("probe", prompt)
+
+        with patch.object(server, "CLAUDE_TRANSPORT", server.CLAUDE_TRANSPORT_AGENT_SDK), \
+                patch.object(server, "claude_sdk_dependency_available", return_value=True):
+            for backend, native in (("codex", "codex_thread_id"), ("claude", "claude_session_id"),
+                                    ("gemini", "gemini_session_id"), ("cursor", "cursor_session_id")):
+                with self.subTest(backend=backend):
+                    self.assertTrue(available({"backend": backend, native: "native-1"}))
+                    # Nothing to copy before the chat's native conversation starts.
+                    self.assertFalse(available({"backend": backend}))
+            self.assertFalse(available({"backend": "opencode", "opencode_session_id": "native-1"}))
+            limit = server.side_questions.MAX_QUESTION_CHARS
+            self.assertFalse(available({"backend": "claude", "claude_session_id": "native-1"}, "x" * (limit + 1)))
+            self.assertTrue(available({"backend": "gemini", "gemini_session_id": "native-1"}, "x" * (limit + 1)))
+            with patch.object(server, "CLAUDE_TRANSPORT", server.CLAUDE_TRANSPORT_PRINT):
+                self.assertFalse(available({"backend": "claude", "claude_session_id": "native-1"}))
 
     async def test_canvas_contract_is_scoped_to_the_chat_and_kept_out_of_imported_prompts(self):
         run, task = self.run_turn("Create a Canvas")

@@ -3395,6 +3395,29 @@ describe('selected live timeline', () => {
     }
   })
 
+  it('refreshes the open Canvas when a comment side chat changes or the chat stream reconnects', async () => {
+    const handlers = await initializeLiveEventHandlers()
+    const refreshed: string[] = []
+    const listener: EventListener = event => refreshed.push((event as CustomEvent<{ sessionId: string }>).detail.sessionId)
+    window.addEventListener('agentsdock:canvases-changed', listener)
+    try {
+      handlers.get('canvas-comments:changed')?.({ profileId: null, profileGeneration: 0, sessionId: 'chat-a' })
+      handlers.get('canvas-comments:changed')?.({ profileId: 'another-profile', profileGeneration: 0, sessionId: 'chat-b' })
+      expect(refreshed).toEqual(['chat-a'])
+      // A notice sent while the chat's stream was down is not replayed: the reconnect refreshes too.
+      // 'live' sent again by a background refresh does not.
+      const sync = (state: string) => handlers.get('server:sync')?.({ profileId: null, profileGeneration: 0, sessionId: 'chat-a', state })
+      sync('live')
+      sync('live')
+      expect(refreshed).toEqual(['chat-a', 'chat-a'])
+      sync('reconnecting')
+      sync('live')
+      expect(refreshed).toEqual(['chat-a', 'chat-a', 'chat-a'])
+    } finally {
+      window.removeEventListener('agentsdock:canvases-changed', listener)
+    }
+  })
+
   it('sends the same text again with a new request id once the lost send is seen to have run', async () => {
     const handlers = await initializeLiveEventHandlers()
     const send = vi.fn()

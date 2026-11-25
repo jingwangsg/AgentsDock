@@ -2463,7 +2463,8 @@ export class AgentServerClient {
     onPinnedItemsChanged?: (event: TimelinePinsChanged) => void,
     onReasoningStream?: (snapshot: ReasoningSummaryStreamSnapshot) => void,
     onSideChatChanged?: (revision: number) => void,
-    onProviderUsageChanged?: (backend: 'codex' | 'claude') => void
+    onProviderUsageChanged?: (backend: 'codex' | 'claude') => void,
+    onCanvasCommentsChanged?: () => void
   ): () => void {
     const configuration = this.configuration
     const endpoint = new URL(configurationURL(configuration, `/api/sessions/${encodeURIComponent(sessionId)}/events`))
@@ -2518,6 +2519,10 @@ export class AgentServerClient {
           if (packet && typeof packet === 'object' && 'type' in packet && packet.type === 'provider_usage_changed') {
             const notice = packet as { session_id?: string; backend?: string }
             if (notice.session_id === sessionId && (notice.backend === 'codex' || notice.backend === 'claude')) onProviderUsageChanged?.(notice.backend)
+            return
+          }
+          if (packet && typeof packet === 'object' && 'type' in packet && packet.type === 'canvas_comments_updated') {
+            if ((packet as { session_id?: string }).session_id === sessionId) onCanvasCommentsChanged?.()
             return
           }
           if (isProviderRuntimeChanged(packet)) {

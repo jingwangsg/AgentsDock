@@ -1,5 +1,11 @@
 # Public development log
 
+## 2026-11-25 — Answer Canvas questions in per-thread side chats
+
+- An Ask comment sent from the desktop Canvas no longer starts a turn in the chat. Each comment thread has its own side chat, and each question is answered by a copy of the chat as it stands: a native fork on Codex, a native side question on Claude, and a copy of the native session resumed without write tools on Gemini and Cursor. The questions of several threads are answered at the same time, including while the chat runs a turn. A thread takes one question at a time, a follow-up is told the thread's earlier questions and answers, and deleting a thread stops its running answer. Claude's side question has no tools, so it answers from the conversation without reading the Canvas file.
+- Edit comments, OpenCode chats, chats whose provider conversation has not started, and comments sent from mobile still start a turn; an Edit in a thread tells the chat the thread's side chat exchanges first. A phone showing a thread asked from the desktop shows its reply after its next refresh.
+- Verified in the built desktop app against an isolated server with live Codex, Claude, Gemini and Cursor chats. Two questions asked through the Canvas pane showed as working at the same time and were answered from the chat's context; the chat received no turn. Through the server API on each provider, a turn running in the chat finished unaffected, a follow-up's answer quoted its thread's previous question, a second question in a thread that was still answering was refused, and deleting a thread during its answer left no side chat process and no session copy. Mobile is unchanged and was not exercised.
+
 ## 2026-11-25 — Skip a configured cluster home the ssh user cannot write
 
 - A default deploy to a cluster took the first configured home that existed on the host. On a cluster whose image holds that path as a root-owned directory, the upload failed with "mkdir: cannot create directory …: Permission denied". The probe now takes the first home the ssh user can write, so the deploy uses the next configured home. An existing install is still taken first. The log line reads "<home> is missing or not writable on <host>; installing in <directory>."

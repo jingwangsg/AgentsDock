@@ -4115,6 +4115,9 @@ export class AppService {
       if (!this.isCurrentTimeline(scope, sessionId, lease)) return
       this.emit('provider-usage:changed', { profileId: scope.profileId, profileGeneration: scope.generation, sessionId, backend,
         serverIdentity: this.settings.getProfile(scope.profileId)?.serverIdentity ?? null })
+    }, () => {
+      if (!this.isCurrentTimeline(scope, sessionId, lease)) return
+      this.emit('canvas-comments:changed', { profileId: scope.profileId, profileGeneration: scope.generation, sessionId })
     })
     const current = this.timelineSubscriptions.get(sessionId)
     if (current?.lease === lease) current.stop = stop

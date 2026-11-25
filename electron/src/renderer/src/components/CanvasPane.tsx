@@ -409,10 +409,11 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
   const commentInput = (mode: CanvasCommentMode, body: string) => ({
     mode, body, revision: record?.revision ?? 0,
     // Same capabilities as a composer message, so the comment's turn uses the same transport.
-    client_capabilities: interactiveClientCapabilities(session, useAppStore.getState().health)
+    client_capabilities: interactiveClientCapabilities(session, useAppStore.getState().health),
+    side_chat: true as const
   })
 
-  /** Ask answers in the chat and leaves the canvas alone; Edit asks the agent to change it. */
+  /** Ask answers in the thread and leaves the canvas alone; Edit asks the agent to change it. */
   const submitComment = async (mode: CanvasCommentMode) => {
     if (!record || !selection?.length || !feedback.trim()) return
     const body = feedback.trim()
