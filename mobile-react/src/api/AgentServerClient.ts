@@ -213,6 +213,7 @@ export interface TimelineStreamHandlers {
   onProviderRuntime?: (event: ProviderRuntimeChanged) => void
   onProviderUsage?: (backend: UsageBackend) => void
   onSideChatChanged?: (revision: number) => void
+  onCanvasCommentsChanged?: () => void
 }
 
 interface ClientConfiguration {
@@ -1208,7 +1209,7 @@ export class AgentServerClient {
   }
 
   stream(sessionId: string, after: number, handlers: TimelineStreamHandlers): () => void {
-    const { onEvent, onState, onProviderRuntime, onProviderUsage, onSideChatChanged } = handlers
+    const { onEvent, onState, onProviderRuntime, onProviderUsage, onSideChatChanged, onCanvasCommentsChanged } = handlers
     const scope = this.captureScope()
     const endpoint = new URL(buildURL(scope.configuration.baseURL, `/api/sessions/${encodeURIComponent(sessionId)}/events`))
     endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -1301,6 +1302,10 @@ export class AgentServerClient {
           }
           if (isSideChatUpdated(packet)) {
             if (packet.session_id === sessionId) onSideChatChanged?.(packet.revision)
+            return
+          }
+          if (isCanvasCommentsUpdated(packet)) {
+            if (packet.session_id === sessionId) onCanvasCommentsChanged?.()
             return
           }
           const event = packet as Event
@@ -1735,6 +1740,12 @@ function isSideChatUpdated(value: unknown): value is { type: 'side_chat_updated'
   const packet = value as Record<string, unknown>
   return packet.type === 'side_chat_updated' && typeof packet.session_id === 'string'
     && Number.isSafeInteger(packet.revision) && (packet.revision as number) >= 0
+}
+
+function isCanvasCommentsUpdated(value: unknown): value is { type: 'canvas_comments_updated'; session_id: string } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const packet = value as Record<string, unknown>
+  return packet.type === 'canvas_comments_updated' && typeof packet.session_id === 'string'
 }
 
 function websocketCloseDetail(

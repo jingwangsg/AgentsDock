@@ -1580,12 +1580,12 @@ export interface CanvasCommentAnchor {
   html: string
 }
 
-/** 'ask' is answered in the chat without touching the canvas; 'edit' asks the agent to change it. */
+/** 'ask' is answered without touching the canvas, in the thread's side chat or a chat turn; 'edit' asks the agent to change it. */
 export type CanvasCommentMode = 'ask' | 'edit'
 
 export interface CanvasCommentReply {
   status: 'queued' | 'running' | 'done' | 'failed' | 'stopped' | 'cancelled'
-  /** The turn's final answer once it is over. */
+  /** The final answer of the turn or of the side chat, once it is over. */
   text?: string
   finished_at?: string | null
 }
@@ -1614,6 +1614,8 @@ export interface CanvasCommentInput {
   body: string
   revision: number
   client_capabilities: string[]
+  /** This client refreshes its threads on `canvas_comments_updated`, so the server may answer a question in the thread's side chat. */
+  side_chat: true
 }
 
 export interface HealthCapabilities {

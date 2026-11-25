@@ -16,6 +16,7 @@ const chatScreen = source('src/components/ChatScreen.tsx')
 const panel = source('src/components/ChatOutputsPanel.tsx')
 const collector = source('src/lib/chat-outputs.ts')
 const client = source('src/api/AgentServerClient.ts')
+const store = source('src/store/useAppStore.ts')
 const types = source('src/types.ts')
 
 test('the client exposes the canvas routes with the desktop record types', () => {
@@ -155,6 +156,14 @@ test('comments: pick an element, Ask or Edit it as a stored thread, and pin open
   assert.match(sheet, /thread\.status === 'open' \? \[\{\n\s*id: thread\.id, number: index \+ 1/)
   assert.match(sheet, /injectJavaScript\(canvasCommentPinsScript\(pins, activeThread\)\)/)
   assert.match(sheet, /case 'comment-open':\n\s*setCommentsOpen\(true\)\n\s*setActiveThread\(message\.id\)/)
+  // A question may be answered in its thread's side chat, without a turn: the client says it can follow that,
+  // and reads the threads again on the server's notice or when the chat's stream is live again.
+  assert.match(sheet, /client_capabilities: interactiveClientCapabilities\(session, state\.health\), side_chat: true as const \}/)
+  assert.match(client, /if \(isCanvasCommentsUpdated\(packet\)\) \{\n\s*if \(packet\.session_id === sessionId\) onCanvasCommentsChanged\?\.\(\)/)
+  assert.match(store, /syncStatus: 'live',[\s\S]{0,240}?noticeCanvasComments\(\)/)
+  assert.match(store, /onCanvasCommentsChanged: guarded\(noticeCanvasComments\)/)
+  assert.match(sheet, /const commentNotice = useAppStore\(state => state\.canvasCommentNotices\[sessionId\] \?\? 0\)/)
+  assert.match(sheet, /seenCommentNotice\.current = commentNotice\n\s*void loadComments\(\)/)
   // A turn starting or ending refreshes the threads and reloads a canvas the agent changed.
   assert.match(sheet, /const running = useAppStore\(state => state\.activeSessionIds\.has\(sessionId\)\)/)
   assert.match(sheet, /if \(current && \(current\.revision !== recordLive\.current\?\.revision \|\| error\)\) setReloadToken/, 'a failed check is repeated for the same revision')
