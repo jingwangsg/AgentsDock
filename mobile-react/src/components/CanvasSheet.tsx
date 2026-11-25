@@ -292,6 +292,16 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
       .catch(() => undefined)
   }, [error, loadComments, name, running, sessionId])
 
+  // A question answered in its thread's side chat starts and ends no turn: the threads are read again on the
+  // server's notice, and when the chat's stream is live again after one may have been missed.
+  const commentNotice = useAppStore(state => state.canvasCommentNotices[sessionId] ?? 0)
+  const seenCommentNotice = useRef(commentNotice)
+  useEffect(() => {
+    if (seenCommentNotice.current === commentNotice) return
+    seenCommentNotice.current = commentNotice
+    void loadComments()
+  }, [commentNotice, loadComments])
+
   // Pins for the open threads, numbered like the list; re-injected whenever the page (re)loads.
   const pins = useMemo<CanvasCommentPin[]>(() => threads.flatMap((thread, index) => thread.status === 'open' ? [{
     id: thread.id, number: index + 1, canvasId: thread.anchor.canvas_id, tag: thread.anchor.tag, text: thread.anchor.text, label: canvasAnchorLabel(thread.anchor),
@@ -398,9 +408,9 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
     const state = useAppStore.getState()
     const session = state.sessions.find(value => value.id === sessionId)
     // Same capabilities as a composer message, so the comment's turn uses the same transport.
-    return { mode, body, revision: record?.revision ?? 0, client_capabilities: interactiveClientCapabilities(session, state.health) }
+    return { mode, body, revision: record?.revision ?? 0, client_capabilities: interactiveClientCapabilities(session, state.health), side_chat: true as const }
   }
-  /** Ask answers in the chat and leaves the canvas alone; Edit asks the agent to change it. */
+  /** Ask answers in the thread and leaves the canvas alone; Edit asks the agent to change it. */
   const submitComment = async (mode: CanvasCommentMode) => {
     if (!record || !selection || !commentText.trim()) return
     setCommentBusy(true)
@@ -435,7 +445,7 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
       .then(result => replaceThread(result.thread), caught => setCommentError(errorText(caught)))
   }
   const deleteThread = (thread: CanvasCommentThread) => {
-    Alert.alert('Delete this comment thread?', 'Its messages stay in the chat.', [
+    Alert.alert('Delete this comment thread?', 'A reply still running in the background is stopped; messages sent to the chat stay there.', [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Delete', style: 'destructive', onPress: () => {
         void client.deleteCanvasComment(sessionId, name, thread.id)

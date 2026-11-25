@@ -1,5 +1,10 @@
 # Public development log
 
+## 2026-11-26 — Canvas questions in side chats on mobile
+
+- An Ask comment sent from the mobile Canvas is answered in its thread's side chat, as on desktop, and no longer starts a turn in the chat. The Canvas reads its threads again when the server announces a change and when the chat's stream is live again, so a reply, also to a question asked on another device, appears without reopening the Canvas.
+- Verified on an Android emulator with this JavaScript bundle in the current sideload package, against an isolated server with a live Codex chat. A question asked on the phone showed as working and then its answer without interaction, and the chat received no turn. A question asked from another client appeared on the phone as working after 2 s and with its answer after 8 s. iOS was not run.
+
 ## 2026-11-25 — Answer Canvas questions in per-thread side chats
 
 - An Ask comment sent from the desktop Canvas no longer starts a turn in the chat. Each comment thread has its own side chat, and each question is answered by a copy of the chat as it stands: a native fork on Codex, a native side question on Claude, and a copy of the native session resumed without write tools on Gemini and Cursor. The questions of several threads are answered at the same time, including while the chat runs a turn. A thread takes one question at a time, a follow-up is told the thread's earlier questions and answers, and deleting a thread stops its running answer. Claude's side question has no tools, so it answers from the conversation without reading the Canvas file.

@@ -24,7 +24,7 @@ export function canvasAnchorLabel(anchor: Pick<CanvasCommentAnchor, 'canvas_id' 
 export function CanvasCommentSubmit({ disabled, onSubmit }: { disabled: boolean; onSubmit: (mode: CanvasCommentMode) => void }) {
   const colors = usePalette()
   return <View style={styles.submit}>
-    <Pressable testID="canvas-comment-ask" accessibilityRole="button" accessibilityLabel="Ask" accessibilityHint="The agent answers in the chat and leaves the canvas unchanged" accessibilityState={{ disabled }} disabled={disabled} onPress={() => onSubmit('ask')}
+    <Pressable testID="canvas-comment-ask" accessibilityRole="button" accessibilityLabel="Ask" accessibilityHint="The agent answers under this comment and leaves the canvas unchanged" accessibilityState={{ disabled }} disabled={disabled} onPress={() => onSubmit('ask')}
       style={({ pressed }) => [styles.submitButton, { backgroundColor: colors.raised, opacity: disabled ? 0.4 : pressed ? 0.7 : 1 }]}>
       <Text style={[styles.submitText, { color: colors.text }]}>Ask</Text>
     </Pressable>
@@ -43,7 +43,7 @@ function Reply({ message }: { message: CanvasCommentMessage }) {
   if (reply.status === 'running') return status('The agent is working on it…')
   if (reply.status === 'cancelled') return status('Removed from the queue')
   return <View style={[styles.reply, { borderColor: colors.border }]}>
-    {reply.status !== 'done' ? status(reply.status === 'stopped' ? 'Stopped' : 'The turn failed') : null}
+    {reply.status !== 'done' ? status(reply.status === 'stopped' ? 'Stopped' : 'The reply failed') : null}
     {reply.text ? <MarkdownContent value={reply.text} compact /> : null}
   </View>
 }

@@ -762,6 +762,8 @@ interface AppState {
   workspaceAdopting: boolean
   connected: boolean
   liveConnected: boolean
+  /** Counts, per chat, the times its Canvas comment threads should be read again. */
+  canvasCommentNotices: Record<string, number>
   syncSessionId: string | null
   syncStatus: ChatSyncStatus
   syncError: string | null
@@ -982,6 +984,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   workspaceAdopting: false,
   connected: false,
   liveConnected: false,
+  canvasCommentNotices: {},
   syncSessionId: null,
   syncStatus: 'idle',
   syncError: null,
@@ -6113,6 +6116,9 @@ function startSelectedStream(
     if (!connectionIsCurrent(scope) || generation !== streamGeneration || epoch !== selectionEpoch || get().selectedSessionId !== sessionId) return
     handler(...args)
   }
+  const noticeCanvasComments = () => set(state => ({
+    canvasCommentNotices: { ...state.canvasCommentNotices, [sessionId]: (state.canvasCommentNotices[sessionId] ?? 0) + 1 },
+  }))
   streamStop = scope.client.stream(sessionId, after, {
     onEvent: guarded(event => {
       if (event.session_id !== sessionId) return
@@ -6130,6 +6136,8 @@ function startSelectedStream(
           syncError: null,
           lastTimelineSyncAt: Date.now(),
         })
+        // The stream does not replay a comment side chat's notice sent while it was down.
+        noticeCanvasComments()
       } else if (detail?.fatal) {
         const message = detail.error.message || `Live updates closed (${detail.code}).`
         if (detail.code === 4401) {
@@ -6180,6 +6188,7 @@ function startSelectedStream(
         revision,
       })
     }),
+    onCanvasCommentsChanged: guarded(noticeCanvasComments),
   })
 }
 
