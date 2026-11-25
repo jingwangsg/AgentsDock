@@ -594,7 +594,7 @@ describe('chat references', () => {
     expect(parseStoredChatReferences([marker], text, 'source-chat')).toEqual([marker])
     const claude = { ...marker, new_agent: { ...marker.new_agent, backend: 'claude' as const } }
     expect(parseStoredChatReferences([claude], text, 'source-chat')).toEqual([claude])
-    expect(validChatReferences(text, [{ ...marker, new_agent: { ...marker.new_agent, backend: 'gemini' as Backend } }], 'source-chat')).toEqual([])
+    expect(validChatReferences(text, [{ ...marker, new_agent: { ...marker.new_agent, backend: 'not-a-backend' as Backend } }], 'source-chat')).toEqual([])
     expect(validChatReferences(text, [{ ...marker, new_agent: { ...marker.new_agent, cwd: 42 as unknown as string } }], 'source-chat')).toEqual([])
     expect(validChatReferences(text, [{ ...marker, grant_intent: undefined }], 'source-chat')).toEqual([])
     expect(validChatReferences(text, [{ ...marker, new_agent: undefined }], 'source-chat')).toEqual([])

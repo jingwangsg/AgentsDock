@@ -19,6 +19,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, Field
 import codex_provider
+import gemini_agent_client
 import local_session_ownership
 import server_instances
 from tests import test_codex_subagent_config_isolated as config_fixture
@@ -61,10 +62,10 @@ def make_namespace(root: Path):
         "RUNTIME_DIAGNOSTICS_LOCK": threading.RLock(),
         "SERVER_INSTANCE_ID": "owned-server-instance",
         "existing_codex_app_server_manager": lambda session: None,
-        "HTTPException": HTTPException, "codex_provider": codex_provider,
+        "HTTPException": HTTPException, "codex_provider": codex_provider, "gemini_agent_client": gemini_agent_client,
         "MAX_SESSION_SYSTEM_PROMPT_CHARS": 10000, "DEFAULT_BACKEND": "codex",
         "BACKEND_CODEX": "codex", "BACKEND_CLAUDE": "claude", "BACKEND_CURSOR": "cursor",
-        "BACKEND_OPENCODE": "opencode",
+        "BACKEND_OPENCODE": "opencode", "BACKEND_GEMINI": "gemini",
         "VALID_BACKENDS": {"codex", "claude", "cursor", "opencode"}, "DEFAULT_CWD": str(root),
         "CODEX_TRANSPORT": "app-server", "CODEX_TRANSPORT_EXEC": "exec",
         "CODEX_PROVIDER_STORE": codex_provider.ProviderStore(root / "providers"),
