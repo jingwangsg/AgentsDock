@@ -137,7 +137,7 @@ SKY_LOGIN_ERROR = ("SkyPilot on the hub's machine needs a new login. Click Autho
 # site-specific, so they stay out of the source. Sites mount different storage (an oci@ target can
 # be a SkyPilot cluster on GCP, without OCI's Lustre), so a variable may name several homes,
 # space-separated: a default deploy takes the first that holds the target's install, else the
-# first the host has, else a directory on the host's NFS or Lustre mounts named like the first
+# first the ssh user can write, else a directory on the host's NFS or Lustre mounts named like the first
 # home's last path component, normally the user name (see remote_probe.sh).
 CLUSTER_HOME_ENV = {"oci@": "AGENTSDOCK_OCI_HOME", "osmo@": "AGENTSDOCK_OSMO_HOME"}
 # workflow -> OSMO pool, recorded by osmo_lead_task on every tunnel and deploy query. Pools mount different
@@ -2186,7 +2186,7 @@ class RemoteServerManager:
                     requested_port = 0
                     job.progress("connect", f"Found an existing install at {probe['install_dir']}; deploying there to keep its chats.")
                 else:
-                    job.progress("connect", f"{install_dir.rpartition('/')[0]} does not exist on {ssh_host}; installing in {probe['install_dir']}.")
+                    job.progress("connect", f"{install_dir.rpartition('/')[0]} is missing or not writable on {ssh_host}; installing in {probe['install_dir']}.")
                 # load-bearing: a found directory's path comes from the host's mount table, not from validated
                 # hub input. Unvalidated, it would go unquoted into the upload's shell command, and the registry
                 # would fail to load its whole file.

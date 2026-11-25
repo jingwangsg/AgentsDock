@@ -12,10 +12,11 @@ fi
 # The arguments are candidate install directories, in order: the hub's first choice, then the target's
 # directories in the other configured homes (the earlier install of a workflow whose pool got its own
 # home, and the next homes: not every cluster mounts every configured home). The probe takes the first
-# that holds an install (an env file), so a deploy keeps its chats; else the first whose home exists;
-# else what the search below finds; else the first, whose mkdir then names the missing directory.
+# that holds an install (an env file), so a deploy keeps its chats; else the first whose home the ssh
+# user can write (a cluster image can hold another site's home as a root-owned directory); else what
+# the search below finds; else the first, whose mkdir then names the directory it cannot create.
 # The search is an argument without a leading / or ~, "<name>/<install directory name>", used only
-# when no candidate's home exists (a site whose home the hub's environment does not name yet). It
+# when no candidate was taken above (a site whose home the hub's environment does not name yet). It
 # looks for <name> on the host's NFS and Lustre mounts, as <mount>/<name> or <mount>/<dir>/<name>,
 # where the ssh user can write, in mount-table order: the first that holds the install, else the
 # first that holds a Claude or Codex login (the user's home on that storage), else the first.
@@ -29,7 +30,7 @@ for dir in "$@"; do
     /*|"~"*)
       dir="$(expand "$dir")"
       if [ -z "$HELD" ] && [ -r "$dir/env" ]; then HELD=$index; fi
-      if [ -z "$MOUNTED" ] && [ -d "$(dirname "$dir")" ]; then MOUNTED=$index; fi
+      if [ -z "$MOUNTED" ] && [ -d "$(dirname "$dir")" ] && [ -w "$(dirname "$dir")" ]; then MOUNTED=$index; fi
       ;;
     *) SEARCH=$index; SEARCH_NAME="${dir%/*}"; SEARCH_INSTALL="${dir##*/}" ;;
   esac
@@ -38,8 +39,7 @@ done
 WITH_INSTALL=""
 WITH_LOGIN=""
 WRITABLE=""
-# An install's home exists, so an empty MOUNTED also means no candidate holds an install.
-if [ -z "$MOUNTED" ] && [ -n "$SEARCH" ]; then
+if [ -z "$HELD" ] && [ -z "$MOUNTED" ] && [ -n "$SEARCH" ]; then
   while read -r _ mount type _; do
     case "$type" in nfs|nfs4|lustre) ;; *) continue ;; esac
     for found in "$mount/$SEARCH_NAME" "$mount"/*/"$SEARCH_NAME"; do

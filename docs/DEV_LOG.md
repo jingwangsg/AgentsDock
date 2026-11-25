@@ -1,5 +1,10 @@
 # Public development log
 
+## 2026-11-25 — Skip a configured cluster home the ssh user cannot write
+
+- A default deploy to a cluster took the first configured home that existed on the host. On a cluster whose image holds that path as a root-owned directory, the upload failed with "mkdir: cannot create directory …: Permission denied". The probe now takes the first home the ssh user can write, so the deploy uses the next configured home. An existing install is still taken first. The log line reads "<home> is missing or not writable on <host>; installing in <directory>."
+- Verified on such a cluster: the previous probe chose the unwritable home and the changed probe chose the next configured home. A default deploy through the hub then installed there, and the server answered through the hub with that home as HOME.
+
 ## 2026-11-25 — Keep completed Gemini turns that wrote a large native session file
 
 - A first Gemini turn whose native session file exceeded 64 MiB, or held a record above 16 MiB, ended with "Gemini CLI completed without saving a resumable session" and lost its final answer and native identity. The saved-session check now reads the whole file, as native resume does, and allows 64 MiB per record.
