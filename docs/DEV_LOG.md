@@ -1,5 +1,10 @@
 # Public development log
 
+## 2026-11-26 — Stop showing a Canvas comment turn twice
+
+- A Canvas comment that starts a chat turn shows in the chat as a short line naming the canvas and the element, while the agent is sent a longer prompt. History sync compared the agent's transcript with the chat by text, found no match, and added the prompt to the chat as a second message. Sync now reads such a transcript record as the line the chat shows.
+- Verified against an isolated server with live Codex and Claude chats: an Edit comment was followed by one imported copy of its turn before the change and by none after it. Copies already in a chat stay there.
+
 ## 2026-11-26 — Canvas questions in side chats on mobile
 
 - An Ask comment sent from the mobile Canvas is answered in its thread's side chat, as on desktop, and no longer starts a turn in the chat. The Canvas reads its threads again when the server announces a change and when the chat's stream is live again, so a reply, also to a question asked on another device, appears without reopening the Canvas.

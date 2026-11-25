@@ -49871,7 +49871,11 @@ def strip_agentsdock_generated_user_text(
         recover_file_ids=False,
     )
     if lineage:
-        return str(lineage[-1].get("prompt") or "")
+        cleaned = str(lineage[-1].get("prompt") or "")
+    if provider_history:
+        # The timeline holds a Canvas comment's turn as its display text: a provider record that is the
+        # comment's prompt must compare equal to it, or history sync imports the turn a second time.
+        cleaned = agentsdock_canvas.comment_display_from_prompt(cleaned) or cleaned
     return cleaned
 
 
