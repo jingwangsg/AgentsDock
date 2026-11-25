@@ -608,7 +608,7 @@ class ManagerGenerationTests(unittest.IsolatedAsyncioTestCase):
             ns = {"asyncio": asyncio, "CODEX_PROVIDER_STORE": store, "codex_provider": provider,
                 "CODEX_APP_SERVER_MANAGER": None, "CODEX_CUSTOM_APP_SERVER_MANAGERS": {},
                 "CODEX_RETIRED_APP_SERVER_MANAGERS": [], "CODEX_SESSION_APP_SERVER_MANAGERS": {},
-                "CODEX_BINARY_IDENTITY": None,
+                "CODEX_BINARY_IDENTITY": None, "HUB_PROVIDER_INSTALL": None,
                 "refresh_codex_app_server_binary": AsyncMock(),
                 "refresh_codex_app_server_login": AsyncMock(), "CODEX_LOGIN_REVISION": None,
                 "retain_codex_manager_caller": Mock(), "schedule_codex_manager_drain": Mock(),
