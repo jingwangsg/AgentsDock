@@ -16,6 +16,13 @@ import sys
 
 LIMIT = 65536
 FAILURE = "Hub provider login is unavailable. Check the hub login and its SSH connection."
+# How long the relay waits for the hub's answer to one line. The hub takes at most 15 s (forward_requests), but
+# the line can wait behind a Gemini request body on the same ssh connection: up to about 2 MiB was queued ahead
+# of it in a throttled loopback test, which is 70 s at 30 KiB/s.
+ANSWER_SECONDS = 120
+# An empty list is not a request. Every hub version answers a line it cannot read as a request with an empty
+# grant, so this line tests whether the hub still answers.
+PROBE = b"[]\n"
 CODEX_CONFIG = {
     "cli_auth_credentials_store": "ephemeral",
     "model_provider": "openai",
@@ -101,7 +108,17 @@ def remote_relay(install):
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
         raise HubLoginError(FAILURE)
     with (path.parent / "lock").open("a") as lock, socket.socket(socket.AF_UNIX) as listener:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            # The holder may be on a connection that died without a close. sshd keeps such a session until
+            # TCP gives up, about two hours with Linux defaults while nothing is sent. This line makes the
+            # holder ask its hub: without an answer it ends, and the hub's next attempt gets the lock.
+            with contextlib.suppress(OSError), socket.socket(socket.AF_UNIX) as holder:
+                holder.settimeout(5)
+                holder.connect(str(path))
+                holder.sendall(PROBE)
+            raise
         challenge = sys.stdin.buffer.readline(128).strip()
         if len(challenge) != 64:
             return
@@ -134,6 +151,9 @@ def remote_relay(install):
                         continue
                     sys.stdout.buffer.write(line)
                     sys.stdout.buffer.flush()
+                    # No answer: the connection to the hub is dead. Waiting on would keep the lock.
+                    if not select.select([sys.stdin.buffer], [], [], ANSWER_SECONDS)[0]:
+                        return
                     reply = sys.stdin.buffer.readline(LIMIT)
                     if not reply.endswith(b"\n"):
                         return
@@ -158,6 +178,7 @@ async def forward_requests(proc, key, issue):
             grant = await asyncio.wait_for(issue(backend, previous, refresh), 15)
         except Exception:
             # Provider exceptions can carry headers or raw auth responses.
+            # load-bearing: every line gets an answer, also PROBE, which is no request. A relay ends without one.
             grant = {}
         proc.stdin.write(json.dumps(grant).encode() + b"\n")
         await proc.stdin.drain()

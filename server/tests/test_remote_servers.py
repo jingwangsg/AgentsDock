@@ -463,6 +463,29 @@ class RemoteServerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             rs.tunnel_args("-oProxyCommand=x", 7851, 7850)
 
+    def test_the_provider_login_relay_ssh_has_the_tunnels_keepalive(self) -> None:
+        # Seen live 2026-11-26: the relay's connection died without a close reaching the hub. ssh waited on
+        # it, and provider login on that remote stayed unavailable until that ssh was ended by hand.
+        async def main() -> list:
+            started = asyncio.Event()
+            argv: list = []
+
+            async def refuse(*args, **kwargs):
+                argv.extend(args)
+                started.set()
+                raise OSError("this test starts no ssh")
+
+            with mock.patch.object(rs.asyncio, "create_subprocess_exec", refuse):
+                serving = asyncio.create_task(rs.Tunnel(make_server(), None)._serve_provider_auth(rs.SSHRoute([], "lab", {})))
+                try:
+                    await asyncio.wait_for(started.wait(), 5)
+                finally:
+                    serving.cancel()
+                    await asyncio.gather(serving, return_exceptions=True)
+            return argv
+
+        assert {"ServerAliveInterval=10", "ServerAliveCountMax=3"} <= set(asyncio.run(main()))
+
     def test_plain_ssh_forward_persists_and_preserves_its_mapping(self) -> None:
         profile = rs.SSHForward(
             id="123456abcdef", name="herorun dashboard", ssh_host="herorun-288g-recovery-e0b3",

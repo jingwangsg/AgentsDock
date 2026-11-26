@@ -1,5 +1,10 @@
 # Public development log
 
+## 2026-11-26 — Recover hub sign-in on a remote after its connection dies silently
+
+- A remote server gets provider sign-in from the hub over a separate SSH connection that the hub opens to it. When that connection died without a close reaching the hub, the hub kept waiting on it, and Codex, Cursor and Gemini on that remote reported "Hub provider login is unavailable" until the hub was restarted or the operating system's TCP keepalive ended the connection, about two hours later. The hub now sends a keepalive on this connection every 10 seconds, as it does for the tunnels, and opens a new connection once three go unanswered.
+- On the remote, a relay process passes sign-in requests to the hub, and one relay runs per installation. A relay left on a dead connection used to keep that place until the remote's own TCP timeout, so the relay of the hub's next connection could not start. A relay now ends when the hub does not answer one of its lines within 120 seconds, and a relay that finds the place taken sends the running one a line to pass to its hub. Measured over a real SSH connection with the remote session frozen: the hub's end closed after 37 seconds, and sign-in worked again through a new relay after 180 seconds. Before, both ends were still waiting after 85 seconds and a second relay failed to start.
+
 ## 2026-11-26 — Stop showing a Canvas comment turn twice
 
 - A Canvas comment that starts a chat turn shows in the chat as a short line naming the canvas and the element, while the agent is sent a longer prompt. History sync compared the agent's transcript with the chat by text, found no match, and added the prompt to the chat as a second message. Sync now reads such a transcript record as the line the chat shows.
