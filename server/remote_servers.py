@@ -1289,7 +1289,13 @@ class Tunnel:
             try:
                 proc = await asyncio.create_subprocess_exec(
                     ssh_binary(), "-T", "-S", control, "-o", "ControlMaster=yes", "-o", "ControlPersist=no",
-                    "-o", "ClearAllForwardings=yes", *route.options, *SSH_BATCH_OPTIONS,
+                    "-o", "ClearAllForwardings=yes",
+                    # This connection is silent between login requests and Gemini traffic. On 2026-11-26 one died
+                    # without a close reaching the hub: the remote's relay had ended, ssh kept waiting, and every
+                    # provider login on that remote failed until this ssh was ended by hand. With the tunnels'
+                    # keepalive, ssh ends within 30 s and this loop starts the relay again.
+                    "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3",
+                    *route.options, *SSH_BATCH_OPTIONS,
                     route.destination, "bash", "-c", shlex.quote(command),
                     env=route.env, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL, start_new_session=True)

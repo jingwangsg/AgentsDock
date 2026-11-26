@@ -70,6 +70,84 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.path.exists())
 
 
+class StaleRelayTests(unittest.IsolatedAsyncioTestCase):
+    """A relay whose connection died without a close must end, or its lock stops the hub's next relay.
+
+    Reproduced 2026-11-26 over ssh with a frozen sshd session. Here the test plays the hub on the relay's
+    stdin and stdout, and a hub that does not answer stands for the dead connection.
+    """
+
+    async def asyncSetUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.install = Path(temp.name)
+        proof = self.install / ".hub-provider-proof"
+        proof.write_text("d" * 64)
+        proof.chmod(0o600)
+        self.path = auth.socket_path(self.install)
+        self.addCleanup(shutil.rmtree, self.path.parent, True)
+
+    async def start_relay(self, answer_seconds=None):
+        # -I as in production: it ignores PYTHONPATH, hence the sys.path line. The relay is its own process,
+        # so its wait for an answer is shortened there.
+        program = ["import sys", "sys.path.insert(0, sys.argv[2])", "import hub_provider_auth as auth"]
+        if answer_seconds is not None:
+            program.append(f"auth.ANSWER_SECONDS = {answer_seconds}")
+        program.append("auth.remote_relay(sys.argv[1])")
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-I", "-c", "\n".join(program), str(self.install), str(Path(auth.__file__).parent),
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        self.addAsyncCleanup(self.end_relay, proc)
+        return proc
+
+    async def end_relay(self, proc):
+        proc.stdin.close()
+        await asyncio.wait_for(proc.wait(), 3)
+
+    async def proof_after_challenge(self, proc):
+        proc.stdin.write(b"c" * 64 + b"\n")
+        await proc.stdin.drain()
+        return await asyncio.wait_for(proc.stdout.readline(), 5)
+
+    async def test_a_relay_ends_when_the_hub_does_not_answer_a_login_request(self):
+        stale = await self.start_relay(answer_seconds=0.3)
+        await self.proof_after_challenge(stale)
+        await wait_until(lambda: self.path.is_socket(), 5)
+        request = asyncio.create_task(asyncio.to_thread(auth.request, self.install, "codex"))
+        self.assertEqual(json.loads(await asyncio.wait_for(stale.stdout.readline(), 5)), ["codex", "", False])
+        with self.assertRaises(auth.HubLoginError):
+            await request
+        self.assertEqual(await asyncio.wait_for(stale.wait(), 5), 0)
+        self.assertFalse(self.path.exists())
+
+    async def test_a_relay_that_finds_the_lock_held_makes_a_stale_holder_end(self):
+        stale = await self.start_relay(answer_seconds=0.3)
+        await self.proof_after_challenge(stale)
+        await wait_until(lambda: self.path.is_socket(), 5)
+        blocked = await self.start_relay()
+        self.assertEqual(await asyncio.wait_for(blocked.wait(), 5), 1)
+        self.assertEqual(await asyncio.wait_for(stale.stdout.readline(), 5), auth.PROBE)
+        # The hub does not answer: the holder ends, and the next relay gets the lock and proves itself.
+        self.assertEqual(await asyncio.wait_for(stale.wait(), 5), 0)
+        proof = await self.proof_after_challenge(await self.start_relay())
+        self.assertEqual(len(proof), 65, "64 hex digits and a newline")
+
+    async def test_a_holder_whose_hub_answers_the_probe_keeps_serving(self):
+        holder = await self.start_relay(answer_seconds=5)
+        issue = AsyncMock(return_value={"accessToken": "token"})
+        forward = asyncio.create_task(auth.forward_requests(holder, "d" * 64, issue))
+        try:
+            await wait_until(lambda: self.path.is_socket(), 5)
+            blocked = await self.start_relay()
+            self.assertEqual(await asyncio.wait_for(blocked.wait(), 5), 1)
+            # The holder takes the probe first. Unanswered, it would end 5 s later and this request would fail.
+            self.assertEqual(await asyncio.to_thread(auth.request, self.install, "cursor"), {"accessToken": "token"})
+            issue.assert_awaited_once_with("cursor", "", False)
+        finally:
+            forward.cancel()
+            await asyncio.gather(forward, return_exceptions=True)
+
+
 class DelegatedLoginTests(unittest.IsolatedAsyncioTestCase):
     async def test_hub_rejects_different_users_in_one_workspace_and_expired_refresh(self):
         old = codex_token()
