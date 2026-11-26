@@ -38,6 +38,75 @@ summary.
    `.canvas.tsx` path. AgentsDock associates the artifact with this chat and
    opens its preview beside it. Do not duplicate the whole report in the chat.
 
+## Overview diagram and navigation
+
+Every Canvas overview must include a diagram. Place it after the motivation and
+before detailed findings. Use named nodes to show the workflow, dependencies,
+or structure of the report. Use arrows for actual flow or dependencies, and
+group parallel work visually.
+
+For a Canvas with subpages, put direct links to the corresponding subpages
+inside each diagram node. Use the title format `Overview node · Project` in
+the subpage heading and wherever its full title appears in navigation. For
+example, the `Planning` node can link to `Dataset`, which opens the page
+`Planning · Dataset`. Use shared node and page IDs to derive these labels and
+destinations from the same data.
+
+During preview, click through the diagram links and verify that each subpage
+opens under the matching node name.
+
+## Paper-style subpages
+
+Only the overview may use an abstract or executive-summary style. Use it to
+orient readers, state the main findings, and point to the relevant subpages.
+Write each technical subpage as a full section of a paper. Develop the
+argument in connected prose, with figures and tables where they support it.
+
+1. **Background and motivation.** Explain the system and prior approach the
+   reader needs to understand, the specific problem or gap, and why it matters.
+2. **Method.** Walk through the proposed or reported approach in execution
+   order. Explain the inputs, outputs, and what each stage does. Connect the
+   design choices to the problem they address.
+3. **Implementation and data.** Describe the details needed to understand
+   how the method works. For a learned system, cover the training data,
+   supervision or objective, and how data moves through training and into
+   evaluation or deployment. For other systems, explain the equivalent data
+   or execution path. Identify missing implementation details where they
+   affect the interpretation.
+4. **Evaluation and findings.** Explain the relevant setup, comparisons, and
+   results in the body. State what the evidence supports and which questions
+   remain open.
+
+Keep the material needed to follow the argument in the subpage body. Put
+longer derivations, full configurations, extra ablations, run inventories,
+and extended source material in a labeled appendix. Link to the appendix
+from the discussion it supports. During review, read each subpage on its own
+and verify that the reader can follow the reasoning from the problem through
+the method and evidence.
+
+## Actual input and output examples
+
+When source records are available, include one actual input and output example
+in the overview and on every subpage. Place it after the method or workflow
+diagram. Write each example so a reader can understand it on that page without
+opening a source file or reading another page.
+
+- Start with the task or question and the relevant starting conditions. Name
+  the object, system, or decision and explain local terms where they appear.
+- Show what the system actually received and returned. Include the relevant
+  records or field values in the page, with labels, units, and a brief
+  explanation of how to read them. For large inputs and outputs, show a real
+  excerpt and say which parts it represents. Keep filenames and identifiers
+  alongside the evidence they identify.
+- Describe the operation between input and output. For a chain such as
+  training followed by evaluation, show what each stage receives and produces.
+  For a measured result, define success, the population tested, and the
+  denominator. Distinguish an output the system returns from a score computed
+  afterward.
+- Give the original record or run reference after the example for verification.
+  If only part of the operation is documented, identify the missing input,
+  output, or stage and show the part supported by the record.
+
 ## Components and design
 
 The SDK includes Markdown, Stack, Row, Grid, H1/H2/H3, Text,
@@ -58,9 +127,9 @@ where a trend or distribution is the finding.
 
 Use `useHostTheme()` for colors: `theme.text.primary`, `theme.text.secondary`,
 `theme.bg.editor`, `theme.stroke.primary`, `theme.accent.primary`,
-`theme.status`, and `theme.category`. Keep the layout a readable document: a
-title, a short summary, numbered sections, the findings stated in prose next to
-their evidence. Avoid decorative gradients, shadows, emojis, oversized
+`theme.status`, and `theme.category`. Use a title and numbered sections to
+make the document easy to navigate. Keep findings in prose next to their
+evidence. Avoid decorative gradients, shadows, emojis, oversized
 standalone numbers and uniformly repeated cards. Every plot needs a specific
 title, axes and units,
 series names, and a source/time-range caption. Explain aggregations such as
