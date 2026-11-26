@@ -25,7 +25,7 @@ import { SideQuestionRequests } from './side-question-requests'
 import { sideChatSyncAvailable, type SyncedSideChat, sideQuestionLimit, sideQuestionsAvailable, validateSideQuestionInput, type SideQuestionAnswer, type SideQuestionCancellation, type SideQuestionInput, type SideQuestionScope } from '../shared/side-questions'
 import { parseBulletinHintRefresh } from '../shared/team-bulletin-hints'
 import {
-  cursorLocalSessionImportSupported,
+  snapshotImportSupported,
   localSessionImportBatchLimit,
   localSessionImportListLimit,
   parseBulkImportSessionItems,
@@ -154,7 +154,7 @@ import type {
   WorkingDirectoryCompletion
 } from '../shared/types'
 import { updateQueuedTurns } from '../shared/queue'
-import { runtimeCatalogHasSelectableModels } from '../shared/runtime-catalog'
+import { geminiBackendSupported, runtimeCatalogHasSelectableModels } from '../shared/runtime-catalog'
 import { incompleteLeadingRunId, isNativeSteerEvent, isNativeSteerTransitionStop } from '../shared/semantic-timeline'
 import { DEFAULT_SERVER_URL, normalizeServerURL } from '../shared/server-url'
 import { isStandaloneTerminalId } from '../shared/terminal'
@@ -1865,7 +1865,7 @@ export class AppService {
   }
 
   /** Server list "Update CLI": updates the selected CLI on any saved server, active or not. */
-  async updateServerRuntimeCli(profileId: string, backend: 'claude' | 'codex' | 'cursor'): Promise<RuntimeCliUpdate> {
+  async updateServerRuntimeCli(profileId: string, backend: 'claude' | 'codex' | 'cursor' | 'gemini'): Promise<RuntimeCliUpdate> {
     // An undefined id would fall back to the active profile in SettingsStore.
     const profile = typeof profileId === 'string' ? this.settings.getProfile(profileId) : undefined
     if (!profile) throw new Error('Unknown server profile.')
@@ -1873,7 +1873,9 @@ export class AppService {
     try {
       // An admin action goes only to the server the profile pinned, as on the active connection.
       const pinned = profile.serverIdentity?.trim()
-      if (pinned && (await client.health()).server_identity?.trim() !== pinned) {
+      const health = pinned || backend === 'gemini' ? await client.health() : null
+      if (backend === 'gemini' && !geminiBackendSupported(health)) throw new Error(t('gemini.unsupportedServer'))
+      if (pinned && health?.server_identity?.trim() !== pinned) {
         throw new Error('This server reports a different identity. Select it once to confirm the change, then update again.')
       }
       return await client.updateRuntimeCli(backend)
@@ -2009,7 +2011,15 @@ export class AppService {
       const updateClis = async (profile: PublicServerProfile, redeployError?: string) => {
         const results = redeployError ? [`redeploy: ${redeployError}`] : []
         let failed = Boolean(redeployError)
-        for (const backend of ['claude', 'codex', 'cursor'] as const) {
+        const backends: ('claude' | 'codex' | 'cursor' | 'gemini')[] = ['claude', 'codex', 'cursor']
+        try {
+          const probe = this.clientFactory(profile.serverUrl, await this.settings.accessTokenForConnectionAsync(profile.id))
+          try { if (geminiBackendSupported(await probe.health())) backends.push('gemini') } finally { probe.dispose() }
+        } catch (error) {
+          failed = true
+          results.push(`Gemini CLI capability: ${errorText(error)}`)
+        }
+        for (const backend of backends) {
           onProgress({ profileId: profile.id, step: backend })
           try {
             results.push((await this.updateServerRuntimeCli(profile.id, backend)).diagnostic.version ?? backend)
@@ -3010,6 +3020,7 @@ export class AppService {
     this.assertCurrentScope(scope)
     this.requirePerChatCodexProvider(input.codex_provider)
     this.requirePerChatSubagentLimit(input.subagent_limit)
+    if (input.backend === 'gemini' && !geminiBackendSupported(this.health)) throw new Error(t('gemini.unsupportedServer'))
     const session = await scope.client.createSession(input)
     this.assertCurrentScope(scope)
     this.upsertSession(scope, session)
@@ -3022,6 +3033,8 @@ export class AppService {
     this.assertCurrentScope(scope)
     this.requirePerChatCodexProvider(input.codex_provider)
     this.requirePerChatSubagentLimit(input.subagent_limit)
+    if (input.backend === 'gemini' && !geminiBackendSupported(this.health)) throw new Error(t('gemini.unsupportedServer'))
+    if (input.backend === 'gemini' && this.health?.capabilities?.gemini_backend?.native_resume !== true) throw new Error(t('gemini.resumeUnsupported'))
     const session = await scope.client.createSession(input)
     this.assertCurrentScope(scope)
     this.upsertSession(scope, session)
@@ -3041,9 +3054,8 @@ export class AppService {
     const scope = this.captureScope()
     await this.ensureValidatedScope(scope)
     const capability = requireLocalSessionImportCapability(this.health)
-    const candidates = cursorLocalSessionImportSupported(this.health)
-      ? await scope.client.listLocalSessions(localSessionImportListLimit(capability), true)
-      : await scope.client.listLocalSessions(localSessionImportListLimit(capability))
+    const candidates = await scope.client.listLocalSessions(localSessionImportListLimit(capability),
+      snapshotImportSupported(this.health, 'cursor'), snapshotImportSupported(this.health, 'gemini'))
     this.assertCurrentScope(scope)
     return candidates
   }
@@ -3053,8 +3065,11 @@ export class AppService {
     await this.ensureValidatedScope(scope)
     const capability = requireLocalSessionImportCapability(this.health)
     const normalized = parseBulkImportSessionItems(items, localSessionImportListLimit(capability))
-    if (normalized.some(item => item.backend === 'cursor') && !cursorLocalSessionImportSupported(this.health)) {
+    if (normalized.some(item => item.backend === 'cursor') && !snapshotImportSupported(this.health, 'cursor')) {
       throw new Error('Cursor Import Chat requires a server with Cursor local import support.')
+    }
+    if (normalized.some(item => item.backend === 'gemini') && !snapshotImportSupported(this.health, 'gemini')) {
+      throw new Error('Gemini Import Chat requires a server with Gemini CLI local import support.')
     }
     const batchLimit = localSessionImportBatchLimit(capability)
     const results: BulkImportSessionResult[] = []
@@ -3107,6 +3122,7 @@ export class AppService {
     const scope = expectedScope ? this.requireWorkspaceScope(expectedScope) : this.captureScope()
     await this.ensureValidatedScope(scope)
     this.assertCurrentScope(scope)
+    if ((patch.backend === 'gemini' || patch.gemini_permission_mode !== undefined) && !geminiBackendSupported(this.health)) throw new Error(t('gemini.unsupportedServer'))
     this.requirePerChatCodexProvider(patch.codex_provider)
     this.requirePerChatSubagentLimit(patch.subagent_limit)
     const session = await scope.client.updateSession(sessionId, patch)
@@ -4099,6 +4115,9 @@ export class AppService {
       if (!this.isCurrentTimeline(scope, sessionId, lease)) return
       this.emit('provider-usage:changed', { profileId: scope.profileId, profileGeneration: scope.generation, sessionId, backend,
         serverIdentity: this.settings.getProfile(scope.profileId)?.serverIdentity ?? null })
+    }, () => {
+      if (!this.isCurrentTimeline(scope, sessionId, lease)) return
+      this.emit('canvas-comments:changed', { profileId: scope.profileId, profileGeneration: scope.generation, sessionId })
     })
     const current = this.timelineSubscriptions.get(sessionId)
     if (current?.lease === lease) current.stop = stop
@@ -6537,6 +6556,10 @@ export class AppService {
       this.cache.recordServerVersion(scope.namespace, serverVersion)
       this.setProfileRuntime(scope.profileId, { serverVersion })
     }
+    // A credential can recover without a server restart. Let the next ordinary
+    // catalog read replace a cached unavailable Gemini entry on that transition.
+    if (health.runtimes?.gemini?.status === 'ready' && this.health?.runtimes?.gemini?.status !== 'ready'
+      && !this.runtimeCatalog?.backends.gemini?.available) this.runtimeRefreshNextAt = 0
     this.health = health
     this.validatedGeneration = scope.generation
     this.onServerReachable?.(scope.profileId, health)
@@ -8289,7 +8312,7 @@ export class AppService {
     if (onScreen || !session || !profile || skipRunChatBanner) return
     this.showProfileNotification({
       title: session.title,
-      body: t(session.backend === 'cursor' ? 'notifications.cursorTurnFinished' : 'notifications.turnFinished'),
+      body: t(session.backend === 'gemini' ? 'notifications.geminiTurnFinished' : session.backend === 'cursor' ? 'notifications.cursorTurnFinished' : 'notifications.turnFinished'),
       profileId: scope.profileId,
       serverIdentity: profile.serverIdentity ?? null,
       sessionId

@@ -10,7 +10,7 @@ test('Fork exposes and enforces the active-turn and pending-message restrictions
   assert.match(inspector, /state\.stoppingSessionIds\.has\(sessionId\)/)
   assert.match(inspector, /Boolean\(state\.turnAdmissionTokens\[sessionId\]\) \|\| state\.sendingSessionIds\.has\(sessionId\)/)
   assert.match(inspector, /state\.snapshots\[sessionId\]\?\.queuedTurns\.some\(turn => state\.pendingQueuedRunIds\.has\(turn\.queued_id\)\)/)
-  assert.match(inspector, /const forkDisabled = !connected \|\| running \|\| stopping \|\| admitting/)
+  assert.match(inspector, /const forkDisabled = session\?\.backend === 'gemini' \|\| !connected \|\| running \|\| stopping \|\| admitting/)
   assert.doesNotMatch(inspector, /state\.queuedRunStatus\[sessionId\]/, 'Historical queue notices must not lock Fork')
   assert.match(inspector, /testID="inspector-fork-chat" disabled=\{forkDisabled\}/)
   assert.match(inspector, /if \(!forkDisabled && scopeIsCurrent\(\)\) void fork\(sessionId, profileGeneration\)/)

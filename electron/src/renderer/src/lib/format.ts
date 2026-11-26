@@ -3,6 +3,7 @@ import { getLocale, t, type Locale } from '@shared/i18n'
 import { runtimeBackendCatalogFor, runtimeEffortOptions } from '@shared/runtime-catalog'
 
 export function backendLabel(backend: Backend, codexProvider?: CodexProvider): string {
+  if (backend === 'gemini') return 'Gemini CLI'
   if (backend === 'codex' && codexProvider === 'custom') return t('codexProvider.label')
   if (backend === 'codex') return 'Codex'
   if (backend === 'cursor') return 'Cursor'
@@ -62,8 +63,8 @@ export function runtimeLabel(session: Session, catalog?: RuntimeCatalog | null):
   const effort = session.backend === 'cursor' || session.backend === 'opencode' ? '' : session.effort?.trim()
   const modelLabel = model
     ? backend?.models.find(option => option.value === model)?.label ?? model
-    : backend?.models.find(option => option.value === (backend.default_model ?? ''))?.label ?? (backend?.default_model?.trim() || (custom ? t('codexProvider.chooseModel') : session.backend === 'claude' ? 'Sonnet' : session.backend === 'codex' ? 'GPT' : session.backend === 'opencode' ? t('opencode.defaultModel') : 'Auto'))
-  const supportedEfforts = custom ? runtimeEffortOptions(catalog, session.backend, session.model, null, session.codex_provider, session.codex_provider_catalog) : null
+    : backend?.models.find(option => option.value === (backend.default_model ?? ''))?.label ?? (backend?.default_model?.trim() || (custom ? t('codexProvider.chooseModel') : session.backend === 'claude' ? 'Sonnet' : session.backend === 'codex' ? 'GPT' : session.backend === 'opencode' ? t('opencode.defaultModel') : session.backend === 'gemini' ? 'Gemini CLI' : 'Auto'))
+  const supportedEfforts = custom || session.backend === 'gemini' ? runtimeEffortOptions(catalog, session.backend, session.model, null, session.codex_provider, session.codex_provider_catalog) : null
   const effortLabel = session.backend === 'cursor' || session.backend === 'opencode'
     ? null
     : effort

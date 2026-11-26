@@ -18,6 +18,7 @@ export function isUntouchedNewChat(session: Session): boolean {
     && !session.session_id
     && !session.claude_session_id
     && !session.codex_thread_id
+    && !session.gemini_session_id
     && !session.cursor_session_id
     && !session.parent_id
     && !session.pinned

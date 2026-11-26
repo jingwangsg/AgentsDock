@@ -4,7 +4,7 @@ import { Pressable, StyleSheet, View } from 'react-native'
 import type { Backend, Event, RuntimeDiagnostic } from '../types'
 import { errorMessage } from '../lib/format'
 import { runtimeDiagnosticFor, runtimeLabel, runtimeNeedsAttention } from '../lib/runtime'
-import { cursorBackendAvailable, cursorBackendSupported, cursorBackendUnavailableReason } from '../lib/runtime-catalog'
+import { geminiBackendSupported, runtimeSelectionError, cursorBackendAvailable, cursorBackendSupported, cursorBackendUnavailableReason } from '../lib/runtime-catalog'
 import { isTimelineError } from '../lib/timeline'
 import { client, useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
@@ -23,11 +23,11 @@ export function RuntimeHealthNotice({ backend, sessionId }: { backend: Backend; 
   const tokenNeeded = backend === 'claude' && diagnostic?.oauth_token_configured !== undefined
     && (((diagnostic.status === 'unknown' || diagnostic.status === 'unauthenticated') && !diagnostic.oauth_token_configured)
       || /authentication_(?:failed|error)|failed to authenticate|not authenticated/i.test(chatError))
-  const unavailable = backend === 'cursor' && !cursorBackendAvailable(health, runtime)
+  const unavailable = backend === 'gemini' ? runtimeSelectionError(health, runtime, backend) : backend === 'cursor' && !cursorBackendAvailable(health, runtime) ? cursorBackendUnavailableReason(health, runtime) : null
   const providerNeedsAttention = unavailable || Boolean(diagnostic && diagnostic.status !== 'ready')
   if (!chatError && !providerNeedsAttention && !tokenNeeded) return null
   return <>
-    <RuntimeRow backend={backend} diagnostic={diagnostic} compact detailOverride={chatError || (unavailable ? cursorBackendUnavailableReason(health, runtime) : null)} onRecheck={() => void refresh()} />
+    <RuntimeRow backend={backend} diagnostic={diagnostic} compact detailOverride={chatError || unavailable} onRecheck={() => void refresh()} />
     {tokenNeeded ? <ClaudeTokenForm onSaved={() => void refresh()} /> : null}
     {backend === 'codex' && CODEX_WRITER_HELD.test(chatError) ? <CodexWriterRelease sessionId={sessionId} /> : null}
   </>
@@ -128,6 +128,7 @@ export function RuntimeHealthPanel() {
     <RuntimeRow backend="claude" diagnostic={runtimeDiagnosticFor(health, runtime, 'claude')} />
     <RuntimeRow backend="codex" diagnostic={runtimeDiagnosticFor(health, runtime, 'codex')} />
     {cursorBackendSupported(health) ? <RuntimeRow backend="cursor" diagnostic={runtimeDiagnosticFor(health, runtime, 'cursor')} /> : null}
+    {geminiBackendSupported(health) ? <RuntimeRow backend="gemini" diagnostic={runtimeDiagnosticFor(health, runtime, 'gemini')} /> : null}
   </View>
 }
 
@@ -136,7 +137,7 @@ function RuntimeRow({ backend, diagnostic, compact = false, detailOverride, onRe
   const tone = diagnostic?.status === 'ready' ? (diagnostic.last_error ? 'warning' : 'ready') : diagnostic?.status === 'unknown' || !diagnostic ? 'unknown' : 'error'
   const color = tone === 'ready' ? colors.green : tone === 'warning' ? colors.orange : tone === 'error' ? colors.red : colors.muted
   const Icon = tone === 'ready' ? CircleCheck : tone === 'warning' ? AlertTriangle : tone === 'error' ? CircleX : CircleHelp
-  const provider = backend === 'claude' ? 'Claude Code' : backend === 'cursor' ? 'Cursor' : 'Codex'
+  const provider = backend === 'gemini' ? 'Gemini CLI' : backend === 'claude' ? 'Claude Code' : backend === 'cursor' ? 'Cursor' : 'Codex'
   const detail = detailOverride || diagnostic?.last_error || diagnostic?.message || `${provider} has not been checked yet.`
   return <View accessibilityRole={tone === 'error' ? 'alert' : 'text'} style={[styles.row, compact && styles.compact, { borderColor: tone === 'error' || tone === 'warning' ? color : colors.border, backgroundColor: colors.surface }]}>
     <Icon size={compact ? 15 : 17} color={color} />

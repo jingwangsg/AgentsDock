@@ -9,16 +9,12 @@ function source(relativePath) {
 
 const composer = source('src/components/Composer.tsx')
 const sheet = source('src/components/ComposerRuntimeSheet.tsx')
-const chip = source('src/lib/runtime-chip.ts')
 
 test('the toolbar shows one Model · Reasoning chip right of the provider control', () => {
   assert.match(composer, /\{runtimeControl\}\s+\{runtimeChip\}\s+\{!welcome \? quickMessageControl : null\}/)
   assert.match(composer, /testID="chat-runtime-chip"[\s\S]*?accessibilityLabel="Model and reasoning"[\s\S]*?onPress=\{\(\) => openRuntimeSheet\('model'\)\}/)
   // Same typography as the provider name, plus the desktop chevron.
   assert.match(composer, /<Text style=\{\[styles\.backend, \{ color: colors\.text \}\]\} numberOfLines=\{1\}>\{runtimeChipLabel\(runtime, backend, model, effort\)\}<\/Text>\s+<ChevronDown size=\{13\} color=\{colors\.muted\} \/>/)
-  assert.match(chip, /return `\$\{modelLabel\} · \$\{effortLabel\}`/)
-  assert.match(chip, /if \(!selectedEffort\) return modelLabel/)
-  assert.match(chip, /'Server model'/)
   // The provider control keeps backend switching and reload; model/effort left its native menu.
   assert.match(composer, /id: 'switch-backend'/)
   assert.match(composer, /id: 'reload-provider'/)
@@ -30,7 +26,7 @@ test('the chip opens a full-screen sheet with Model and Reasoning sections like 
   assert.match(sheet, /<SheetCloseButton testID="composer-runtime-sheet-close" label="Close model and reasoning" onPress=\{onClose\} \/>/)
   assert.match(sheet, />Model<\/Text>/)
   assert.match(sheet, />Reasoning<\/Text>/)
-  assert.match(sheet, /const hasEfforts = efforts\.some\(option => Boolean\(option\.value\)\)/)
+  assert.match(sheet, /const hasEfforts = efforts\.some\(option => option\.value !== \(effort \?\? ''\)\)/)
   // Rows: label, muted description (or lock reason), check on the current value, locked rows disabled.
   assert.match(sheet, /const detail = locked \? option\.locked_reason\?\.trim\(\) : option\.description\?\.trim\(\)/)
   assert.match(sheet, /accessibilityState=\{\{ selected, disabled: locked \}\}/)

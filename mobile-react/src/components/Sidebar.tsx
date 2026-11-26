@@ -11,7 +11,7 @@ import type { Backend, Session, Surface, SurfaceKind, TimelineSearchResult } fro
 import { backendLabel, formatChatDateTime, isUnread, runtimeSummary } from '../lib/format'
 import { sidebarVisibleSessions, compareSessions, orderedSessionSections, resolveSidebarDrop, sessionSection, sharesFolderOrder, sidebarFolderOrder } from '../lib/session-order'
 import { folderIsWithin, folderOrderAfterRename, folderOwnName, folderParent, folderPath, folderPathIn, folderSegments, renamedFolder, reorderFolderList } from '../lib/folders'
-import { readyChatBackends } from '../lib/runtime-catalog'
+import { geminiBackendSupported, readyChatBackends, runtimeSelectionError } from '../lib/runtime-catalog'
 import { promptSurfaceRename, surfaceSubline, surfaceTitle } from '../lib/surfaces'
 import { useTerminalStatus } from '../lib/terminalStatus'
 import { sessionNeedsProviderInteraction, sessionPendingInteractionCount } from '../lib/claude-controls'
@@ -285,6 +285,7 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
   // Pinned is a virtual section, not a folder.
   const folders = useMemo(() => sidebarFolderOrder(sessions, folderOrder), [folderOrder, sessions])
   const chatBackends = useMemo(() => readyChatBackends(health, runtime), [health, runtime])
+  const geminiError = geminiBackendSupported(health) ? runtimeSelectionError(health, runtime, 'gemini') : null
   // New folder at the top level, or New Subfolder in `parent`.
   const createFolder = (parent: string | null) => {
     const scope = profileScope
@@ -552,6 +553,7 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
           profileScope={profileScope}
           collapsed={collapsed.has(item.folder)}
           backends={chatBackends}
+          geminiError={geminiError}
           folders={folders}
           canMoveUp={Boolean(folderNeighbor(item.folder, 'up'))}
           canMoveDown={Boolean(folderNeighbor(item.folder, 'down'))}
@@ -640,12 +642,13 @@ function folderStatusKinds(sessions: Session[], active: ReadonlySet<string>): Fo
 }
 const FOLDER_STATUS_LABEL: Record<FolderStatusKind, string> = { waiting: 'waiting for you', running: 'agent running', unread: 'unread messages' }
 
-function FolderHeader({ item, status, profileScope, collapsed, backends, folders, canMoveUp, canMoveDown, onDismissKeyboard, onLift, onToggle, onMove, onNewChat, onNewSurface, onNewSubfolder, onRename, onMoveTo, onDelete }: {
+function FolderHeader({ item, status, profileScope, collapsed, backends, geminiError, folders, canMoveUp, canMoveDown, onDismissKeyboard, onLift, onToggle, onMove, onNewChat, onNewSurface, onNewSubfolder, onRename, onMoveTo, onDelete }: {
   item: Extract<Row, { kind: 'header' }>
   status: FolderStatusKind[]
   profileScope: ProfileScope
   collapsed: boolean
   backends: Backend[]
+  geminiError: string | null
   folders: string[]
   canMoveUp: boolean
   canMoveDown: boolean
@@ -669,6 +672,7 @@ function FolderHeader({ item, status, profileScope, collapsed, backends, folders
     if (!profileScopeIsCurrent(profileScope)) return
     const backend = backends.find(value => id === `new:${value}`)
     if (backend) onNewChat(backend)
+    else if (id === 'gemini-unavailable' && geminiError) Alert.alert(backendLabel('gemini'), geminiError)
     else if (id === 'new-terminal') onNewSurface('terminal')
     else if (id === 'new-browser') onNewSurface('browser')
     else if (id === 'new-subfolder') onNewSubfolder()
@@ -685,6 +689,7 @@ function FolderHeader({ item, status, profileScope, collapsed, backends, folders
   // Move is hidden at the edges, not disabled.
   const actions: MenuAction[] = [
     ...backends.map(backend => ({ id: `new:${backend}`, title: `New ${backendLabel(backend)} chat`, image: 'plus' } satisfies MenuAction)),
+    ...(geminiError ? [{ id: 'gemini-unavailable', title: `New ${backendLabel('gemini')} chat · Unavailable`, image: 'plus' } satisfies MenuAction] : []),
     { id: 'new-terminal', title: 'New Terminal', image: 'terminal' },
     { id: 'new-browser', title: 'New Browser', image: 'globe' },
     { id: 'new-subfolder', title: 'New Subfolder', image: 'folder.badge.plus' },
@@ -809,7 +814,7 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
     { id: 'read-state', title: unread ? 'Mark as Read' : 'Mark as Unread', image: unread ? 'envelope.open' : 'envelope.badge' },
     { id: 'rename', title: 'Rename Chat', image: 'pencil' },
     { id: 'primary-actions', title: '', displayInline: true, subactions: [
-      { id: 'fork', title: 'Fork Chat', image: 'arrow.triangle.branch' },
+      ...(session.backend === 'gemini' ? [] : [{ id: 'fork', title: 'Fork Chat', image: 'arrow.triangle.branch' } satisfies MenuAction]),
       ...(reloadable ? [{ id: 'reload-history', title: 'Reload History…', image: 'clock.arrow.circlepath' } satisfies MenuAction] : []),
       { id: 'move-up', title: 'Move Up', image: 'arrow.up', attributes: { disabled: !canMoveUp } },
       { id: 'move-down', title: 'Move Down', image: 'arrow.down', attributes: { disabled: !canMoveDown } },

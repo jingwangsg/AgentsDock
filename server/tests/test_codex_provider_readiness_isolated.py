@@ -18,7 +18,8 @@ import codex_provider
 SOURCE = (Path(__file__).resolve().parents[1] / "agent_server.py")
 NAMES = {"probe_runtime", "runtime_diagnostic_payload", "safe_runtime_version", "auth_failure_text",
          "discover_runtime_catalog", "discover_runtime_catalog_within_budget",
-         "discover_runtime_backend_catalog", "runtime_catalog_budget_expired", "ensure_runtime_available"}
+         "discover_runtime_backend_catalog", "runtime_catalog_budget_expired", "ensure_runtime_available",
+         "unique_runtime_options", "server_default_runtime_option"}
 NODES = [node for node in ast.parse(SOURCE.read_text()).body
          if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in NAMES]
 assert {node.name for node in NODES} == NAMES
@@ -35,7 +36,8 @@ class CodexProviderReadinessTests(unittest.IsolatedAsyncioTestCase):
         self.ns = {"Any": object, "Path": Path, "re": re, "time": time, "json": json, "subprocess": subprocess,
             "asyncio": asyncio, "HTTPException": HTTPException, "codex_provider": codex_provider,
             "BACKEND_CODEX": "codex", "BACKEND_CLAUDE": "claude", "BACKEND_CURSOR": "cursor",
-            "BACKEND_OPENCODE": "opencode", "VALID_BACKENDS": {"claude", "codex", "cursor", "opencode"},
+            "BACKEND_OPENCODE": "opencode", "BACKEND_GEMINI": "gemini", "VALID_BACKENDS": {"claude", "codex", "cursor", "opencode"},
+            "HUB_PROVIDER_INSTALL": None,
             "ThreadPoolExecutor": ThreadPoolExecutor, "copy_context": copy_context,
             "RUNTIME_CATALOG_DEADLINE": ContextVar("test_catalog_deadline", default=None),
             "RUNTIME_CATALOG_BUDGET_SECONDS": 25.0,

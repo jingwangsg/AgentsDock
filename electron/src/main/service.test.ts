@@ -7133,18 +7133,18 @@ describe('local session import', () => {
     const { service } = createProfileService({ 'http://a.test:7850': [client] })
 
     await expect(service.listLocalSessions()).resolves.toEqual(candidates)
-    expect(client.listLocalSessions).toHaveBeenCalledWith(500)
+    expect(client.listLocalSessions).toHaveBeenCalledWith(500, false, false)
   })
 
-  it('opts into Cursor discovery only with the advertised snapshot capability', async () => {
+  it.each(['cursor', 'gemini'] as const)('opts into %s discovery only with the advertised snapshot capability', async backend => {
     const health: Health = { ...importHealth, capabilities: {
       ...importHealth.capabilities,
-      local_session_import_cursor_v1: { available: true, version: 1, history_mode: 'initial_text_snapshot' }
+      [`local_session_import_${backend}_v1`]: { available: true, version: 1, history_mode: 'initial_text_snapshot' }
     } }
     const client = fakeClient({ health: async () => health })
     const { service } = createProfileService({ 'http://a.test:7850': [client] })
     await service.listLocalSessions()
-    expect(client.listLocalSessions).toHaveBeenCalledWith(500, true)
+    expect(client.listLocalSessions).toHaveBeenCalledWith(500, backend === 'cursor', backend === 'gemini')
   })
 
   it('rejects a Cursor import on an old server before sending any mutation', async () => {
@@ -9362,6 +9362,27 @@ describe('server profile lifecycle', () => {
     await settleBackgroundWork()
 
     expect(client.runtimeCatalog).not.toHaveBeenCalled()
+  })
+
+  it('refreshes a blocked Gemini catalog once when health reports ready on the same server', async () => {
+    const blocked = { models: [], efforts: [], available: false }
+    const health: Health = { ok: true, runtimes: { gemini: { backend: 'gemini', status: 'ready', available: true, message: 'Ready' } } }
+    const catalog = { ...runtimeCatalog, backends: { ...runtimeCatalog.backends, gemini: {
+      ...blocked, available: true, models: [{ value: 'gemini-test', label: 'Gemini test' }]
+    } } }
+    const client = fakeClient({ health: async () => health, runtimeCatalog: async () => catalog })
+    const { service } = createProfileService({ 'http://a.test:7850': [client] }, cache => {
+      cache.putPreference('profile:a', 'runtimeCatalog:v1', {
+        ...runtimeCatalog, backends: { ...runtimeCatalog.backends, gemini: blocked }
+      })
+    })
+    const payload = await service.bootstrap()
+    await service.refreshServer('a', payload.profileGeneration)
+    await settleBackgroundWork()
+    await service.refreshServer('a', payload.profileGeneration)
+    await settleBackgroundWork()
+
+    expect(client.runtimeCatalog.mock.calls).toEqual([[false, false]])
   })
 
   it('refetches the model list when the server comes back as a new instance', async () => {

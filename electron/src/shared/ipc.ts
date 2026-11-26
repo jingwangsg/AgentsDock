@@ -362,7 +362,7 @@ export interface AgentsDockAPI {
     remove(profileId: string): Promise<boolean>
     reorder(profileIds: string[]): Promise<PublicServerProfile[]>
     switch(profileId: string, force?: boolean): Promise<ProfileBootstrapPayload>
-    updateCli(profileId: string, backend: 'claude' | 'codex' | 'cursor'): Promise<RuntimeCliUpdate>
+    updateCli(profileId: string, backend: 'claude' | 'codex' | 'cursor' | 'gemini'): Promise<RuntimeCliUpdate>
     refresh(profileId: string, profileGeneration: number): Promise<ProfileBootstrapPayload>
     restartStatus(scope: WorkspaceProfileScope): Promise<ServerRestartStatus>
     restart(

@@ -1,12 +1,14 @@
 """Canvas storage, compilation cache, and CLI check."""
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -476,6 +478,44 @@ class CanvasCommentTests(unittest.TestCase):
         assert failing["reply"]["status"] == "failed"
         assert len(failing["reply"]["text"]) == canvas.MAX_REPLY_CHARS
 
+    def test_a_comments_timeline_text_is_recovered_from_the_prompt_its_agent_was_sent(self) -> None:
+        anchors = (canvas.comment_anchor({**ANCHOR, "html": "<td>loss\n2.41</td>"}),
+                   canvas.comment_anchor({"canvas_id": None, "tag": "h1", "text": ""}))
+        for anchor in anchors:
+            for mode, body, follow_up in (("ask", "为什么这么高？\nand the second line", False), ("edit", "make it shorter", True)):
+                prompt, display = canvas.comment_prompt(self.path, 7, anchor, mode, body, follow_up=follow_up)
+                assert canvas.comment_display_from_prompt(prompt) == display
+                # An edit request in a thread follows the thread's earlier exchanges.
+                assert canvas.comment_display_from_prompt(canvas.with_earlier_exchanges(prompt, [("why?", "Because.")])) == display
+                # A message that quotes the prompt is the user's own text.
+                assert canvas.comment_display_from_prompt("why so long?\n\n" + prompt) is None
+        # Text that only begins like a comment is no comment.
+        assert canvas.comment_display_from_prompt("Canvas comment (question) on a.canvas.tsx at revision 7.\nSelected element: <td>") is None
+        assert canvas.comment_display_from_prompt("why is the loss so high?") is None
+        # 0.4 MB of headers without an instruction took 5 s before the HTML was bounded.
+        headers = "Canvas comment (question) on a at revision 1.\nSelected element: <td> (no data-canvas-id)\nElement HTML: x\n" * 4000
+        started = time.monotonic()
+        assert canvas.comment_display_from_prompt(headers) is None and canvas.comment_display_from_prompt(canvas.EARLIER_QUESTION + "\n" + headers) is None
+        assert time.monotonic() - started < 2
+
+    def test_a_turn_gets_the_threads_earlier_exchanges_before_its_prompt(self) -> None:
+        assert canvas.with_earlier_exchanges("Request: fix it", []) == "Request: fix it"
+        prompt = canvas.with_earlier_exchanges("Request: fix it", [("why?", "x" * (canvas.MAX_REPLY_CHARS + 5))])
+        assert prompt.startswith("Earlier question in this comment thread:\nwhy?\n\nIts answer:\n" + "x" * canvas.MAX_REPLY_CHARS + "\n")
+        assert prompt.endswith("\nRequest: fix it")
+
+    def test_side_chat_reply_maps_each_exchange_status(self) -> None:
+        assert canvas.side_chat_reply({"status": "running"}) == {"status": "running"}
+        answered = {"status": "completed", "answer": "x" * (canvas.MAX_REPLY_CHARS + 5), "updated_at": "t1"}
+        assert canvas.side_chat_reply(answered) == {"status": "done", "text": "x" * canvas.MAX_REPLY_CHARS, "finished_at": "t1"}
+        assert canvas.side_chat_reply({"status": "cancelled", "updated_at": "t2"}) == {"status": "cancelled", "text": "", "finished_at": "t2"}
+        # The server stopped during the answer.
+        assert canvas.side_chat_reply({"status": "interrupted", "error": "side_question_interrupted", "updated_at": "t3"})["status"] == "stopped"
+        failed = canvas.side_chat_reply({"status": "failed", "error": "side_question_http_503", "updated_at": "t4"})
+        assert failed["status"] == "failed" and "side_question_http_503" in failed["text"]
+        # The side chat's state is gone: the message does not stay running.
+        assert canvas.side_chat_reply(None)["status"] == "failed"
+
     def test_save_source_refuses_a_stale_revision(self) -> None:
         revision = self.path.stat().st_mtime_ns
         with self.assertRaises(canvas.RevisionConflict) as caught:
@@ -604,6 +644,166 @@ class CanvasCommentRouteTests(unittest.TestCase):
             saved = self.client.put(f"{self.base}/source", json={"source": "// mine", "base_revision": revision})
         assert saved.status_code == 200 and saved.json()["source"] == "// mine"
         assert self.client.put(f"{self.base}/source", json={"source": 3, "base_revision": revision}).status_code == 400
+
+
+class CanvasCommentSideChatTests(unittest.IsolatedAsyncioTestCase):
+    """Canvas questions through the real side chat store, with a fake Codex fork that answers when released."""
+
+    async def asyncSetUp(self) -> None:
+        import httpx
+        from fastapi import FastAPI
+
+        import side_questions as side
+
+        self.state_dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        directory = canvas.session_dir(self.state_dir, "sess_1")
+        directory.mkdir(parents=True)
+        self.path = directory / "report.canvas.tsx"
+        self.path.write_text(VALID_SOURCE)
+        self.turns: list[str] = []
+        self.asked: list[tuple[str, list]] = []
+        self.release: dict[str, asyncio.Event] = {}
+        self.stopped: list[str] = []
+        self.closed = 0
+        self.notices: list[str] = []
+        self.available = lambda: True
+        test = self
+
+        class Fork:
+            async def ask(self, question, *, history, on_step):
+                assert on_step is None  # nothing shows a comment's steps
+                body = question.rsplit("Question: ", 1)[1]
+                test.asked.append((body, history))
+                try:
+                    await test.release.setdefault(body, asyncio.Event()).wait()
+                except asyncio.CancelledError:
+                    test.stopped.append(body)
+                    raise
+                return {"answer": "answer to " + body, "backend": "codex", "context_note": "native"}
+
+            async def close(self):
+                test.closed += 1
+
+        async def factory(session, **options):
+            return Fork()
+
+        async def notify(session_id, event):
+            self.notices.append(session_id)
+
+        async def start_turn(session_id, prompt, display_prompt, capabilities):
+            self.turns.append(prompt)
+            return {"run_id": f"run_{len(self.turns)}"}
+
+        self.runtime = side.SideQuestions(comment_storage_path=self.state_dir / "comments.sqlite3", comment_factory=factory,
+                                           comment_notify=notify)
+        self.addAsyncCleanup(self.runtime.close)
+        app = FastAPI()
+        canvas.register_canvas_routes(
+            app, state_dir=self.state_dir, session_exists=lambda session_id: session_id == "sess_1",
+            session_events=lambda session_id: iter(()), start_turn=start_turn,
+            side_chats=self.runtime.comment_chats, side_chat_available=lambda session_id, prompt: self.available(),
+        )
+        self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
+        self.addAsyncCleanup(self.client.aclose)
+        self.base = "/api/sessions/sess_1/canvases/report"
+
+    async def comment(self, body: str, *, thread: str | None = None, **fields):
+        url = f"{self.base}/comments/{thread}/messages" if thread else f"{self.base}/comments"
+        return await self.client.post(url, json={"anchor": ANCHOR, "mode": "ask", "body": body, "revision": 5, "side_chat": True, **fields})
+
+    async def replies(self) -> list[list[dict]]:
+        threads = (await self.client.get(f"{self.base}/comments")).json()["threads"]
+        return [[message["reply"] for message in thread["messages"]] for thread in threads]
+
+    async def until(self, reached) -> None:
+        for _ in range(500):
+            if reached():
+                return
+            await asyncio.sleep(0.01)
+        self.fail("condition not reached in 5 s")
+
+    async def test_questions_of_two_threads_run_at_the_same_time_beside_the_chat(self) -> None:
+        first = (await self.comment("why?")).json()["thread"]
+        await self.comment("how?")
+        assert first["messages"][0]["turn"] is None and first["messages"][0]["side_chat"] is True
+        assert first["messages"][0]["reply"] == {"status": "running"}
+        # Both forks hold their question before either answers; the chat got no turn.
+        await self.until(lambda: len(self.asked) == 2)
+        assert self.turns == [] and self.runtime.active_session_ids() == {"sess_1"}
+        assert await self.replies() == [[{"status": "running"}], [{"status": "running"}]]
+        self.release["how?"].set()
+        await self.until(lambda: self.closed == 1)
+        answered = await self.replies()
+        assert answered[0] == [{"status": "running"}]
+        assert (answered[1][0]["status"], answered[1][0]["text"]) == ("done", "answer to how?")
+        self.release["why?"].set()
+        # Each thread's fork ends with its answer, and each change told the chat's clients.
+        await self.until(lambda: self.closed == 2)
+        assert self.runtime.active_session_ids() == set() and set(self.notices) == {"sess_1"} and len(self.notices) >= 4
+        assert [reply[0]["status"] for reply in await self.replies()] == ["done", "done"]
+        # Stored beside the canvas: the answers outlive the side chats.
+        self.runtime.delete_history("sess_1")
+        assert [reply[0]["text"] for reply in await self.replies()] == ["answer to why?", "answer to how?"]
+
+    async def test_a_follow_up_is_refused_while_the_thread_answers_then_continues_its_side_chat(self) -> None:
+        thread = (await self.comment("why?")).json()["thread"]["id"]
+        await self.until(lambda: len(self.asked) == 1)
+        busy = await self.comment("and then?", thread=thread)
+        assert busy.status_code == 409 and busy.json()["detail"].startswith("This thread is still answering")
+        self.release["why?"].set()
+        await self.until(lambda: self.closed == 1)
+        followed = await self.comment("and then?", thread=thread)
+        assert followed.status_code == 200 and len(followed.json()["thread"]["messages"]) == 2
+        await self.until(lambda: len(self.asked) == 2)
+        body, history = self.asked[1]
+        # The handle is offered the thread's earlier exchange, and no other thread's.
+        assert body == "and then?" and [item["response"] for item in history] == ["answer to why?"]
+        assert "Question: why?" in history[0]["question"]
+        self.release["and then?"].set()
+        await self.until(lambda: self.closed == 2)
+        assert [reply["status"] for reply in (await self.replies())[0]] == ["done", "done"]
+        # The chat saw neither exchange: an edit request in the thread tells it both.
+        assert (await self.comment("do that", thread=thread, mode="edit")).status_code == 200
+        assert self.turns[0].startswith(
+            "Earlier question in this comment thread:\nwhy?\n\nIts answer:\nanswer to why?\n\n"
+            "Earlier question in this comment thread:\nand then?\n\nIts answer:\nanswer to and then?\n\nCanvas comment (edit request)")
+        # That turn told the chat: the thread's next edit request does not repeat them.
+        assert (await self.comment("and that", thread=thread, mode="edit")).status_code == 200
+        assert self.turns[1].startswith("Canvas comment (edit request)")
+
+    async def test_an_edit_or_a_client_or_provider_without_side_chats_starts_a_chat_turn(self) -> None:
+        edit = (await self.comment("fix it", mode="edit")).json()["thread"]["messages"][0]
+        assert edit["turn"] == {"run_id": "run_1", "queued_id": None} and "side_chat" not in edit
+        # A client that does not refresh on the side chat's notice.
+        await self.comment("why?", side_chat=False)
+        # A chat that no copy can answer for, such as one whose native conversation has not started.
+        self.available = lambda: False
+        await self.comment("how?")
+        assert len(self.turns) == 3 and self.asked == [] and self.notices == []
+        assert not any(prompt.startswith("Earlier question") for prompt in self.turns)
+
+    async def test_a_question_admitted_while_its_thread_is_deleted_is_stopped(self) -> None:
+        thread = (await self.comment("why?")).json()["thread"]["id"]
+        self.release["why?"].set()
+        await self.until(lambda: self.closed == 1)
+        # The delete lands after the follow-up read the thread and before its question is stored:
+        # the availability check runs between the two, and here it empties the comments file.
+        self.available = lambda: canvas.write_comments(self.path, []) or True
+        assert (await self.comment("and then?", thread=thread)).status_code == 404
+        # The question is stopped before or after the fork received it.
+        await self.until(lambda: self.runtime.active_session_ids() == set())
+        assert self.asked[1:] in ([], [("and then?", self.asked[-1][1])]) and self.stopped in ([], ["and then?"])
+        assert (await self.replies()) == []
+
+    async def test_deleting_a_thread_stops_its_running_answer(self) -> None:
+        thread = (await self.comment("why?")).json()["thread"]["id"]
+        other = (await self.comment("how?")).json()["thread"]["id"]
+        await self.until(lambda: len(self.asked) == 2)
+        assert (await self.client.delete(f"{self.base}/comments/{thread}")).status_code == 200
+        # The stopped answer and the cleared side chat each close the fork.
+        assert self.stopped == ["why?"] and self.closed == 2
+        threads = (await self.client.get(f"{self.base}/comments")).json()["threads"]
+        assert [(item["id"], item["messages"][0]["reply"]) for item in threads] == [(other, {"status": "running"})]
 
 
 if __name__ == "__main__":

@@ -80,6 +80,7 @@ def _event_script(
     *,
     exit_code: int = 0,
     stderr_bytes: int = 0,
+    stderr_text: str = "",
     hang_after: float = 0,
 ) -> str:
     payload = json.dumps(events)
@@ -93,6 +94,7 @@ for event in events:
     print(json.dumps(event), flush=True)
 if {hang_after!r}:
     time.sleep({hang_after!r})
+sys.stderr.write({stderr_text!r})
 sys.exit({exit_code})
 '''
 
@@ -953,6 +955,41 @@ sys.exit(7)
             event for event in stderr_events if event["type"] == "error"
         )
         self.assertIn("stderr was omitted", stderr_error["message"])
+
+    async def test_provider_resource_exhaustion_reaches_the_terminal_without_exposing_details(self) -> None:
+        private = "private-provider-detail"
+        for case, events, stderr, code in (
+            ("exit", [_init_event()], "RetriableError: [resource_exhausted] Error\n", 1),
+            ("result", [_init_event(), _result_event(f"[resource_exhausted] {private}", is_error=True)], "", 0),
+            ("empty-result", [_init_event(), _result_event("", is_error=True)],
+             f"\x1b[31mConnectError: [resource_exhausted] {private}\x1b[0m\n", 1),
+        ):
+            with self.subTest(case=case):
+                script = _event_script(events, exit_code=code, stderr_text=stderr)
+                received = await self._run_script(script, run_id=f"run-exhausted-{case}")
+                error = next(event for event in received if event["type"] == "error")
+                terminal = next(event for event in received if event["type"] == "turn_finished")
+                self.assertIn("RESOURCE_EXHAUSTED", error["message"])
+                self.assertEqual(terminal["message"], error["message"])
+                self.assertTrue(terminal["is_error"])
+                self.assertEqual(terminal["result_text"], "")
+                self.assertNotIn(private, json.dumps(received))
+
+    async def test_exhausted_first_turn_can_resume_only_a_durable_native_session(self) -> None:
+        script = _event_script([_init_event()], exit_code=1, stderr_text="RetriableError: [resource_exhausted] Error\n")
+        saved = agent_server.cursor_history.LocalSession(
+            "cursor-sess-test", self.cwd, None, 0.0, Path(self.cwd) / "transcript.jsonl",
+        )
+        for outcome in (None, OSError("store unavailable"), saved):
+            with self.subTest(outcome=outcome), patch.object(
+                agent_server.cursor_history, "find_session",
+                side_effect=[outcome],
+            ) as lookup:
+                events = await self._run_script(script)
+                lookup.assert_called_once_with("cursor-sess-test", self.cwd)
+                self.assertTrue(next(e for e in events if e["type"] == "turn_finished")["is_error"])
+                self.assertNotIn("cursor_instruction_hash", self.session)
+                self.assertEqual(self.session.get("cursor_session_id"), "cursor-sess-test" if outcome is saved else None)
 
     async def test_session_id_is_pinned_across_every_projected_event(self) -> None:
         for event in (

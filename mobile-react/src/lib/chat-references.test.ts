@@ -295,7 +295,7 @@ const newAgentText = '@New agent'
 const newAgentBase: ChatReference = { session_id: NEW_AGENT_REFERENCE_ID, display_title_snapshot: 'New agent', source_text_start: 0, source_text_end: newAgentText.length, action: 'route', grant_intent: true, target_kind: 'new_agent', new_agent: { model: null, effort: null, server_identity: null, folder: 'General' } }
 assert.deepEqual(validChatReferences(newAgentText, [newAgentBase], 'source-chat'), [newAgentBase])
 assert.deepEqual(validChatReferences(newAgentText, [{ ...newAgentBase, new_agent: { ...newAgentBase.new_agent!, backend: 'claude' } }], 'source-chat').map(reference => reference.new_agent?.backend), ['claude'])
-assert.deepEqual(validChatReferences(newAgentText, [{ ...newAgentBase, new_agent: { ...newAgentBase.new_agent!, backend: 'gemini' as Backend } }], 'source-chat'), [])
+assert.deepEqual(validChatReferences(newAgentText, [{ ...newAgentBase, new_agent: { ...newAgentBase.new_agent!, backend: 'not-a-backend' as Backend } }], 'source-chat'), [])
 assert.deepEqual(validChatReferences(newAgentText, [{ ...newAgentBase, new_agent: { ...newAgentBase.new_agent!, cwd: 42 as unknown as string } }], 'source-chat'), [])
 assert.deepEqual(validChatReferences(newAgentText, [{ ...newAgentBase, grant_intent: undefined }], 'source-chat'), [])
 assert.deepEqual(validChatReferences(newAgentText, [{ ...newAgentBase, new_agent: undefined }], 'source-chat'), [])

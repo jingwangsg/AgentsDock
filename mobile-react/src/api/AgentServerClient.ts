@@ -213,6 +213,7 @@ export interface TimelineStreamHandlers {
   onProviderRuntime?: (event: ProviderRuntimeChanged) => void
   onProviderUsage?: (backend: UsageBackend) => void
   onSideChatChanged?: (revision: number) => void
+  onCanvasCommentsChanged?: () => void
 }
 
 interface ClientConfiguration {
@@ -379,9 +380,9 @@ export class AgentServerClient {
     try {
       return await this.request(`/api/admin/runtimes/${backend}/update`, { method: 'POST' }, 11 * 60_000, false, 'native-control')
     } catch (error) {
-      if (backend === 'cursor' && error instanceof ServerError
+      if ((backend === 'cursor' || backend === 'gemini') && error instanceof ServerError
         && (error.status === 422 || (error.status === 404 && error.detail === 'Not Found'))) {
-        throw new Error('Update this AgentsServer to enable Cursor CLI updates.')
+        throw new Error(`Update this AgentsServer to enable ${backend === 'gemini' ? 'Gemini' : 'Cursor'} CLI updates.`)
       }
       throw error
     }
@@ -539,6 +540,9 @@ export class AgentServerClient {
   }
 
   async createSession(input: CreateSessionInput): Promise<Session> {
+    if (input.providerId && input.backend === 'gemini' && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(input.providerId)) {
+      throw new Error('Gemini CLI requires a canonical session UUID.')
+    }
     return (await this.post<{ session: Session }>('/api/sessions', {
       title: input.title,
       folder: input.folder,
@@ -550,15 +554,15 @@ export class AgentServerClient {
       provider_jobs_access: input.provider_jobs_access ?? null,
       provider_session_id: input.providerId || null,
       // Cursor history arrives only as a snapshot through bulk import.
-      import_history: Boolean(input.providerId) && input.backend !== 'cursor',
+      import_history: Boolean(input.providerId) && input.backend !== 'cursor' && input.backend !== 'gemini',
     })).session
   }
   /** Full rows carry each chat's provider IDs, which the summary list omits. */
   async sessionsWithProviderIds(): Promise<Session[]> {
     return (await this.get<{ sessions: Session[] }>('/api/sessions')).sessions
   }
-  async listLocalSessions(limit: number, includeCursor: boolean): Promise<LocalSessionCandidate[]> {
-    const response = await this.get<unknown>(`/api/local-sessions?limit=${limit}${includeCursor ? '&include_cursor=true' : ''}`)
+  async listLocalSessions(limit: number, includeCursor = false, includeGemini = false): Promise<LocalSessionCandidate[]> {
+    const response = await this.get<unknown>(`/api/local-sessions?limit=${limit}${includeCursor ? '&include_cursor=true' : ''}${includeGemini ? '&include_gemini=true' : ''}`)
     return parseLocalSessionCandidatesResponse(response, limit)
   }
   async bulkImportSessions(items: BulkImportSessionItem[]): Promise<BulkImportSessionResult[]> {
@@ -1205,7 +1209,7 @@ export class AgentServerClient {
   }
 
   stream(sessionId: string, after: number, handlers: TimelineStreamHandlers): () => void {
-    const { onEvent, onState, onProviderRuntime, onProviderUsage, onSideChatChanged } = handlers
+    const { onEvent, onState, onProviderRuntime, onProviderUsage, onSideChatChanged, onCanvasCommentsChanged } = handlers
     const scope = this.captureScope()
     const endpoint = new URL(buildURL(scope.configuration.baseURL, `/api/sessions/${encodeURIComponent(sessionId)}/events`))
     endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -1298,6 +1302,10 @@ export class AgentServerClient {
           }
           if (isSideChatUpdated(packet)) {
             if (packet.session_id === sessionId) onSideChatChanged?.(packet.revision)
+            return
+          }
+          if (isCanvasCommentsUpdated(packet)) {
+            if (packet.session_id === sessionId) onCanvasCommentsChanged?.()
             return
           }
           const event = packet as Event
@@ -1732,6 +1740,12 @@ function isSideChatUpdated(value: unknown): value is { type: 'side_chat_updated'
   const packet = value as Record<string, unknown>
   return packet.type === 'side_chat_updated' && typeof packet.session_id === 'string'
     && Number.isSafeInteger(packet.revision) && (packet.revision as number) >= 0
+}
+
+function isCanvasCommentsUpdated(value: unknown): value is { type: 'canvas_comments_updated'; session_id: string } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const packet = value as Record<string, unknown>
+  return packet.type === 'canvas_comments_updated' && typeof packet.session_id === 'string'
 }
 
 function websocketCloseDetail(

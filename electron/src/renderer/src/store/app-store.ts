@@ -362,7 +362,7 @@ function parseNewChatDefaults(value: unknown): NewChatDefaults | null {
   const candidate = value as Partial<NewChatDefaults>
   if (
     candidate.version !== 1
-    || !['claude', 'codex', 'cursor', 'opencode'].includes(String(candidate.backend))
+    || !['claude', 'codex', 'cursor', 'opencode', 'gemini'].includes(String(candidate.backend))
     || candidate.codex_provider !== undefined && !['default', 'custom'].includes(candidate.codex_provider)
     || typeof candidate.folder !== 'string'
     || typeof candidate.cwd !== 'string'
@@ -780,6 +780,11 @@ export const useAppStore = create<AppState>((set, get) => ({
           } } }))
         }
         if (!visibleChatSessionIds(current.chatPanes).includes(payload.sessionId)) return
+        // The stream does not replay a comment side chat's notice sent while it was down, so the open Canvas
+        // refreshes when it is live again. Only then: 'live' is also sent again on every background refresh.
+        if (payload.state === 'live' && current.syncBySession[payload.sessionId]?.status !== 'live') {
+          window.dispatchEvent(new CustomEvent('agentsdock:canvases-changed', { detail: { sessionId: payload.sessionId } }))
+        }
         const compatible = healthIsCompatible(current.health)
         const websocketUnavailable = current.health?.websocket_runtime === false
         const websocketError = websocketUnavailable ? WEBSOCKET_RUNTIME_ERROR : null
@@ -1068,6 +1073,11 @@ export const useAppStore = create<AppState>((set, get) => ({
           typeof payload.activeSession === 'boolean'
             ? { active: payload.activeSession, runId: payload.activeRunId }
             : undefined)
+      }),
+      // A Canvas question answered in its thread's side chat starts and ends no turn, so the open Canvas refreshes on this event.
+      window.agentsDock.events.on('canvas-comments:changed', payload => {
+        if (!profileEventMatches(payload, get())) return
+        window.dispatchEvent(new CustomEvent('agentsdock:canvases-changed', { detail: { sessionId: payload.sessionId } }))
       }),
       window.agentsDock.events.on('server:reasoning-stream', payload => {
         if (!profileEventMatches(payload, get())) return
@@ -1898,8 +1908,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ error: runtimeError })
       return false
     }
-    if (steer && currentTarget.backend === 'opencode' && get().activeSessionIds.has(sessionId)) {
-      set({ error: t('opencode.steerUnavailable') }); return false
+    if (steer && (currentTarget.backend === 'opencode' || currentTarget.backend === 'gemini') && get().activeSessionIds.has(sessionId)) {
+      set({ error: t('composer.runtimeSteerUnavailable') }); return false
     }
     const admissionToken = options?.admissionToken ?? get().beginTurnAdmission(sessionId)
     if (!admissionToken || get().turnAdmissionTokens[sessionId] !== admissionToken) return false
@@ -2429,6 +2439,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const current = get()
     if (current.switchingProfileId) return
     const source = current.sessions.find(session => session.id === sessionId)
+    if (source?.backend === 'gemini') { set({ error: t('gemini.forkUnavailable') }); return }
     if (source?.backend === 'opencode') { set({ error: t('opencode.forkUnavailable') }); return }
     if ((current.activeSessionIds.has(sessionId) || current.turnAdmissionTokens[sessionId])
       && !completedPrefixForkAvailable(current.health, source?.backend)) {
@@ -2706,6 +2717,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   async importHistory(sessionId) {
     if (get().switchingProfileId) return
+    if (get().sessions.find(session => session.id === sessionId)?.backend === 'gemini') { set({ error: t('gemini.historyReloadUnavailable') }); return }
     if (get().sessions.find(session => session.id === sessionId)?.backend === 'opencode') {
       set({ error: t('opencode.importUnavailable') }); return
     }
@@ -5364,6 +5376,7 @@ function normalizeSessionPatch(patch: Partial<Session>) { return {
   system_prompt: patch.system_prompt,
   subagent_limit: patch.subagent_limit,
   provider_jobs_access: patch.provider_jobs_access ?? undefined,
+  gemini_permission_mode: patch.gemini_permission_mode,
   pinned: patch.pinned ?? undefined,
   archived: patch.archived ?? undefined
 } }

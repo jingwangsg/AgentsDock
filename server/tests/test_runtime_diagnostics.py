@@ -1098,6 +1098,25 @@ class RuntimeDiagnosticTests(unittest.TestCase):
         with patch.object(agent_server.subprocess, "run", return_value=completed([], stdout="2.1.207 (Claude Code)\n")):
             self.assertTrue(agent_server.claude_supports_effort("ultracode"))
 
+    def test_cursor_model_list_timeout_does_not_exclude_a_saved_model(self) -> None:
+        for tier, exhaustive in [("Enterprise", False), ("Free", True)]:
+            with self.subTest(tier=tier), patch.object(agent_server, "run_catalog_command", side_effect=[
+                subprocess.TimeoutExpired("cursor-agent", 6), f"Model    Gemini 4 Argon 300K High\nSubscription Tier    {tier}",
+            ]):
+                result = agent_server.discover_cursor_catalog(executable="/fake/cursor-agent")
+                self.assertEqual(result["model_list_complete"], exhaustive)
+                self.assertEqual(result["models"][0], {"value": "", "label": "Gemini 4 Argon 300K High"})
+
+    def test_cursor_default_uses_the_native_selection_instead_of_the_router_marker(self) -> None:
+        output = "auto - Auto (default)\ngemini-4-argon-high - Gemini 4 Argon High"
+        for label, model in [("Gemini 4 Argon High", "gemini-4-argon-high"), ("Gemini 4 Argon 300K High", None)]:
+            with self.subTest(label=label), patch.object(agent_server, "run_catalog_command", side_effect=[
+                output, f"Model    {label}\nSubscription Tier    Enterprise",
+            ]):
+                result = agent_server.discover_cursor_catalog(executable="/fake/cursor-agent")
+                self.assertEqual(result["models"][0]["label"], label)
+                self.assertEqual(result["default_model"], model)
+
     def test_cursor_catalog_locks_named_models_on_free_plan(self) -> None:
         list_models_output = (
             "Available models\n\n"

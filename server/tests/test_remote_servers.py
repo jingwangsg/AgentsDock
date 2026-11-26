@@ -69,8 +69,8 @@ if password == "keys-only":  # the host takes no passwords at all
 host = json.load(open(os.path.join(state, "host.json")))
 if tail is not None and b"AGENTSDOCK_TUNNEL_PROBE" in stdin:  # probe: bash -s -- <candidate install dirs>
     # Optional "installs" (directory -> port): only these hold an install. As in remote_probe.sh the install is
-    # the first candidate holding one, else the first whose home the host has ("unmounted" lists the homes it
-    # lacks). Without "installs" every directory has existing_port. When no candidate's home exists, the search
+    # the first candidate holding one, else the first whose home is usable ("unmounted" lists the others).
+    # Without "installs" every directory has existing_port. When no candidate's home is usable, the search
     # (a last argument "<name>/<install directory name>") finds the install's place in "shared", the home the
     # host's NFS holds.
     installs = host.get("installs")
@@ -1014,7 +1014,7 @@ time.sleep(30)
         missing = probe(self.tmp_path / "missing")
         assert missing["existing_port"] is None
 
-    def test_the_probe_takes_the_first_candidate_holding_an_install_else_the_first_whose_home_exists(self) -> None:
+    def test_the_probe_takes_the_first_candidate_holding_an_install_else_the_first_whose_home_is_writable(self) -> None:
         def probe(*dirs: Path) -> dict:
             proc = subprocess.run(["bash", "-s", "--", *map(str, dirs)], input=rs.PROBE_SCRIPT.read_bytes(), capture_output=True, timeout=30)
             assert proc.returncode == 0, proc.stderr.decode()
@@ -1026,9 +1026,15 @@ time.sleep(30)
         nfs.mkdir()
         found = probe(*candidates)
         assert (found["install_dir"], found["candidate"], found["existing_port"]) == (str(candidates[1]), 1, None)
-        # With the first home there as well, the first; an install in a later home still wins, so a deploy keeps its chats.
+        # With the first home there as well, the first.
         lustre.mkdir()
         assert probe(*candidates)["candidate"] == 0
+        # 2026-11-25: a GCP cluster's image held the first home as a root-owned directory of links into the NFS
+        # home. The ssh user cannot create an install there, so the next home.
+        lustre.chmod(0o500)
+        assert probe(*candidates)["candidate"] == 1
+        lustre.chmod(0o700)
+        # An install in a later home still wins, so a deploy keeps its chats.
         candidates[1].mkdir()
         (candidates[1] / "env").write_text("export AGENTSDOCK_AGENT_PORT=7999\n")
         found = probe(*candidates)
@@ -1069,9 +1075,19 @@ time.sleep(30)
         (nfs / "home" / "u" / ".agentsdock-server-c").mkdir()
         (nfs / "home" / "u" / ".agentsdock-server-c" / "env").write_text("export AGENTSDOCK_AGENT_PORT=7999\n")
         assert probe(configured, search) == (str(nfs / "home" / "u" / ".agentsdock-server-c"), 1)
-        # A candidate whose home exists is taken without a search.
+        # A candidate whose home the ssh user cannot write does not end the search.
         configured.parent.mkdir(parents=True)
+        configured.parent.chmod(0o500)
+        assert probe(configured, search) == (str(nfs / "home" / "u" / ".agentsdock-server-c"), 1)
+        configured.parent.chmod(0o700)
+        # A candidate whose home is writable is taken without a search.
         assert probe(configured, search) == (str(configured), 0)
+        # So is one holding an install, also when the ssh user cannot write its home.
+        configured.mkdir()
+        (configured / "env").write_text("export AGENTSDOCK_AGENT_PORT=7998\n")
+        configured.parent.chmod(0o500)
+        assert probe(configured, search) == (str(configured), 0)
+        configured.parent.chmod(0o700)
 
     def test_a_cluster_without_any_configured_home_installs_in_the_directory_its_shared_storage_holds(self) -> None:
         # 2026-11-13: the next cluster on that GCP site failed at the same mkdir, because its home was not yet
@@ -1094,7 +1110,7 @@ time.sleep(30)
         assert bootstrap[:3] == [found, "7850", "/mnt/nfs/home/u"]
         [server] = rs.load_registry(manager.path)
         assert server.install_dir == found
-        assert f"/mnt/oci/u does not exist on oci@gcp; installing in {found}." in [entry["message"] for entry in job.log]
+        assert f"/mnt/oci/u is missing or not writable on oci@gcp; installing in {found}." in [entry["message"] for entry in job.log]
 
         # A Redeploy keeps the directory the deploy recorded, and a directory the user names is the only one tried.
         async def redeploy() -> rs.DeployJob:
@@ -1144,7 +1160,7 @@ time.sleep(30)
         # The second home holds the install and is the server's HOME, as the first would have been.
         assert bootstrap[:3] == [nfs_dir, "7850", "/mnt/nfs/u"]
         assert rs.load_registry(manager.path)[0].install_dir == nfs_dir
-        assert f"/mnt/oci/u does not exist on oci@gcp; installing in {nfs_dir}." in [entry["message"] for entry in job.log]
+        assert f"/mnt/oci/u is missing or not writable on oci@gcp; installing in {nfs_dir}." in [entry["message"] for entry in job.log]
 
         # A remote pointed at such a cluster gets the same choice: its deploy, not the move, picks the directory.
         manager = rs.RemoteServerManager(self.tmp_path / "moved", source_dir=self.tmp_path, manage_tunnels=False)
@@ -2170,7 +2186,9 @@ time.sleep(30)
                 # The reachable remote answers the real request; the others have no server behind their port.
                 return await real_update_cli(server, backend)
 
-            probes = mock.AsyncMock(side_effect=lambda server: {"active": ["c1"]} if server is remote else None)
+            probes = mock.AsyncMock(side_effect=lambda server: {"active": ["c1"], "capabilities": {
+                "gemini_backend": {"available": True, "version": 1},
+            }} if server is remote else None)
             try:
                 async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{hub_port}") as client:
                     with mock.patch.object(manager, "_deploy", fake_deploy), mock.patch.object(manager, "update_cli", update_cli), \
@@ -2197,9 +2215,9 @@ time.sleep(30)
             finally:
                 await close()
             assert order == [
-                ("redeploy", remote.id), ("cli", remote.id, "claude"), ("cli", remote.id, "codex"), ("cli", remote.id, "cursor"),
+                ("redeploy", remote.id), ("cli", remote.id, "claude"), ("cli", remote.id, "codex"), ("cli", remote.id, "cursor"), ("cli", remote.id, "gemini"),
                 ("redeploy", dead.id), ("cli", dead.id, "claude"), ("cli", dead.id, "codex"), ("cli", dead.id, "cursor"),
-                ("hub-cli", "claude"), ("hub-cli", "codex"), ("hub-cli", "cursor"), ("restart",),
+                ("hub-cli", "claude"), ("hub-cli", "codex"), ("hub-cli", "cursor"), ("hub-cli", "gemini"), ("restart",),
             ]
             messages = [entry["message"] for entry in view["log"]]
             assert f"{remote.name}: Uploading the server…" in messages and f"{remote.name}: Claude Code claude-2.0" in messages

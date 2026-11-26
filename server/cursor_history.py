@@ -3,6 +3,10 @@
 Only the CLI's metadata and plaintext user-facing JSONL export are read. Never
 open conversation blobs, decrypt data, invoke the CLI, or migrate native stores.
 Cursor IDE and cloud histories are different formats and are not advertised.
+
+The one write is ``copy_session`` (verified with 2026.11.22): a copy of a
+session's store under another id, whose blob pages SQLite copies undecoded.
+The session's own store is only read.
 """
 from __future__ import annotations
 
@@ -12,6 +16,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sqlite3
 import stat
 import unicodedata
@@ -175,6 +180,38 @@ def read_session(directory: Path, root: Path, *, expected_cwd: str | None = None
     timestamp = updated / 1000 if type(updated) is int and 0 < updated < 253402300800000 else info.st_mtime
     title = native_title(metadata["title"]) or native_title(sidecar.get("title"))
     return LocalSession(provider_id, cwd, title, timestamp, transcript)
+
+
+def copy_session(provider_id: str, copy_id: str, cwd: str) -> list[Path]:
+    """Copy a session's store under another id, for the CLI to resume as a session of its own.
+
+    SQLite's backup reads a consistent store while the session's own CLI writes it. Returns every path
+    the copy and its resumed run leave on disk, the copy's directory first.
+    """
+    root = config_root(cwd)
+    source = next((root / "chats").glob(f"*/{provider_id}"), None) if IDENTIFIER.fullmatch(provider_id) else None
+    sidecar = read_json(source / "meta.json", root) if source is not None else None
+    if not sidecar or not isinstance(sidecar.get("cwd"), str):
+        raise FileNotFoundError("Cursor session store")
+    copy = source.with_name(copy_id)
+    copy.mkdir(mode=0o700)
+    try:
+        original = sqlite3.connect((source / "store.db").resolve().as_uri() + "?mode=ro", uri=True)
+        target = sqlite3.connect(copy / "store.db")
+        try:
+            original.backup(target)
+            metadata = json.loads(bytes.fromhex(target.execute("SELECT value FROM meta WHERE key = '0'").fetchone()[0]))
+            metadata["agentId"] = copy_id
+            with target:
+                target.execute("UPDATE meta SET value = ? WHERE key = '0'", (json.dumps(metadata).encode().hex(),))
+        finally:
+            original.close()
+            target.close()
+        shutil.copyfile(source / "meta.json", copy / "meta.json")
+    except BaseException:
+        shutil.rmtree(copy, ignore_errors=True)
+        raise
+    return [copy, data_root(cwd) / "projects" / project_slug(sidecar["cwd"]) / "agent-transcripts" / copy_id]
 
 
 def find_session(provider_id: str, cwd: str) -> LocalSession | None:

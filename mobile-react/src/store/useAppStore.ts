@@ -85,7 +85,7 @@ import { publishSideChatChanged } from '../lib/side-chat'
 import { reconcileTeamReferences, requireTeamReferenceSupport, restoreFailedTeamReferences, teamMessagesAvailable, teamReferenceContractSupported, teamReferencesEqual, teamReferenceTokenPresent, validTeamReferences } from '../lib/team-references'
 import { BUILT_IN_HUB_TOKEN, DEFAULT_SERVER_URL, localHubAlive } from '../lib/server-setup'
 import { serverSearchQuery } from '../lib/server-search'
-import { runtimeSelectionError } from '../lib/runtime-catalog'
+import { geminiBackendSupported, runtimeSelectionError } from '../lib/runtime-catalog'
 import { clearCodeReviewFallbacks } from '../lib/code-review'
 import { SessionMutationReconciler, type SessionReadToken } from '../lib/session-mutation-reconciler'
 import { APP_FONT_SCALE_DEFAULT, clampAppFontScale } from '../lib/typography'
@@ -762,6 +762,8 @@ interface AppState {
   workspaceAdopting: boolean
   connected: boolean
   liveConnected: boolean
+  /** Counts, per chat, the times its Canvas comment threads should be read again. */
+  canvasCommentNotices: Record<string, number>
   syncSessionId: string | null
   syncStatus: ChatSyncStatus
   syncError: string | null
@@ -920,7 +922,7 @@ interface AppState {
   attachFiles(files: UploadRef[], expectedGeneration?: number, expectedSessionId?: string): Promise<void>
   removeUpload(fileId: string, expectedGeneration?: number, expectedSessionId?: string): void
   removeFailedUpload(fileUri: string, expectedGeneration?: number, expectedSessionId?: string): void
-  updateSession(sessionId: string, patch: Partial<Pick<Session, 'title' | 'folder' | 'cwd' | 'backend' | 'model' | 'effort' | 'system_prompt' | 'provider_jobs_access' | 'pinned' | 'archived'>>, expectedGeneration?: number): Promise<boolean>
+  updateSession(sessionId: string, patch: Partial<Pick<Session, 'title' | 'folder' | 'cwd' | 'backend' | 'model' | 'effort' | 'system_prompt' | 'provider_jobs_access' | 'gemini_permission_mode' | 'pinned' | 'archived'>>, expectedGeneration?: number): Promise<boolean>
   reloadProvider(sessionId: string, expectedGeneration?: number): Promise<ProviderReloadResult | null>
   createSession(input: CreateSessionInput, expectedGeneration?: number): Promise<boolean>
   quickCreateSession(expectedGeneration?: number, preset?: { folder: string; backend: Backend }): Promise<boolean>
@@ -982,6 +984,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   workspaceAdopting: false,
   connected: false,
   liveConnected: false,
+  canvasCommentNotices: {},
   syncSessionId: null,
   syncStatus: 'idle',
   syncError: null,
@@ -1349,7 +1352,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     const server = new AgentServerClient(normalizeServerURL(profile.serverURL), await loadProfileToken(profile.id, profile.credentialVersion))
     try {
       // An admin action goes only to the server the profile pinned, as on the active connection.
-      if (profile.serverIdentity && (await server.health()).server_identity !== profile.serverIdentity) {
+      const health = profile.serverIdentity || backend === 'gemini' ? await server.health() : null
+      if (backend === 'gemini' && !geminiBackendSupported(health)) throw new Error('Update this AgentsServer to enable Gemini CLI updates.')
+      if (profile.serverIdentity && health?.server_identity !== profile.serverIdentity) {
         throw new Error('This server reports a different identity. Select it once to confirm the change, then update again.')
       }
       const { output, diagnostic } = await server.updateRuntimeCli(backend)
@@ -1559,7 +1564,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     const sessionsRequest = Promise.allSettled([scope.client.sessions()] as const)
     // The catalog takes the server seconds to build (it probes the CLIs) and changes only with them: kept across
     // reconnects to the same server process, read again after a restart. RuntimeHealth's Refresh rechecks the CLIs.
-    const heldRuntime = health.server_instance_id && runtimeServerInstance === health.server_instance_id ? get().runtime : null
+    const cachedRuntime = get().runtime
+    const heldRuntime = health.server_instance_id && runtimeServerInstance === health.server_instance_id
+      && !(health.runtimes?.gemini?.status === 'ready' && !cachedRuntime?.backends.gemini?.available) ? cachedRuntime : null
     const optionalRequests = Promise.allSettled([heldRuntime ?? scope.client.runtimeCatalog(), scope.client.jobs()] as const)
     void optionalRequests.then(([runtimeResult, jobsResult]) => {
       if (NativeAppState.currentState !== 'active' || !connectionIsCurrent(scope)) return
@@ -1841,7 +1848,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (NativeAppState.currentState !== 'active' || !validatedRevisionIsCurrent(scope, acceptedValidationRevision)) return
       let mergedSessions = sessions
       let sessionsChanged = false
-      const activeBeforePoll = get().activeSessionIds
+      const previous = get()
+      if (health.runtimes?.gemini?.status === 'ready' && previous.health?.runtimes?.gemini?.status !== 'ready'
+        && previous.runtime && !previous.runtime.backends.gemini?.available) {
+        reloadRuntimeIfUnchanged(get, set, previous.runtime)
+      }
+      const activeBeforePoll = previous.activeSessionIds
       set(state => {
         const merged = mergeSessionState(sessions, state.sessions, sessionRead)
         mergedSessions = merged
@@ -2894,6 +2906,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!prompt && !files.length) return false
     const session = get().sessions.find(value => value.id === sessionId)
     if (!session) return false
+    if (steer && session.backend === 'gemini' && get().activeSessionIds.has(sessionId)) {
+      set({ error: 'Gemini CLI does not support live steering. Queue the message or stop the active turn.' }); return false
+    }
     const selectionError = runtimeSelectionError(get().health, get().runtime, session.backend, session.model)
     if (selectionError) {
       set({ error: selectionError })
@@ -3444,6 +3459,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     scheduleCurrentWorkspaceSave(get)
   },
   async forkSession(sessionId, expectedGeneration) {
+    if (get().sessions.find(chat => chat.id === sessionId)?.backend === 'gemini') {
+      set({ error: 'Native Gemini CLI session forks are unavailable.' }); return
+    }
     const scope = validatedConnectionOrReport(get, set, expectedGeneration)
     if (!scope) return
     const state = get()
@@ -3922,6 +3940,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     return scope ? queueAction(scope, sessionId, () => scope.client.moveQueued(sessionId, queuedId, direction), set, get) : false
   },
   async runQueuedNow(sessionId, queuedId, expectedGeneration) {
+    if (get().activeSessionIds.has(sessionId) && get().sessions.find(chat => chat.id === sessionId)?.backend === 'gemini') {
+      set({ error: 'Gemini CLI does not support live steering. Wait for the active turn or stop it first.' }); return false
+    }
     const queuedTurns = get().snapshots[sessionId]?.queuedTurns ?? []
     const queued = queuedTurns.find(turn => turn.queued_id === queuedId)
     if (queued && !isUserQueuedTurn(queued)) {
@@ -5486,11 +5507,11 @@ function stopForegroundRefreshTimer(): void {
  * keep every chat on "Server model" and the model picker disabled until a reconnect. Silent, like the
  * connect path's catalog load: a background retry must not raise the error banner.
  */
-function reloadMissingRuntime(get: () => AppState, set: (value: Partial<AppState>) => void): void {
-  if (!get().connected || get().runtime) return
+function reloadRuntimeIfUnchanged(get: () => AppState, set: (value: Partial<AppState>) => void, previous: RuntimeCatalog | null = null): void {
+  if (!get().connected || get().runtime !== previous) return
   const scope = captureConnection()
   void scope.client.runtimeCatalog().then(runtime => {
-    if (!connectionIsCurrent(scope) || !scope.client.isValidated || get().runtime) return
+    if (!connectionIsCurrent(scope) || !scope.client.isValidated || NativeAppState.currentState !== 'active' || get().runtime !== previous) return
     runtimeServerInstance = get().health?.server_instance_id
     set({ runtime })
   }).catch(() => undefined)
@@ -5508,7 +5529,7 @@ function startForegroundRefreshTimer(get: () => AppState, set: (value: Partial<A
     if (periodicRefreshInFlight) return
     periodicRefreshInFlight = true
     const operation = get().connected ? get().refreshSessions() : get().reconnect()
-    reloadMissingRuntime(get, set)
+    reloadRuntimeIfUnchanged(get, set)
     void operation.finally(() => { periodicRefreshInFlight = false })
   }, FOREGROUND_REFRESH_MS)
 }
@@ -5669,7 +5690,7 @@ function installAppLifecycle(
         // most; the health read then takes the connection offline as before, and no receipt is written to it.
         void get().syncSelectedSession('recovery')
         await get().refreshSessions()
-        reloadMissingRuntime(get, set)
+        reloadRuntimeIfUnchanged(get, set)
       } else await get().reconnect()
       const selectedSessionId = get().selectedSessionId
       const selectedSyncInFlight = Boolean(
@@ -6095,6 +6116,9 @@ function startSelectedStream(
     if (!connectionIsCurrent(scope) || generation !== streamGeneration || epoch !== selectionEpoch || get().selectedSessionId !== sessionId) return
     handler(...args)
   }
+  const noticeCanvasComments = () => set(state => ({
+    canvasCommentNotices: { ...state.canvasCommentNotices, [sessionId]: (state.canvasCommentNotices[sessionId] ?? 0) + 1 },
+  }))
   streamStop = scope.client.stream(sessionId, after, {
     onEvent: guarded(event => {
       if (event.session_id !== sessionId) return
@@ -6112,6 +6136,8 @@ function startSelectedStream(
           syncError: null,
           lastTimelineSyncAt: Date.now(),
         })
+        // The stream does not replay a comment side chat's notice sent while it was down.
+        noticeCanvasComments()
       } else if (detail?.fatal) {
         const message = detail.error.message || `Live updates closed (${detail.code}).`
         if (detail.code === 4401) {
@@ -6162,6 +6188,7 @@ function startSelectedStream(
         revision,
       })
     }),
+    onCanvasCommentsChanged: guarded(noticeCanvasComments),
   })
 }
 
@@ -6422,7 +6449,7 @@ async function notifyOnce(scope: ConnectionScope, session: Session, turnKey: str
     await Notifications.scheduleNotificationAsync({
       content: {
         title: session.title,
-        body: session.backend === 'cursor' ? 'Cursor turn finished' : 'Response finished',
+        body: session.backend === 'gemini' ? 'Gemini CLI turn finished' : session.backend === 'cursor' ? 'Cursor turn finished' : 'Response finished',
         data: { profileId: scope.profileId, serverIdentity: scope.namespace, sessionId: session.id },
       },
       trigger: null,

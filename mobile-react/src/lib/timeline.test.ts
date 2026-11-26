@@ -1781,3 +1781,19 @@ assert(timelineEventLabel('provider_session_reset') === 'Provider context reset'
 assert(timelineEventLabel('turn_deferred') === 'Turn Deferred', 'unknown event types are title-cased instead of raw snake_case')
 
 console.log('timeline projection regressions passed')
+
+{
+  const native = { backend: 'gemini' as const, run_id: 'gemini-run' }
+  const chunk = (seq: number, text: string, item_id: string) => event(seq, 'assistant_text', { ...native, delta: true, text, item_id })
+  const stream = [event(1, 'turn_started', { ...native, prompt: 'Test chunks' }),
+    chunk(2, '  ha', 'one'), chunk(3, 'ha', 'one'), chunk(4, 'ha', 'one'), chunk(5, '\n', 'one'),
+    event(6, 'tool_started', { ...native, tool_id: 't', text: 'read_file' }),
+    event(7, 'tool_finished', { ...native, tool_id: 't', text: 'read_file' }), chunk(8, 'done ', 'two')]
+  for (const terminal of [null, { stopped: true }, { result_text: '  hahaha\ndone ' }]) {
+    const rows = projectTimeline(terminal ? [...stream, event(9, 'turn_finished', { ...native, ...terminal })] : stream, [])
+    const text = rows.filter(row => row.kind === 'message' && row.role === 'assistant').map(rowText)
+    assert(JSON.stringify(text) === JSON.stringify(['  hahaha\n', 'done ']), 'Gemini stream retains exact text and native item boundaries')
+    const positions = rows.filter(row => row.kind === 'message' || row.kind === 'trace').map(row => row.seq)
+    assert(positions.indexOf(2) < positions.indexOf(6) && positions.indexOf(6) < positions.indexOf(8), 'Gemini tool activity stays between native text items')
+  }
+}

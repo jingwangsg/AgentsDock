@@ -1666,6 +1666,67 @@ describe('Composer', () => {
     expect(await screen.findByRole('tooltip')).toHaveTextContent(/model choices are still loading/i)
   })
 
+  it('selects reasoning for the default Gemini Argon model and clears it when switching to an unsupported model', async () => {
+    const argon = 'gcp/google/gemini-4-argon'
+    const flash = 'gcp/google/gemini-3.8-flash'
+    let session: Session = { id: 'chat-1', title: 'Chat', backend: 'gemini' }
+    const update = vi.fn(async (_id: string, patch: Record<string, unknown>) => {
+      session = { ...session, ...definedValues(patch) }
+      return session
+    })
+    Object.assign(window.agentsDock, { sessions: { update } })
+    useAppStore.setState({
+      sessions: [session],
+      health: { ok: true, capabilities: { gemini_backend: { available: true, version: 1 } } },
+      runtimeCatalog: { backends: { gemini: {
+        available: true, default_model: argon, efforts: [],
+        models: [{ value: argon, label: 'Argon' }, { value: flash, label: 'Flash' }],
+        model_efforts: { [argon]: [{ value: 'low', label: 'Low' }, { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }] }
+      } } }
+    })
+    const user = userEvent.setup()
+    render(<Composer />)
+
+    const editor = screen.getByPlaceholderText('Message')
+    await user.type(editor, '/reasoning')
+    await user.click(await screen.findByRole('option', { name: /^Reasoning/ }))
+    expect(screen.getByRole('menuitemcheckbox', { name: 'Server default' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('menuitemcheckbox', { name: 'Low' })).toBeVisible()
+    expect(screen.getByRole('menuitemcheckbox', { name: 'Medium' })).toBeVisible()
+    await user.click(screen.getByRole('menuitemcheckbox', { name: 'High' }))
+    expect(update).toHaveBeenCalledWith('chat-1', expect.objectContaining({ effort: 'high' }))
+
+    await user.click(await screen.findByRole('button', { name: 'Argon · High' }))
+    await user.click(screen.getByRole('menuitemcheckbox', { name: 'Flash' }))
+    expect(update).toHaveBeenCalledWith('chat-1', expect.objectContaining({ model: flash, effort: null }))
+    await user.click(await screen.findByRole('button', { name: 'Flash' }))
+    expect(screen.queryByText('Reasoning')).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitemcheckbox', { name: 'High' })).not.toBeInTheDocument()
+  })
+
+  it('lets a Gemini chat reset a saved effort after the server stops offering reasoning', async () => {
+    const argon = 'gcp/google/gemini-4-argon'
+    const session: Session = { id: 'chat-1', title: 'Chat', backend: 'gemini', model: argon, effort: 'high' }
+    const update = vi.fn(async (_id: string, patch: Record<string, unknown>) => ({ ...session, ...definedValues(patch) }))
+    Object.assign(window.agentsDock, { sessions: { update } })
+    useAppStore.setState({
+      sessions: [session],
+      health: { ok: true, capabilities: { gemini_backend: { available: true, version: 1 } } },
+      runtimeCatalog: { backends: { gemini: { available: true, default_model: argon, models: [{ value: argon, label: 'Argon' }], efforts: [] } } }
+    })
+    const user = userEvent.setup()
+    render(<Composer />)
+    const chip = screen.getByRole('button', { name: 'Argon' })
+    await user.click(chip)
+    expect(screen.getByText('Reasoning')).toBeVisible()
+    const reset = screen.getByRole('menuitemcheckbox', { name: 'Server default' })
+    expect(screen.queryByRole('menuitemcheckbox', { name: 'High' })).not.toBeInTheDocument()
+    await user.click(reset)
+    expect(update).toHaveBeenCalledWith('chat-1', expect.objectContaining({ effort: null }))
+    await user.click(chip)
+    expect(screen.queryByText('Reasoning')).not.toBeInTheDocument()
+  })
+
   it('never exposes a Cursor reasoning control from stale stored effort', async () => {
     useAppStore.setState({
       sessions: [{ id: 'chat-1', title: 'Chat', backend: 'cursor', model: 'auto', effort: 'high' }],

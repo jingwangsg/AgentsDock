@@ -1,5 +1,70 @@
 # Public development log
 
+## 2026-11-26 — Stop showing a Canvas comment turn twice
+
+- A Canvas comment that starts a chat turn shows in the chat as a short line naming the canvas and the element, while the agent is sent a longer prompt. History sync compared the agent's transcript with the chat by text, found no match, and added the prompt to the chat as a second message. Sync now reads such a transcript record as the line the chat shows.
+- Verified against an isolated server with live Codex and Claude chats: an Edit comment was followed by one imported copy of its turn before the change and by none after it. Copies already in a chat stay there.
+
+## 2026-11-26 — Canvas questions in side chats on mobile
+
+- An Ask comment sent from the mobile Canvas is answered in its thread's side chat, as on desktop, and no longer starts a turn in the chat. The Canvas reads its threads again when the server announces a change and when the chat's stream is live again, so a reply, also to a question asked on another device, appears without reopening the Canvas.
+- Verified on an Android emulator with this JavaScript bundle in the current sideload package, against an isolated server with a live Codex chat. A question asked on the phone showed as working and then its answer without interaction, and the chat received no turn. A question asked from another client appeared on the phone as working after 2 s and with its answer after 8 s. iOS was not run.
+
+## 2026-11-25 — Answer Canvas questions in per-thread side chats
+
+- An Ask comment sent from the desktop Canvas no longer starts a turn in the chat. Each comment thread has its own side chat, and each question is answered by a copy of the chat as it stands: a native fork on Codex, a native side question on Claude, and a copy of the native session resumed without write tools on Gemini and Cursor. The questions of several threads are answered at the same time, including while the chat runs a turn. A thread takes one question at a time, a follow-up is told the thread's earlier questions and answers, and deleting a thread stops its running answer. Claude's side question has no tools, so it answers from the conversation without reading the Canvas file.
+- Edit comments, OpenCode chats, chats whose provider conversation has not started, and comments sent from mobile still start a turn; an Edit in a thread tells the chat the thread's side chat exchanges first. A phone showing a thread asked from the desktop shows its reply after its next refresh.
+- Verified in the built desktop app against an isolated server with live Codex, Claude, Gemini and Cursor chats. Two questions asked through the Canvas pane showed as working at the same time and were answered from the chat's context; the chat received no turn. Through the server API on each provider, a turn running in the chat finished unaffected, a follow-up's answer quoted its thread's previous question, a second question in a thread that was still answering was refused, and deleting a thread during its answer left no side chat process and no session copy. Mobile is unchanged and was not exercised.
+
+## 2026-11-25 — Skip a configured cluster home the ssh user cannot write
+
+- A default deploy to a cluster took the first configured home that existed on the host. On a cluster whose image holds that path as a root-owned directory, the upload failed with "mkdir: cannot create directory …: Permission denied". The probe now takes the first home the ssh user can write, so the deploy uses the next configured home. An existing install is still taken first. The log line reads "<home> is missing or not writable on <host>; installing in <directory>."
+- Verified on such a cluster: the previous probe chose the unwritable home and the changed probe chose the next configured home. A default deploy through the hub then installed there, and the server answered through the hub with that home as HOME.
+
+## 2026-11-25 — Keep completed Gemini turns that wrote a large native session file
+
+- A first Gemini turn whose native session file exceeded 64 MiB, or held a record above 16 MiB, ended with "Gemini CLI completed without saving a resumable session" and lost its final answer and native identity. The saved-session check now reads the whole file, as native resume does, and allows 64 MiB per record.
+- Verified with a guarded-subprocess test that writes a 68 MiB session file, and against a 96 MiB session file from a real research turn (largest record 20 MiB, read by the check in 0.28 s). A live turn through a restarted server has not been exercised yet.
+
+## 2026-11-25 — Give Gemini native file tools access to the chat's Canvas directory
+
+- AgentsServer prepares the Canvas authoring guide and SDK declarations for Gemini and includes that chat's directory in the CLI workspace. In a disposable chat, the desktop composer sent a Canvas request to live Argon. The CLI read the guides, wrote the TSX with its native file tool, ran the checker and returned a report the server could render.
+
+## 2026-11-25 — Default new Gemini chats to Full access
+
+- New Gemini chats start with native file and shell tools enabled. Desktop and mobile show the server's default until a chat has its own selection. The desktop permission picker now sends that selection to the server.
+- Verified on packaged macOS build 154 and Android build 96. Both created chats with Full access and saved an explicit Plan choice. The native CLI wrote a file and used the shell to copy its contents into a disposable Canvas directory. A separate live Argon turn also completed both file and shell tool calls.
+
+## 2026-11-25 — Select Gemini reasoning per chat
+
+- The model menu offers Low, Medium and High for Argon on desktop and mobile. The selection is saved with the chat and applies to subsequent generation requests. Server default leaves the Gemini CLI's native reasoning settings in effect.
+- Packaged desktop build 153 and Android sideload build 95 selected High and Medium respectively through the composer. An isolated upstream observed the selected levels on native Gemini CLI requests. Clearing the choice restored the workspace setting. A separate live Argon call through the CLI with High completed successfully.
+
+## 2026-11-25 — Keep Gemini visible in folder chat menus
+
+- Desktop and mobile folder menus show Gemini on servers that support it. When the CLI is unavailable, selecting the entry explains the server diagnostic. When health reports that Gemini has recovered, both clients refresh a previously unavailable model catalog.
+- Verified with macOS build 152 and Android sideload build 94 from `49e22009`. In each packaged client, a folder menu explained a simulated budget failure and created no chat. After the same isolated server reported recovery, the menu created a Gemini chat without restarting the client.
+
+## 2026-11-24 — Native Gemini CLI chats on desktop and mobile
+
+- Desktop and mobile clients can create Gemini chats, select a model and tool permissions, import native conversations by workspace, and update the CLI on the selected server. The server streams text and tool activity and retains the native identity for follow-ups.
+- Managed remotes reach the model gateway over their existing Hub SSH connection. Each remote receives a separate gateway token. A standalone installation reads its own credential.
+- Verified with Gemini CLI 0.71.1, an isolated AgentsServer, Electron and an Android emulator. Both clients completed a tool call and a follow-up. Both clients updated the CLI. Android reopened the originating chat from its completion notification. OpenSSH isolation, native Stop, queued resume and scoped chat delivery were exercised with a local model fixture. Production inference acceptance remains pending.
+- Local macOS build 150 and Android sideload build 92 were built from client commit `f031cce7`. The packaged Electron renderer and installed Android APK each completed two turns against the isolated server and model fixture.
+- Repacked macOS build 151 and Android sideload build 93 from `4363e934`. The packaged Electron runtime files, Android JavaScript bundle and Android native libraries matched builds 150 and 92 byte for byte.
+
+## 2026-11-23 — Explain Cursor provider exhaustion and preserve recoverable sessions
+
+- A failed native request reporting `[resource_exhausted]` now records a fixed diagnostic on both the error and the terminal event. Clients can display the provider code without exposing stderr or private provider text. A failed turn still has an empty assistant result.
+- If the first turn hits this limit, AgentsServer keeps the native session ID only after verifying that Cursor saved the conversation in the original workspace. The next user message can resume that session. An error does not mark instructions or fork memory as delivered.
+- Verified with an isolated server and Android build 91. A controlled failure after a real Cursor turn displayed the provider reason. A manual follow-up reused the same native ID, recalled a code word and cleared the latest-run warning. Provider capacity and quotas are enforced upstream. This change requires an AgentsServer update.
+
+## 2026-11-23 — Keep a selected Cursor model usable after a catalog timeout
+
+- When Cursor was signed in but model discovery timed out, the server returned only Auto. Sending from a chat pinned to another model then reported that the model was unavailable. The desktop and mobile clients now let Cursor validate the saved selection when the list is incomplete. A complete listing, an explicit plan restriction and an unavailable runtime still enforce their existing checks.
+- The default option displays the active model reported by `agent about`, including its reasoning effort. The native model list can mark Auto as the default even when the CLI is configured to run a named model.
+- Verified the same pinned Argon High chat from an isolated Electron app and iPhone simulator. Both sent through an authenticated AgentsServer while its model-list command timed out, and both displayed real Cursor replies. The Codex native default completed a separate GPT-6.2 Sol turn. Availability is source only.
+
 ## 2026-11-23 — Hub sign-in for managed agents and Cursor on desktop and mobile
 
 - A hub deployment enrolls the SSH remote for Codex and Cursor sign-in. The remote runs each turn in its own workspace with a provider access token issued through the hub. The hub retains the refresh credential.

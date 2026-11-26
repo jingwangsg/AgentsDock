@@ -1,4 +1,4 @@
-import { MousePointer2 } from 'lucide-react-native'
+import { MousePointer2, Sparkles } from 'lucide-react-native'
 import { Image, StyleSheet, View } from 'react-native'
 import type { Backend } from '../types'
 
@@ -8,6 +8,7 @@ const BACKEND_MARK_SRC = {
 } as const
 
 export function BackendMark({ backend, size = 22 }: { backend: Backend; size?: number }) {
+  if (backend === 'gemini') return <Sparkles size={size} color="#4782db" />
   if (backend === 'cursor') {
     return <View style={[styles.cursor, { width: size, height: size, borderRadius: Math.max(4, size * 0.27) }]}><MousePointer2 size={size * 0.68} color="#fff" strokeWidth={2.2} /></View>
   }

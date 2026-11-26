@@ -795,7 +795,15 @@ export class TimelineProjector {
     if (event.type === 'assistant_text' || event.type === 'turn_finished') {
       const turn = this.writableTurn(this.ensureTurn(event))
       const text = event.type === 'turn_finished' ? event.result_text : event.text
-      if (text?.trim()) this.appendAssistantOutput(turn, event, text, event.type === 'turn_finished')
+      if (event.backend === 'gemini' && event.type === 'assistant_text' && event.delta === true && event.item_id && text) {
+        const previous = turn.assistant.at(-1)
+        if (previous?.delta === true && previous.item_id === event.item_id) {
+          turn.assistant[turn.assistant.length - 1] = { ...previous, text: (previous.text ?? '') + text }
+        } else turn.assistant.push(event)
+      } else if (event.backend === 'gemini' && event.type === 'turn_finished' && text && turn.assistant.some(part => part.delta === true)) {
+        // A truncated replay can start halfway through a native item. The terminal snapshot restores its full answer.
+        if (turn.assistant.map(part => part.text).join('') !== text) turn.assistant.splice(0, turn.assistant.length, event)
+      } else if (text?.trim()) this.appendAssistantOutput(turn, event, text, event.type === 'turn_finished')
       if (event.type === 'turn_finished') {
         if (event.stopped) {
           turn.stoppedAt ||= event.ts
@@ -2526,6 +2534,7 @@ export function eventErrorText(event: Event): string {
 }
 
 export function messageItemText(item: MessageItem): string {
+  if (item.role === 'assistant' && item.events.every(event => event.backend === 'gemini' && event.delta === true)) return item.events.map(messageText).join('')
   return item.events.map(messageText).map(value => value.trim()).filter(Boolean).join('\n\n')
 }
 

@@ -152,7 +152,7 @@ export function supportedCrossChatTargetBackends(health: Health | null | undefin
   if (!crossChatHandoffsAvailable(health)) return []
   const advertised = health?.capabilities?.cross_chat_handoffs_v1?.supported_target_backends
   if (!Array.isArray(advertised)) return ['codex', 'claude']
-  return advertised.filter((backend): backend is Backend => backend === 'codex' || backend === 'claude' || backend === 'cursor')
+  return advertised.filter((backend): backend is Backend => backend === 'codex' || backend === 'claude' || backend === 'cursor' || backend === 'gemini')
 }
 
 /**
@@ -525,7 +525,7 @@ function validNewAgentReferenceTarget(reference: ChatReference): boolean {
     && reference.target_route_id === undefined
     && reference.target_route_revision === undefined
     && typeof settings === 'object' && settings !== null
-    && (settings.backend === undefined || ['claude', 'codex', 'cursor'].includes(settings.backend))
+    && (settings.backend === undefined || ['claude', 'codex', 'cursor', 'gemini'].includes(settings.backend))
     && (settings.model === null || typeof settings.model === 'string')
     && (settings.effort === null || typeof settings.effort === 'string')
     && (settings.server_identity === null || (typeof settings.server_identity === 'string' && settings.server_identity.length <= 240))

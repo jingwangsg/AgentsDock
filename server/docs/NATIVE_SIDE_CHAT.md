@@ -43,3 +43,16 @@ Tests must cover real tool-result context, successive questions, cancellation
 with a running parent, unchanged parent goals/transcripts, native cold resume,
 HTTP ownership, request deduplication and Clear arriving before a delayed POST.
 Never import the production server or use a real user chat in test setup.
+
+## Canvas comment threads
+
+A question on a Canvas element is answered in a side chat of its comment
+thread, kept in its own store and keyed by the thread, so the threads'
+questions run at the same time. Every question gets a new copy of the chat as
+it stands: an ephemeral Codex fork, a Claude side question, or, for Gemini and
+Cursor, a copy of the native session that the CLI resumes without write tools
+and that is deleted once its answer returns. Nothing is kept on the provider's
+side between a thread's questions: Claude replays the thread's earlier
+exchanges natively, and the others receive them in the question. Deleting the
+thread stops its running answer. The server announces a change with a
+`canvas_comments_updated` packet on the chat's stream.

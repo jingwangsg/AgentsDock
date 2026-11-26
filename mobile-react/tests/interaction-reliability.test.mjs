@@ -106,7 +106,7 @@ test('send, steer, and queued run-now controls retain touch-safe targets and dur
   assert.match(store, /locallyObservedSeq[\s\S]*?void get\(\)\.syncSelectedSession\('recovery'\)/)
   assert.match(composer, /disabled=\{crossChatDelivery \|\| networkDisabled \|\| queueBusy\} style=\{styles\.queuePrompt\}/)
   assert.match(composer, /const blockedByEarlierDelivery = queuedTurnHasEarlierDeliveryBarrier\(allTurns, turn\.queued_id\)/)
-  assert.match(composer, /disabled=\{networkDisabled \|\| queueBusy \|\| blockedByEarlierDelivery\}/)
+  assert.match(composer, /disabled=\{networkDisabled \|\| geminiRunning \|\| queueBusy \|\| blockedByEarlierDelivery\}/)
   assert.match(ui, /touchSize = 44/)
   assert.match(ui, /iconButton: \{ flexShrink: 0/)
   assert.match(sidebar, /header: \{ minHeight: 44/)
@@ -156,9 +156,8 @@ test('new chat creation cannot silently discard a mobile tap or failed request',
   const quickCreate = store.slice(quickCreateStart, store.indexOf('\n  setChatDefaults(patch) {'))
   assert.match(quickCreate, /const scope = validatedConnectionOrReport\(get, set, expectedGeneration\)[\s\S]*?if \(!scope\) return Promise\.resolve\(false\)/)
   assert.match(quickCreate, /if \(quickCreateSessionInFlight\?\.scope === scope\) return quickCreateSessionInFlight\.promise/)
-  // Only backends this host can start now: Cursor needs its CLI ready, not just server support.
-  assert.match(quickCreate, /const backends = readyChatBackends\(state\.health, state\.runtime\)/)
-  assert.match(quickCreate, /backends\.includes\(state\.chatDefaults\.backend\) \? state\.chatDefaults\.backend : \(backends\[0\] \?\? 'codex'\)/)
+  // The folder menu's backend wins, else the stored default: no other backend is substituted.
+  assert.match(quickCreate, /const backend = preset\?\.backend \?\? state\.chatDefaults\.backend/)
   assert.match(quickCreate, /if \(backend !== state\.chatDefaults\.backend \|\| runtimeSelectionError\(state\.health, state\.runtime, backend, model \|\| null\)\) \{[\s\S]*?model = ''[\s\S]*?effort = ''/)
   assert.match(quickCreate, /const operation = get\(\)\.createSession\(\{[\s\S]*?title: 'New chat'[\s\S]*?\}, scope\.generation\)\.finally\(/)
   assert.match(quickCreate, /if \(quickCreateSessionInFlight\?\.promise === operation\) quickCreateSessionInFlight = null/)

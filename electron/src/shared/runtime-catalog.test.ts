@@ -299,6 +299,13 @@ describe('optional Cursor backend admission', () => {
     }, cursorCatalog)).toEqual(['claude', 'codex'])
   })
 
+  it('defers a saved Cursor selection to the CLI when model discovery is incomplete', () => {
+    const cursor = { ...cursorCatalog.backends.cursor!, model_source: 'cursor-agent --list-models failed' }
+    const selected = 'gemini-4-argon-high'
+    expect(runtimeSelectionError(cursorHealth, { backends: { cursor } }, 'cursor', selected)).toBeNull()
+    expect(runtimeSelectionError(cursorHealth, { backends: { cursor: { ...cursor, model_list_complete: true } } }, 'cursor', selected)).toMatch(/not offered/)
+  })
+
   it('fails closed for Cursor work when either capability signal disappears', () => {
     expect(runtimeSelectionError(cursorHealth, cursorCatalog, 'cursor', 'auto')).toBeNull()
     expect(runtimeSelectionError({ ok: true }, cursorCatalog, 'cursor', 'auto')).toMatch(/Cursor is unavailable/)
@@ -478,4 +485,14 @@ describe('runtime diagnostics', () => {
     expect(runtimeDiagnosticLabel(diagnostic)).toBe('Ready')
     expect(runtimeDiagnosticCurrentError(diagnostic)).toBe('')
   })
+})
+
+it('gates Gemini independently of other CLIs and admits only this server’s models', () => {
+  const health: Health = { ok: true, capabilities: { gemini_backend: { available: true, version: 1, native_resume: true } } }
+  const runtime: RuntimeCatalog = { backends: { gemini: { available: true, models: [{ value: 'gcp/google/gemini', label: 'Gemini' }], efforts: [] } } }
+  expect(readyChatBackends(health, runtime).includes('gemini')).toBe(true)
+  expect(readyChatBackends({ ok: true }, runtime).includes('gemini')).toBe(false)
+  expect(runtimeSelectionError(health, runtime, 'gemini', 'gcp/google/gemini')).toBe(null)
+  expect(Boolean(runtimeSelectionError(health, runtime, 'gemini', 'gemini-through-cursor'))).toBe(true)
+  expect(runtimeEffortAfterModelChange(runtime, 'gemini', 'gcp/google/gemini', 'high')).toBe(null)
 })

@@ -68,6 +68,7 @@ export function NewAgentSheet({ hosts, backends, backend, model, effort, folder,
     { value: '', label: hosts?.localTag ? `This server · ${hosts.localTag}` : 'This server' },
     ...(hosts?.servers ?? []).map(server => ({ value: server.server_identity, label: server.name || 'Hub' })),
   ]
+  const selectedEffort = backendDraft === 'gemini' ? runtimeEffortAfterModelChange(runtime, backendDraft, modelDraft, effortDraft) : effortDraft || null
   const chosenServer = hosts?.servers.find(server => server.server_identity === serverIdentity)
   const serverName = chosenServer?.name ?? ''
   // This server is not in `servers`; its own health names its default directory.
@@ -123,7 +124,7 @@ export function NewAgentSheet({ hosts, backends, backend, model, effort, folder,
           testID="new-agent-confirm"
           accessibilityRole="button"
           accessibilityLabel="Add @New agent"
-          onPress={() => onConfirm({ backend: backendDraft, model: modelDraft || null, effort: effortDraft || null, server_identity: serverIdentity, folder: folderDraft.trim() || 'General', cwd: cwdDraft.trim() }, serverName)}
+          onPress={() => onConfirm({ backend: backendDraft, model: modelDraft || null, effort: selectedEffort, server_identity: serverIdentity, folder: folderDraft.trim() || 'General', cwd: cwdDraft.trim() }, serverName)}
           style={({ pressed }) => [styles.confirm, { backgroundColor: colors.blue, opacity: pressed ? 0.7 : 1 }]}
         >
           <Text style={styles.confirmText}>Add @New agent</Text>

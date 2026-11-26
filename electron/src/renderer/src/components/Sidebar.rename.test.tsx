@@ -206,6 +206,21 @@ describe('sidebar chat rename', () => {
     expect(requestNewChat).toHaveBeenCalledWith({ folder: 'Research', backend: 'cursor' })
   })
 
+  it('explains an unavailable Gemini CLI from the folder menu without creating a chat', async () => {
+    const message = 'The NVIDIA Inference Hub budget for this credential is exhausted.'
+    const requestNewChat = vi.fn()
+    useAppStore.setState({
+      requestNewChat, error: null, sessions: [session], folderOrder: ['General'],
+      health: { ok: true, capabilities: { gemini_backend: { available: true, version: 1 } },
+        runtimes: { gemini: { backend: 'gemini', status: 'error', available: false, message } } }
+    })
+    render(<Sidebar />)
+    fireEvent.contextMenu(screen.getByText('General').closest('.section-header')!)
+    await userEvent.setup().click(screen.getByRole('menuitem', { name: 'New Gemini CLI Chat · Unavailable' }))
+    expect(useAppStore.getState().error).toBe(message)
+    expect(requestNewChat).not.toHaveBeenCalled()
+  })
+
   it('hides Cursor and OpenCode while their CLI is missing on this server', async () => {
     const missing = (backend: 'cursor' | 'opencode') => ({ backend, status: 'missing' as const, available: false, installed: false, authenticated: false, message: `${backend} is not installed.` })
     useAppStore.setState({

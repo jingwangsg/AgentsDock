@@ -41,6 +41,7 @@ const cliProgressMessages = {
   claude: 'updateAll.updatingClaude',
   codex: 'updateAll.updatingCodex',
   cursor: 'updateAll.updatingCursor',
+  gemini: 'updateAll.updatingGemini',
 }
 
 /** The saved order after dragging one server onto another's place; the local server stays first. */
@@ -353,7 +354,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
       setBusy(null)
     }
   }
-  const updateCli = async (profile: PublicServerProfile, backend: 'claude' | 'codex' | 'cursor') => {
+  const updateCli = async (profile: PublicServerProfile, backend: 'claude' | 'codex' | 'cursor' | 'gemini') => {
     noteRow(profile.id, { kind: 'cli', working: true, text: t('runtimeUpdate.updating') })
     try {
       const { output, diagnostic } = await window.agentsDock.servers.updateCli(profile.id, backend)
@@ -495,6 +496,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
                   <DropdownMenu.Item className="menu-item" onSelect={() => void updateCli(profile, 'claude')}>{t('runtimeUpdate.claude')}</DropdownMenu.Item>
                   <DropdownMenu.Item className="menu-item" onSelect={() => void updateCli(profile, 'codex')}>{t('runtimeUpdate.codex')}</DropdownMenu.Item>
                   <DropdownMenu.Item className="menu-item" onSelect={() => void updateCli(profile, 'cursor')}>{t('runtimeUpdate.cursor')}</DropdownMenu.Item>
+                  <DropdownMenu.Item className="menu-item" onSelect={() => void updateCli(profile, 'gemini')}>{t('runtimeUpdate.gemini')}</DropdownMenu.Item>
                 </DropdownMenu.Content>
               </DropdownMenu.Portal>
             </DropdownMenu.Root>

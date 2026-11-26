@@ -710,7 +710,15 @@ export function projectTimeline(events: Event[], knownFiles: AgentFile[]): Timel
     if (event.type === 'assistant_text' || event.type === 'turn_finished') {
       const turn = turnFor(event)
       const text = event.type === 'turn_finished' ? event.result_text : event.text
-      if (text?.trim()) appendAssistant(turn, event, text, event.type === 'turn_finished')
+      if (event.backend === 'gemini' && event.type === 'assistant_text' && event.delta === true && event.item_id && text) {
+        const previous = turn.assistant.at(-1)
+        if (previous?.delta === true && previous.item_id === event.item_id) {
+          turn.assistant[turn.assistant.length - 1] = { ...previous, text: (previous.text ?? '') + text }
+        } else turn.assistant.push(event)
+      } else if (event.backend === 'gemini' && event.type === 'turn_finished' && text && turn.assistant.some(part => part.delta === true)) {
+        // A truncated replay can start halfway through a native item. The terminal snapshot restores its full answer.
+        if (turn.assistant.map(part => part.text).join('') !== text) turn.assistant.splice(0, turn.assistant.length, event)
+      } else if (text?.trim()) appendAssistant(turn, event, text, event.type === 'turn_finished')
       if (event.type === 'turn_finished') {
         if (event.stopped) {
           promoteInterruptedCommentary(turn)
@@ -844,6 +852,29 @@ export function projectTimeline(events: Event[], knownFiles: AgentFile[]): Timel
           ...(runId && item.checkpointCommit ? { checkpointCommit: item.checkpointCommit } : {}),
         })
       }
+    }
+    if (item.assistant.some(event => event.backend === 'gemini' && event.delta === true)) {
+      let trace: TraceRow | null = null
+      for (const event of [...item.assistant, ...item.trace].sort((a, b) => a.seq - b.seq)) {
+        if (event.type === 'assistant_text') {
+          trace = null
+          rows.push({ kind: 'message', key: `${item.key}:assistant:${event.id}`, seq: event.seq, role: 'assistant', events: [event], files: [] })
+        } else {
+          if (!trace) {
+            trace = { kind: 'trace', key: `${item.key}:trace:${event.id}`, seq: event.seq, runId: item.runId, events: [], promotedCommentaryIds: [], active: false }
+            rows.push(trace)
+          }
+          trace.events.push(event)
+        }
+      }
+      if (trace) {
+        trace.active = !item.finishedAt
+        if (item.stoppedAt) trace.stoppedAt = item.stoppedAt
+      } else if (item.stoppedAt) {
+        rows.push({ kind: 'trace', key: `${item.key}:stop`, seq: item.finishedSeq ?? item.seq, runId: item.runId, events: [], promotedCommentaryIds: [], active: false, stoppedAt: item.stoppedAt })
+      }
+      if (mediaRow) rows.push(mediaRow)
+      continue
     }
     if (item.assistant.length) {
       const assistantRow: MessageRow = {
@@ -1035,6 +1066,7 @@ export function isHandoffDigestEvent(event: Event): boolean {
 }
 
 export function rowText(row: TimelineRow): string {
+  if (row.kind === 'message' && row.role === 'assistant' && row.events.every(event => event.backend === 'gemini' && event.delta === true)) return row.events.map(messageText).join('')
   if (row.kind === 'message') return row.events.map(messageText).map(value => value.trim()).filter(Boolean).join('\n\n')
   if (row.kind === 'trace') return row.events.map(messageText).filter(Boolean).join('\n')
   if (row.kind === 'progress') return row.events.map(messageText).map(value => value.trim()).filter(Boolean).join('\n\n')

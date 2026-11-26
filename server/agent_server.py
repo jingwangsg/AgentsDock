@@ -57,7 +57,7 @@ import uuid
 import weakref
 from collections import Counter, OrderedDict, defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import AbstractContextManager, asynccontextmanager, contextmanager, nullcontext, suppress
+from contextlib import ExitStack, AbstractContextManager, asynccontextmanager, contextmanager, nullcontext, suppress
 from contextvars import ContextVar, copy_context
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -90,12 +90,15 @@ import remote_servers
 import claude_model_catalog
 import codex_auth
 import hub_provider_auth
+import gemini_agent_client
+import gemini_gateway
 import codex_model_catalog
 import codex_provider
 import server_instances
 import local_session_ownership
 import moved_chat_state
 import cursor_history
+import gemini_history
 import provider_usage
 
 from codex_app_server import (
@@ -222,8 +225,9 @@ logger = logging.getLogger("agents-server")
 BACKEND_CLAUDE = "claude"
 BACKEND_CODEX = "codex"
 BACKEND_CURSOR = "cursor"
+BACKEND_GEMINI = "gemini"
 BACKEND_OPENCODE = "opencode"
-VALID_BACKENDS = {BACKEND_CLAUDE, BACKEND_CODEX, BACKEND_CURSOR, BACKEND_OPENCODE}
+VALID_BACKENDS = {BACKEND_CLAUDE, BACKEND_CODEX, BACKEND_CURSOR, BACKEND_OPENCODE, BACKEND_GEMINI}
 CODEX_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 CODEX_EFFORT_ALIASES = {
     "extra high": "xhigh",
@@ -367,6 +371,7 @@ def load_config_env_file(path: Path | None = None) -> list[str]:
 
 
 CONFIG_ENV_APPLIED = load_config_env_file()
+gemini_gateway.hub_key = os.environ.pop("AGENTSDOCK_GEMINI_INFERENCE_KEY", "").strip()
 HUB_PROVIDER_INSTALL = CONFIG_ENV_FILE.parent if os.environ.get("AGENTSDOCK_HUB_PROVIDER_AUTH") == "1" else None
 
 
@@ -467,6 +472,7 @@ CODEX_BIN = os.environ.get("CODEX_BIN", "codex")
 # ``agent`` (newer preview builds). An explicit override is authoritative;
 # otherwise runtime discovery tries the documented name first and the preview
 # alias second. ``CURSOR_BIN`` remains mutable for focused runner tests.
+GEMINI_BIN = os.environ.get("GEMINI_BIN", "gemini")
 CURSOR_BIN_OVERRIDE = os.environ.get("CURSOR_BIN", "").strip()
 CURSOR_BIN = CURSOR_BIN_OVERRIDE or "cursor-agent"
 CURSOR_EXECUTABLE_CANDIDATES = ("cursor-agent", "agent")
@@ -5269,7 +5275,7 @@ def tool_changed_paths(tool: dict[str, Any]) -> set[str]:
     paths: set[str] = set()
     direct_path_tools = {
         "edit", "write", "multiedit", "multi_edit", "notebookedit", "notebook_edit",
-        "str_replace_editor", "create", "create_file", "delete", "delete_file",
+        "str_replace_editor", "replace", "write_file", "create", "create_file", "delete", "delete_file",
         "move", "move_file", "rename", "rename_file",
     }
     if name in direct_path_tools:
@@ -5284,7 +5290,7 @@ def tool_changed_paths(tool: dict[str, Any]) -> set[str]:
         patch = tool_input.get("patch") or tool_input.get("input") or tool_input.get("value")
         if isinstance(patch, str):
             paths.update(_patch_changed_paths(patch))
-    elif name in {"exec", "shell", "run_javascript", "javascript"}:
+    elif name in {"exec", "shell", "run_shell_command", "run_javascript", "javascript"}:
         for key in ("value", "code", "script", "input", "command"):
             source = tool_input.get(key)
             if isinstance(source, str) and "apply_patch" in source and "***" in source:
@@ -6845,7 +6851,9 @@ class CreateSessionRequest(BaseModel):
     provider_jobs_access: Literal["full", "read_only", "blocked"] | None = None
     import_history: bool | None = None
     cursor_session_id: str | None = None
+    gemini_session_id: str | None = None
     opencode_session_id: str | None = None
+    gemini_permission_mode: Literal["default", "plan", "full_access"] | None = None
     cursor_permission_mode: Literal["default", "full_access", "plan"] | None = None
     # Same three names as Cursor, but "default" means OpenCode's own
     # permissions, which do allow shell.
@@ -6861,7 +6869,7 @@ PROVIDER_SESSION_IDENTIFIER_RE = re.compile(
 
 class BulkImportSessionItem(BaseModel):
     provider_session_id: str = Field(min_length=1, max_length=256)
-    backend: Literal["claude", "codex", "cursor"]
+    backend: Literal["claude", "codex", "cursor", "gemini"]
     cwd: str | None = Field(default=None, max_length=MAX_WORKSPACE_PATH_CHARS)
     title: str | None = Field(default=None, max_length=MAX_LOCAL_SESSION_LABEL_CHARS)
 
@@ -6912,6 +6920,7 @@ class UpdateSessionRequest(BaseModel):
     codex_permission_profile: str | None = Field(default=None, max_length=240)
     codex_approvals_reviewer: Literal["user", "auto_review", "guardian_subagent"] | None = None
     provider_jobs_access: Literal["full", "read_only", "blocked"] | None = None
+    gemini_permission_mode: Literal["default", "plan", "full_access"] | None = None
     cursor_permission_mode: Literal["default", "full_access", "plan"] | None = None
     opencode_permission_mode: Literal["default", "full_access", "plan"] | None = None
 
@@ -6929,6 +6938,7 @@ SESSION_LIFECYCLE_UPDATE_FIELDS = frozenset({
     "codex_permission_profile",
     "codex_approvals_reviewer",
     "provider_jobs_access",
+    "gemini_permission_mode",
     "cursor_permission_mode",
     "opencode_permission_mode",
     "archived",
@@ -7672,6 +7682,12 @@ def normalize_runtime_effort_for_model(
     provider will ignore or reject later.
     """
     normalized = normalize_runtime_effort(backend, effort, strict=strict)
+    if normalized and backend == BACKEND_GEMINI:
+        if (not model or model == gemini_gateway.ARGON_MODEL) and normalized in gemini_gateway.ARGON_EFFORTS:
+            return normalized
+        if strict:
+            raise HTTPException(400, "Unsupported reasoning level for this Gemini model.")
+        return None
     if normalized is None or str(backend or "").strip().lower() != BACKEND_CODEX:
         return normalized
 
@@ -7833,6 +7849,7 @@ def preview_session_runtime_update(
             BACKEND_CODEX: "codex_thread_id",
             BACKEND_CURSOR: "cursor_session_id",
             BACKEND_OPENCODE: "opencode_session_id",
+            BACKEND_GEMINI: "gemini_session_id",
         }[prospective_backend]
         preview["session_id"] = sess.get(provider_id_field)
     return preview
@@ -11121,6 +11138,9 @@ class SessionStore:
         claude_session_id = req.claude_session_id or (provider_id if backend == BACKEND_CLAUDE else None)
         codex_thread_id = req.codex_thread_id or (provider_id if backend == BACKEND_CODEX else None)
         cursor_session_id = req.cursor_session_id or (provider_id if backend == BACKEND_CURSOR else None)
+        gemini_id = req.gemini_session_id or (provider_id if backend == BACKEND_GEMINI else None)
+        if gemini_id and not gemini_agent_client.session_id(gemini_id):
+            raise HTTPException(400, "Gemini session ID must be a canonical UUID.")
         opencode_session_id = req.opencode_session_id or (
             provider_id if backend == BACKEND_OPENCODE else None
         )
@@ -11148,6 +11168,7 @@ class SessionStore:
             claude_session_id if backend == BACKEND_CLAUDE
             else codex_thread_id if backend == BACKEND_CODEX
             else cursor_session_id if backend == BACKEND_CURSOR
+            else gemini_id if backend == BACKEND_GEMINI
             else opencode_session_id
         )
         # A Claude chat can park an inactive Codex identity for later backend
@@ -11212,6 +11233,9 @@ class SessionStore:
             "claude_session_id": claude_session_id,
             "codex_thread_id": codex_thread_id,
             "cursor_session_id": cursor_session_id,
+            "gemini_session_id": gemini_id,
+            "gemini_session_cwd": str(Path(session_cwd).resolve()) if gemini_id else None,
+            "gemini_permission_mode": req.gemini_permission_mode or gemini_agent_client.DEFAULT_PERMISSION_MODE,
             "opencode_session_id": opencode_session_id,
             "opencode_session_cwd": (
                 session_cwd
@@ -11383,6 +11407,8 @@ class SessionStore:
                             return "claude_session_id"
                         if name == BACKEND_CURSOR:
                             return "cursor_session_id"
+                        if name == BACKEND_GEMINI:
+                            return "gemini_session_id"
                         if name == BACKEND_OPENCODE:
                             return "opencode_session_id"
                         return "codex_thread_id"
@@ -11446,6 +11472,7 @@ class SessionStore:
                     CURSOR_DEFAULT_PERMISSION_MODE,
                     set(CURSOR_PERMISSION_MODES),
                 ),
+                ("gemini_permission_mode", gemini_agent_client.DEFAULT_PERMISSION_MODE, gemini_agent_client.PERMISSIONS),
                 (
                     "opencode_permission_mode",
                     OPENCODE_DEFAULT_PERMISSION_MODE,
@@ -11959,6 +11986,10 @@ class SessionStore:
                 if previous_cursor_session_id != provider_id:
                     sess.pop("cursor_instruction_hash", None)
                     sess.pop("cursor_instruction_version", None)
+            elif backend == BACKEND_GEMINI:
+                sess["gemini_session_id"] = provider_id
+                if cwd:
+                    sess["gemini_session_cwd"] = cwd
             elif backend == BACKEND_OPENCODE:
                 sess["opencode_session_id"] = provider_id
             if backend == BACKEND_CLAUDE and cwd:
@@ -13707,6 +13738,9 @@ class JobStore:
                     cwd=parent.get("cwd"),
                     backend=run_backend,
                     codex_provider=parent.get("codex_provider") if same_backend else None,
+                    gemini_permission_mode=(
+                        parent.get("gemini_permission_mode") if run_backend == parent_backend == BACKEND_GEMINI else None
+                    ),
                     model=parent.get("model") if same_backend else None,
                     effort=parent.get("effort") if same_backend else None,
                     subagent_limit=parent.get("subagent_limit") if same_backend else None,
@@ -21475,7 +21509,7 @@ def provider_tool_active_matches(
     expected_transport = (
         CODEX_TRANSPORT_APP_SERVER
         if backend == BACKEND_CODEX
-        else "exec" if backend == BACKEND_CURSOR
+        else "exec" if backend in (BACKEND_CURSOR, BACKEND_GEMINI)
         else CLAUDE_TRANSPORT_AGENT_SDK
     )
     matches = bool(
@@ -21500,7 +21534,7 @@ def provider_tool_active_matches(
             and str(active.get("provider_turn_id") or "") == provider_turn_id
             and active.get("provider_turn_ready") is True
         )
-    elif backend == BACKEND_CURSOR:
+    elif backend in (BACKEND_CURSOR, BACKEND_GEMINI):
         proc = active.get("proc")
         matches = bool(
             matches and cursor_owner_token
@@ -21571,7 +21605,7 @@ async def provider_tool_capability_snapshot(
                      and codex_native_mailbox_owner_matches(session_id, run_id, provider_thread_id, provider_turn_id))
         ):
             raise ProviderToolError("provider tool turn is stale")
-    elif backend != BACKEND_CURSOR:
+    elif backend not in (BACKEND_CURSOR, BACKEND_GEMINI):
         raise ProviderToolError("provider tool backend is unsupported")
 
     async with ACTIVE_LOCK:
@@ -40650,17 +40684,12 @@ def cross_chat_supported_target_backends() -> list[str]:
         and claude_sdk_dependency_available()
     ):
         supported.append(BACKEND_CLAUDE)
-    # Cursor has no separately selectable transport: the compatibility and
-    # authentication probe is the transport gate.  Use only the cached probe
-    # here so /api/health never blocks on CLI subprocesses.  Startup and the
-    # runtime catalog refresh this diagnostic, while actual turn admission
-    # calls ensure_runtime_available() again before any provider launch.
+    # Health is nonblocking. Admission repeats the native compatibility and
+    # authentication probe before a headless process receives a delivery.
     with RUNTIME_DIAGNOSTICS_LOCK:
-        cursor_diagnostic = dict(
-            RUNTIME_DIAGNOSTICS.get(BACKEND_CURSOR) or {}
-        )
-    if cursor_diagnostic.get("status") == "ready":
-        supported.append(BACKEND_CURSOR)
+        for backend in (BACKEND_CURSOR, BACKEND_GEMINI):
+            if (RUNTIME_DIAGNOSTICS.get(backend) or {}).get("status") == "ready":
+                supported.append(backend)
     return supported
 
 
@@ -40683,12 +40712,12 @@ def cross_chat_handoffs_capability() -> dict[str, Any]:
     else:
         message = (
             "Cross-chat handoffs require native Codex app-server, Claude "
-            "Agent SDK, or a compatible authenticated Cursor CLI target "
+            "Agent SDK, or a compatible authenticated Cursor or Gemini CLI target "
             "transport."
         )
         action = (
             "Enable Codex app-server, install and enable Claude Agent SDK, "
-            "or install and authenticate a compatible Cursor CLI."
+            "or install and authenticate a compatible Cursor or Gemini CLI."
         )
     return {
         "available": available,
@@ -40817,6 +40846,7 @@ def cross_chat_handoffs_capability() -> dict[str, Any]:
             BACKEND_CODEX: CODEX_TRANSPORT_APP_SERVER,
             BACKEND_CLAUDE: CLAUDE_TRANSPORT_AGENT_SDK,
             BACKEND_CURSOR: "headless-stream-json",
+            BACKEND_GEMINI: "headless-stream-json",
         },
     }
 
@@ -40837,18 +40867,14 @@ def cross_chat_delivery_client_capabilities(target: dict[str, Any]) -> list[str]
                 detail="target Claude chat must use Agent SDK transport for cross-chat delivery",
             )
         return [CLAUDE_SDK_INTERACTIVE_CLIENT_CAPABILITY]
-    if backend == BACKEND_CURSOR:
+    if backend in (BACKEND_CURSOR, BACKEND_GEMINI):
         if not cross_chat_target_backend_supported(backend):
+            label = "Cursor" if backend == BACKEND_CURSOR else "Gemini"
             raise HTTPException(
                 status_code=409,
-                detail=(
-                    "target Cursor chat requires a compatible authenticated "
-                    "headless Cursor CLI for cross-chat delivery"
-                ),
+                detail=f"target {label} chat requires a compatible authenticated headless {label} CLI for cross-chat delivery",
             )
-        # Cursor's print-mode runner has no renderer-owned interactive bridge.
-        # An empty immutable client-capability set selects that exact headless
-        # path; request/reply final answers are relayed by the server ledger.
+        # Headless targets receive request/reply final answers through the server ledger.
         return []
     raise HTTPException(
         status_code=409,
@@ -40860,6 +40886,7 @@ CROSS_CHAT_DELIVERY_CAPABILITIES_BY_BACKEND: dict[str, frozenset[str]] = {
     BACKEND_CODEX: frozenset({CODEX_INTERACTIVE_CLIENT_CAPABILITY}),
     BACKEND_CLAUDE: frozenset({CLAUDE_SDK_INTERACTIVE_CLIENT_CAPABILITY}),
     BACKEND_CURSOR: frozenset(),
+    BACKEND_GEMINI: frozenset(),
 }
 
 
@@ -49844,7 +49871,11 @@ def strip_agentsdock_generated_user_text(
         recover_file_ids=False,
     )
     if lineage:
-        return str(lineage[-1].get("prompt") or "")
+        cleaned = str(lineage[-1].get("prompt") or "")
+    if provider_history:
+        # The timeline holds a Canvas comment's turn as its display text: a provider record that is the
+        # comment's prompt must compare equal to it, or history sync imports the turn a second time.
+        cleaned = agentsdock_canvas.comment_display_from_prompt(cleaned) or cleaned
     return cleaned
 
 
@@ -50181,6 +50212,8 @@ def session_provider_id(sess: dict[str, Any]) -> str | None:
         return sess.get("codex_thread_id") or sess.get("session_id")
     if backend == BACKEND_CURSOR:
         return sess.get("cursor_session_id") or sess.get("session_id")
+    if backend == BACKEND_GEMINI:
+        return sess.get("gemini_session_id") or sess.get("session_id")
     if backend == BACKEND_OPENCODE:
         return sess.get("opencode_session_id") or sess.get("session_id")
     return sess.get("session_id")
@@ -50867,11 +50900,49 @@ def local_cursor_session_candidates(known_provider_ids: set[str]) -> list[dict[s
     return list(candidates.values())
 
 
+def gemini_initial_history(provider_id: str, cwd: str, limit: int | None = None) -> tuple[Path | None, list[dict[str, Any]]]:
+    if not cwd or not gemini_agent_client.session_id(provider_id):
+        return None, []
+    matches = list(gemini_history.local_sessions(cwd=cwd, provider_id=provider_id))
+    if len(matches) != 1:
+        return None, []
+    session = matches[0]
+    items: deque[dict[str, Any]] = deque(maxlen=normalized_history_import_limit(limit))
+    for role, text in gemini_history.public_messages(session, max_bytes=MAX_LOCAL_TRANSCRIPT_BYTES,
+                                                     max_line_bytes=MAX_LOCAL_TRANSCRIPT_LINE_BYTES,
+                                                     max_records=MAX_LOCAL_TRANSCRIPT_SCAN_LINES):
+        if role == "user":
+            text = strip_agentsdock_generated_user_text(text, provider_history=True)
+        item = normalized_history_item(role, text, allow_user_boilerplate=True)
+        if item:
+            items.append(item)
+    return session.path, list(items)
+
+
+def gemini_picker_label(session: gemini_history.Session) -> str | None:
+    # A later rewind can remove the first user message. Only preview a full, pinned revision.
+    summary, rows = gemini_history.read_transcript(
+        session, max_bytes=session.size, max_line_bytes=gemini_history.MAX_PICKER_TRANSCRIPT_BYTES,
+        max_records=MAX_LOCAL_TRANSCRIPT_SCAN_LINES,
+    )
+    for role, text in gemini_history.public_message_rows(rows):
+        if role != "user":
+            continue
+        preview = strip_agentsdock_generated_user_text(text, provider_history=True).strip()
+        if preview and not preview.startswith(("/", "?")):
+            # A native summary of a managed turn may describe its private instructions.
+            if summary and any(gemini_history.CONTEXT_LABEL in str(content) for kind, content in rows if kind == "user"):
+                summary = None
+            return native_session_title(summary) or " ".join(preview.split())[:160]
+    return None
+
+
 def local_session_candidates(
     limit: int,
     known_provider_keys: set[tuple[str, str]] | None = None,
     *,
     include_cursor: bool = False,
+    include_gemini: bool = False,
 ) -> list[dict[str, Any]]:
     """Enumerate sessions not already used by this or another local instance."""
 
@@ -50900,6 +50971,22 @@ def local_session_candidates(
         candidates.extend(local_cursor_session_candidates({
             provider_id for backend, provider_id in known_provider_keys if backend == BACKEND_CURSOR
         }))
+    gemini_sessions: dict[str, gemini_history.Session] = {}
+    if include_gemini:
+        ambiguous: set[str] = set()
+        for session in gemini_history.local_sessions():
+            key = session.provider_id
+            if (BACKEND_GEMINI, key) in known_provider_keys or key in ambiguous:
+                continue
+            if key in gemini_sessions:
+                gemini_sessions.pop(key)
+                ambiguous.add(key)
+                continue
+            gemini_sessions[key] = session
+        candidates.extend({
+            "provider_session_id": key, "backend": BACKEND_GEMINI, "cwd": session.cwd,
+            "label": f"Gemini chat {key[:8]}", "updated_at": iso_from_timestamp(session.updated),
+        } for key, session in gemini_sessions.items())
     candidates.sort(key=lambda c: c["updated_at"], reverse=True)
     candidates = candidates[:max(1, min(limit, MAX_LOCAL_SESSION_LIST_ITEMS))]
     try:
@@ -50908,9 +50995,19 @@ def local_session_candidates(
         # Only the names depend on it; the provider titles keep the list and imports usable.
         logger.warning("earlier chat titles unavailable: %s", exc)
         earlier_titles = {}
+    preview_budget = gemini_history.MAX_PICKER_TOTAL_BYTES
     for candidate in candidates:
+        key = (candidate["backend"], candidate["provider_session_id"])
+        session = gemini_sessions.get(key[1]) if key[0] == BACKEND_GEMINI else None
+        if (session and not earlier_titles.get(key)
+                and session.size <= min(gemini_history.MAX_PICKER_TRANSCRIPT_BYTES, preview_budget)):
+            preview_budget -= session.size
+            try:
+                candidate["label"] = gemini_picker_label(session) or candidate["label"]
+            except (ValueError, OSError, RecursionError):
+                pass
         candidate["label"] = local_session_label(
-            earlier_titles.get((candidate["backend"], candidate["provider_session_id"])), candidate["label"],
+            earlier_titles.get(key), candidate["label"],
         )
     return candidates
 
@@ -50957,6 +51054,7 @@ def standalone_provider_session(sess: dict[str, Any]) -> dict[str, Any]:
     isolated["claude_session_id"] = None
     isolated["codex_thread_id"] = None
     isolated["cursor_session_id"] = None
+    isolated["gemini_session_id"] = None
     isolated["opencode_session_id"] = None
     isolated["backend_locked"] = False
     isolated.pop("cursor_instruction_hash", None)
@@ -52895,7 +52993,9 @@ async def import_session_history(sess: dict[str, Any], *, force: bool = False, l
     backend = (sess.get("backend") or DEFAULT_BACKEND).lower()
     if not provider_id:
         return {"imported": 0, "source_path": None, "message": "No provider session ID set."}
-    if backend == BACKEND_CURSOR:
+    if backend in (BACKEND_CURSOR, BACKEND_GEMINI):
+        reader = gemini_initial_history if backend == BACKEND_GEMINI else cursor_initial_history
+        name = "Gemini" if backend == BACKEND_GEMINI else "Cursor"
         # Initial public-text snapshot only. The private native store, not these
         # display messages, supplies resume context. Cursor exports are rewritable
         # and lack stable event IDs; do not enable automatic history reconciliation
@@ -52903,13 +53003,13 @@ async def import_session_history(sess: dict[str, Any], *, force: bool = False, l
         if await asyncio.to_thread(lambda: any(
             event.get("type") == "history_imported" for event in iter_session_events(session_id)
         )):
-            return {"imported": 0, "source_path": None, "message": "Cursor initial history already imported."}
+            return {"imported": 0, "source_path": None, "message": f"{name} initial history already imported."}
         try:
-            source, items = await asyncio.to_thread(cursor_initial_history, provider_id, str(sess.get("cwd") or ""), limit)
+            source, items = await asyncio.to_thread(reader, provider_id, str(sess.get("cwd") or ""), limit)
         except (OSError, ValueError, RecursionError):
-            return {"imported": 0, "source_path": None, "message": "Cursor local history is unavailable; native resume is unchanged."}
+            return {"imported": 0, "source_path": None, "message": f"{name} local history is unavailable; native resume is unchanged."}
         if source is None or not items:
-            return {"imported": 0, "source_path": None, "message": "No readable Cursor CLI history was found for this ID and workspace."}
+            return {"imported": 0, "source_path": None, "message": f"No readable {name} CLI history was found for this ID and workspace."}
         return await append_imported_history(sess, source, items)
     if not force and any(event.get("type") == "history_imported" for event in read_events(session_id, limit=10000)):
         return {"imported": 0, "source_path": None, "message": "History already imported."}
@@ -53839,8 +53939,8 @@ def public_session(sess: dict[str, Any], *, summary: bool = False) -> dict[str, 
     detail_fields = () if summary else (
         "auto_title_enabled",
         "system_prompt", "session_id", "claude_session_id", "codex_thread_id",
-        "cursor_session_id", "opencode_session_id",
-        "claude_permission_mode", "cursor_permission_mode",
+        "cursor_session_id", "opencode_session_id", "gemini_session_id",
+        "claude_permission_mode", "cursor_permission_mode", "gemini_permission_mode",
         "opencode_permission_mode",
         "codex_approval_policy", "codex_sandbox_mode",
         "codex_permission_profile", "codex_approvals_reviewer",
@@ -61006,6 +61106,8 @@ def resolve_cursor_executable(*, require_compatible: bool = True) -> str | None:
 
 
 def runtime_executable(backend: str) -> str:
+    if backend == BACKEND_GEMINI:
+        return GEMINI_BIN
     if backend == BACKEND_CLAUDE:
         return CLAUDE_BIN
     if backend == BACKEND_OPENCODE:
@@ -61024,6 +61126,8 @@ def runtime_executable(backend: str) -> str:
 
 
 def runtime_display_name(backend: str) -> str:
+    if backend == BACKEND_GEMINI:
+        return "Gemini CLI"
     if backend == BACKEND_CLAUDE:
         return "Claude Code"
     if backend == BACKEND_CURSOR:
@@ -61041,6 +61145,9 @@ def runtime_action(
 ) -> str | None:
     if status in {"ready", "unknown"}:
         return None
+    if backend == BACKEND_GEMINI:
+        return ("Install @google/gemini-cli on the server and recheck CLIs." if status == "missing" else
+                "Check the Gemini CLI and the NVIDIA Inference Hub key, budget and model access on the hub, then recheck CLIs.")
     executable = executable or runtime_executable(backend)
     public_executable = (
         Path(executable).name
@@ -61295,6 +61402,42 @@ def cursor_auth_failure_confirmed(executable: str) -> bool:
 
 
 def probe_runtime(backend: str) -> dict[str, Any]:
+    if backend == BACKEND_GEMINI:
+        exe = shutil.which(GEMINI_BIN, path=runner_env().get("PATH"))
+        if not exe:
+            return runtime_diagnostic_payload(backend, "missing", installed=False, authenticated=False)
+        exe = str(Path(exe).resolve())
+        version = None
+        try:
+            version = safe_runtime_version(runtime_command([exe, "--version"]).stdout)
+            help_text = runtime_command([exe, "--help"]).stdout
+            if not version or "Gemini CLI" not in help_text or any(
+                flag not in help_text for flag in ("--session-id", "--resume", "--approval-mode", "--include-directories", "stream-json")
+            ):
+                raise RuntimeError("Incompatible Gemini CLI")
+            supports_thinking = True
+            if HUB_PROVIDER_INSTALL:
+                access = hub_provider_auth.request(HUB_PROVIDER_INSTALL, "gemini")
+                supports_thinking = access.get("supportsThinkingLevel") is True
+                base, key = f"http://127.0.0.1:{access['port']}", access["accessToken"]
+            else:
+                base, key = gemini_gateway.HUB, gemini_gateway.credential(CONFIG_ENV_FILE.parent)
+            if not key:
+                raise gemini_gateway.GatewayError(401)
+            offered = gemini_gateway.models(base, key)
+            if not offered:
+                raise gemini_gateway.GatewayError(403)
+        except (gemini_gateway.GatewayError, hub_provider_auth.HubLoginError) as exc:
+            return runtime_diagnostic_payload(backend, "unauthenticated" if getattr(exc, "status", None) == 401 else "error",
+                    installed=True, authenticated=False if getattr(exc, "status", None) == 401 else None,
+                    executable=exe, version=version, message=str(exc))
+        except (subprocess.TimeoutExpired, RuntimeCatalogBudgetExpired):
+            raise RuntimeCatalogBudgetExpired() from None
+        except (OSError, subprocess.SubprocessError, RuntimeError):
+            return runtime_diagnostic_payload(backend, "error", installed=True, authenticated=None, version=version,
+                                             message="The Gemini CLI is incompatible or could not be checked.")
+        return {**runtime_diagnostic_payload(backend, "ready", installed=True, authenticated=True, version=version,
+                    executable=exe), "_gemini_models": offered, "_gemini_thinking_level": supports_thinking}
     if backend == BACKEND_OPENCODE:
         (
             resolved,
@@ -62434,10 +62577,16 @@ def discover_cursor_catalog(*, executable: str | None = None) -> dict[str, Any]:
         model_source = f"{model_source} failed"
 
     is_free_tier = False
+    current_label = None
     try:
         if executable and not runtime_catalog_budget_expired():
             about_output = cursor_catalog_command([executable, "about"])
             is_free_tier = cursor_account_is_free_tier(parse_cursor_account_tier(about_output))
+            # --list-models marks the provider's router as default even after /model
+            # selects a different model and reasoning effort in the user's CLI.
+            model_row = re.search(r"^[ \t]*Model(?:[ \t]*:[ \t]*|[ \t]+)([^\r\n]+)$", about_output, re.I | re.M)
+            if model_row:
+                current_label = " ".join(model_row.group(1).split())[:256] or None
     except Exception as exc:
         logger.warning(
             "cursor account tier detection failed error_type=%s",
@@ -62445,16 +62594,24 @@ def discover_cursor_catalog(*, executable: str | None = None) -> dict[str, Any]:
         )
 
     if not parsed:
-        # Never regress below the one value already confirmed to work.
+        # Free accounts can only select Auto. For other accounts a failed listing
+        # supplies no evidence that an already selected model has been withdrawn.
         return {
-            "models": [runtime_option("auto", "Auto")],
+            "models": unique_runtime_options([runtime_option("auto", "Auto")], current_label),
+            "model_list_complete": is_free_tier,
             "efforts": [],
             "model_source": model_source if "failed" in model_source else f"{model_source} empty",
             "effort_source": "none",
-            "default_model": "auto",
+            "default_model": None,
             "default_effort": None,
         }
-    default_entry = next((model for model in parsed if model.get("is_default")), parsed[0])
+    if current_label:
+        # about may include parameters (such as context size) absent from the
+        # listing's labels. Keep the native label without inventing a model ID.
+        matches = [m for m in parsed if " ".join(m["label"].split()).casefold() == current_label.casefold()]
+        default_entry = matches[0] if len(matches) == 1 else None
+    else:
+        default_entry = next((model for model in parsed if model.get("is_default")), parsed[0])
     locked_reason = "Requires a paid Cursor plan - this account is on the free plan, which can only use Auto"
     model_options = [
         runtime_option(
@@ -62466,11 +62623,11 @@ def discover_cursor_catalog(*, executable: str | None = None) -> dict[str, Any]:
         for model in parsed
     ]
     return {
-        "models": unique_runtime_options(model_options, default_entry["label"]),
+        "models": unique_runtime_options(model_options, current_label or default_entry["label"]),
         "efforts": [],
         "model_source": model_source,
         "effort_source": "none",
-        "default_model": str(default_entry.get("id") or "auto"),
+        "default_model": default_entry["id"] if default_entry else None,
         "default_effort": None,
     }
 
@@ -62509,7 +62666,18 @@ def discover_runtime_backend_catalog(backend: str, *, force_runtime_probe: bool 
     diagnostic = runtime_diagnostic(backend, force=force_runtime_probe)
     ready = diagnostic.get("status") == "ready"
     executable = str(diagnostic.get("_executable") or "") or None
-    if backend == BACKEND_CLAUDE:
+    if backend == BACKEND_GEMINI:
+        names = diagnostic.get("_gemini_models", [])
+        default = gemini_agent_client.DEFAULT_MODEL if gemini_agent_client.DEFAULT_MODEL in names else next(iter(names), None)
+        catalog = {"models": unique_runtime_options([runtime_option(name, name) for name in names], default),
+                   "default_model": default, "efforts": [], "model_source": "NVIDIA Inference Hub",
+                   "permission_modes": list(gemini_agent_client.PERMISSIONS),
+                   "default_permission_mode": gemini_agent_client.DEFAULT_PERMISSION_MODE}
+        if diagnostic.get("_gemini_thinking_level") and gemini_gateway.ARGON_MODEL in names:
+            catalog["model_efforts"] = {
+                gemini_gateway.ARGON_MODEL: [runtime_option(e, e.title()) for e in gemini_gateway.ARGON_EFFORTS],
+            }
+    elif backend == BACKEND_CLAUDE:
         catalog = parse_claude_help_catalog()
     elif backend == BACKEND_CODEX:
         catalog = discover_codex_catalog()
@@ -62519,11 +62687,12 @@ def discover_runtime_backend_catalog(backend: str, *, force_runtime_probe: bool 
         )
     elif backend == BACKEND_CURSOR:
         catalog = discover_cursor_catalog(executable=executable) if ready and not runtime_catalog_budget_expired() else {
-            "models": [runtime_option("auto", "Auto")],
+            "models": unique_runtime_options([runtime_option("auto", "Auto")]),
+            "model_list_complete": False,
             "efforts": [],
             "model_source": "Runtime refresh deadline" if ready else "Cursor runtime unavailable",
             "effort_source": "none",
-            "default_model": "auto",
+            "default_model": None,
             "default_effort": None,
         }
         catalog.update({
@@ -63876,11 +64045,11 @@ async def discover_session_provider_commands(
         selector_secret=PROVIDER_COMMAND_EMPTY_FALLBACK_SECRET,
         binding_context=session_id,
     )
-    if backend == BACKEND_CURSOR:
+    if backend in (BACKEND_CURSOR, BACKEND_GEMINI):
         support = provider_command_support(
             False,
             "unsupported",
-            "Cursor does not currently expose local commands to AgentsDock.",
+            f"{runtime_display_name(backend)} does not currently expose local commands to AgentsDock.",
         )
         return provider_command_snapshot(fallback_empty, support), fallback_empty
     if backend == BACKEND_CODEX:
@@ -70274,6 +70443,7 @@ async def run_cursor_process(
 ) -> None:
     """Run one bounded, resumable Cursor CLI turn in a fresh subprocess."""
     from cursor_agent_client import (
+        CURSOR_ANSI_ESCAPE_RE,
         CursorEventParseError,
         build_cursor_cmd,
         cursor_approval_request_text,
@@ -70973,8 +71143,20 @@ async def run_cursor_process(
     stderr_text = stderr_bytes.decode("utf-8", "replace")
     if hub_token:
         stderr_text = stderr_text.replace(hub_token, "[REDACTED]")
+    # Accept only the native error envelope. Provider stderr and result details
+    # can quote the prompt, tool output or credentials and must stay private.
+    resource_exhausted = (
+        not (stopped or timeout_error or stream_error or protocol_error or terminal_exit_forced)
+        and (turn_is_error or proc.returncode not in (0, None))
+        and re.match(
+            r"^(?:(?:RetriableError|NonRetriableError|ConnectError|Error):[ \t]*)?\[resource_exhausted\](?:\s|$)",
+            CURSOR_ANSI_ESCAPE_RE.sub("", (result_text if turn_is_error else "") or stderr_text).strip(),
+            re.IGNORECASE,
+        ) is not None
+    )
     cursor_auth_signal = bool(
         not stopped
+        and not resource_exhausted
         and (
             turn_is_error
             or proc.returncode not in (0, None)
@@ -70991,26 +71173,25 @@ async def run_cursor_process(
     )
     cursor_auth_failed = cursor_auth_state == "unauthenticated"
     cursor_auth_validation_error = cursor_auth_state == "error"
-    cursor_auth_failure_message = (
-        "Cursor authentication failed. Sign in as the server user or configure "
-        "CURSOR_API_KEY, then click Recheck CLIs."
-    )
-    cursor_auth_validation_message = (
-        "Cursor could not validate the failed provider request. Check the "
-        "server network and Cursor credentials, then click Recheck CLIs."
-    )
-    logical_failure_message = (
-        cursor_logical_failure_message(result_text)
-        if turn_is_error
-        else None
-    )
-    cursor_failure_message = (
-        cursor_auth_failure_message
-        if cursor_auth_failed
-        else cursor_auth_validation_message
-        if cursor_auth_validation_error
-        else logical_failure_message
-    )
+    auth_message = None
+    if cursor_auth_failed:
+        auth_message = (
+            "Cursor authentication failed. Sign in as the server user or configure "
+            "CURSOR_API_KEY, then click Recheck CLIs."
+        )
+    elif cursor_auth_validation_error:
+        auth_message = (
+            "Cursor could not validate the failed provider request. Check the "
+            "server network and Cursor credentials, then click Recheck CLIs."
+        )
+    provider_failure = auth_message
+    if resource_exhausted:
+        provider_failure = (
+            "Cursor's model provider returned RESOURCE_EXHAUSTED. Wait briefly and try again. "
+            "If it recurs, select another available model in this chat."
+        )
+    elif turn_is_error and not provider_failure:
+        provider_failure = cursor_logical_failure_message(result_text)
 
     if timeout_error and not stopped:
         await append_event(session_id, "error", {
@@ -71030,48 +71211,17 @@ async def run_cursor_process(
             "exit_code": proc.returncode,
             **run_event_metadata(run_id),
         })
-    elif turn_is_error and not stopped:
+    elif not stopped and (turn_is_error or (proc.returncode not in (0, None) and not terminal_exit_forced)):
         await append_event(session_id, "error", {
             "run_id": run_id,
-            "message": cursor_failure_message,
-            "exit_code": proc.returncode,
-            **run_event_metadata(run_id),
-        })
-    elif (
-        not stopped
-        and proc.returncode not in (0, None)
-        and not terminal_exit_forced
-    ):
-        await append_event(session_id, "error", {
-            "run_id": run_id,
-            "message": (
-                cursor_auth_failure_message
-                if cursor_auth_failed
-                else cursor_auth_validation_message
-                if cursor_auth_validation_error
-                else f"Cursor exited {proc.returncode}. {stderr_diagnostic}"
-            ),
+            "message": provider_failure or f"Cursor exited {proc.returncode}. {stderr_diagnostic}",
             "exit_code": proc.returncode,
             **run_event_metadata(run_id),
         })
 
     runtime_failure_reason = (
-        (
-            cursor_auth_failure_message
-            if cursor_auth_failed
-            else cursor_auth_validation_message
-            if cursor_auth_validation_error
-            else None
-        )
-        or timeout_error
-        or stream_error
-        or protocol_error
-        or (logical_failure_message if turn_is_error else None)
-        or (
-            f"Cursor exited {proc.returncode}. {stderr_diagnostic}"
-            if proc.returncode not in (0, None)
-            else None
-        )
+        auth_message or timeout_error or stream_error or protocol_error or provider_failure
+        or (f"Cursor exited {proc.returncode}. {stderr_diagnostic}" if proc.returncode not in (0, None) else None)
     )
     if not stopped and (
         timeout_error
@@ -71105,17 +71255,24 @@ async def run_cursor_process(
         and terminal_event_seen
         and provider_started
     )
-    if provider_id and successful_terminal:
+    # A provider limit can end the first turn after tools have already run.
+    # Bind that ID only if Cursor saved a conversation for this exact workspace.
+    resumable_failure = False
+    if (resource_exhausted and provider_started and provider_id and not sess.get("cursor_session_id")
+            and not standalone_provider_context):
+        with suppress(OSError):
+            resumable_failure = await asyncio.to_thread(cursor_history.find_session, provider_id, cwd) is not None
+    if provider_id and (successful_terminal or resumable_failure):
         persisted = await persist_run_provider_session(
             session_id,
             run_id,
             BACKEND_CURSOR,
             provider_id,
-            cursor_instruction_hash=instruction_hash,
+            cursor_instruction_hash=instruction_hash if successful_terminal else None,
             standalone_provider_context=standalone_provider_context,
             emit_event=True,
         )
-        if persisted and memory_injected:
+        if persisted and successful_terminal and memory_injected:
             async with STORE._lock:
                 current = STORE.sessions.get(session_id)
                 if (
@@ -71150,6 +71307,8 @@ async def run_cursor_process(
         ),
         "stopped": stopped,
         "is_error": bool(not successful_terminal and not stopped),
+        # The clients' latest-run banner reads the terminal event first.
+        **({"message": provider_failure} if resource_exhausted else {}),
         **({
             "input_tokens": cursor_usage.get("input_tokens"),
             "cached_input_tokens": cursor_usage.get("cache_read_tokens"),
@@ -71604,6 +71763,224 @@ def opencode_helper_output_redactor(
         return text
 
     return redact
+
+
+def gemini_canvas_directory_flags(session_id: str, resources: ExitStack) -> list[str]:
+    """The flags that put the chat's Canvas directory in the Gemini CLI's workspace."""
+    canvas_dir = agentsdock_canvas.session_dir(STATE_DIR, session_id).resolve()
+    if not canvas_dir.is_dir():
+        return []
+    if "," in str(canvas_dir):
+        # Gemini splits this flag on commas, even when passed as one argv element.
+        alias = Path(resources.enter_context(tempfile.TemporaryDirectory(dir="/tmp", prefix="ad-canvas-"))) / "canvas"
+        alias.symlink_to(canvas_dir, target_is_directory=True)
+        canvas_dir = alias
+    return ["--include-directories", str(canvas_dir)]
+
+
+async def run_gemini(
+    session_id: str, run_id: str, prompt: str, sess: dict, manifest: Path,
+    *, standalone_provider_context: bool = False, runtime_context: str = "",
+) -> None:
+    from cursor_provider_mcp import CursorToolBroker, ENV_PORT, ENV_SECRET
+
+    if standalone_provider_context:
+        sess = standalone_provider_session(sess)
+    resume = sess.get("gemini_session_id") or sess.get("session_id")
+    native_id = resume or str(uuid.uuid4())
+    stream = gemini_agent_client.GeminiStream(native_id)
+    ready = asyncio.Event()
+    owner = secrets.token_urlsafe(48)
+    proc = writer = stderr_task = watcher = None
+    seen_artifacts = set()
+    changed_paths = set()
+    baseline = None
+    failure = None
+    stopped = False
+    cwd = None
+    env = None
+    memory = sess.get("memory_seed") if not sess.get("memory_seed_used") else None
+    resources = ExitStack()
+    metadata = {"backend": BACKEND_GEMINI, "run_id": run_id, **run_event_metadata(run_id)}
+
+    async def execute(value, key):
+        try:
+            return await execute_provider_tool_once(
+                session_id, run_id, value, replay_key="gemini:" + key,
+                backend=BACKEND_GEMINI, cursor_owner_token=owner,
+            )
+        except ProviderToolError as exc:
+            return str(exc), True
+
+    broker = CursorToolBroker(codex_provider_mcp_tool_definition(), execute)
+    try:
+        cwd = str(Path(sess.get("cwd") or DEFAULT_CWD).resolve())
+        if not Path(cwd).is_dir() or (resume and sess.get("gemini_session_cwd") not in (None, cwd)):
+            failure = "The original Gemini workspace is unavailable."
+            return
+        if HUB_PROVIDER_INSTALL:
+            access = await asyncio.to_thread(hub_provider_auth.request, HUB_PROVIDER_INSTALL, BACKEND_GEMINI)
+        else:
+            access = resources.enter_context(gemini_gateway.open_gateway(CONFIG_ENV_FILE.parent))
+        async with CROSS_CHAT_CAPABILITY_LOCK:
+            granted = any(c.get("source_session_id") == session_id and c.get("source_run_id") == run_id
+                          for c in CROSS_CHAT_CAPABILITIES.values())
+        protected = [access["accessToken"]]
+        mcp = None
+        if granted:
+            binding = await broker.start()
+            protected.append(binding[ENV_SECRET])
+            name = gemini_agent_client.MCP_SERVER_NAME
+            mcp = (name, {
+                "command": sys.executable,
+                "args": [str(SERVER_ROOT / "cursor_provider_mcp.py"), "--mcp"],
+                "env": {k: binding[k] for k in (ENV_PORT, ENV_SECRET)},
+                "includeTools": ["run"],
+                "trust": True,
+            })
+            runtime_context += f"\nUse the run-bound MCP server {name} and its run tool for authorized AgentsDock actions."
+        stream.secrets = tuple(protected)
+        canvas_guidance = await asyncio.to_thread(agentsdock_canvas.prompt_section, STATE_DIR, session_id)
+        context = "\n\n".join(part for part in (session_prompt_addendum(sess), canvas_guidance, memory, runtime_context) if part)
+        prompt = build_memory_augmented_prompt(gemini_history.CONTEXT_LABEL, context, prompt)
+        native_env = agent_runner_env(session_id)
+        env = resources.enter_context(gemini_agent_client.native_environment(native_env, access, mcp, cwd=cwd, effort=sess.get("effort")))
+        add_provider_no_proxy_environment(env, "127.0.0.1")
+        cmd = gemini_agent_client.command(
+            sess["_gemini_executable"], sess.get("model") or sess["_gemini_default_model"],
+            sess.get("gemini_permission_mode") or gemini_agent_client.DEFAULT_PERMISSION_MODE, native_id, bool(resume),
+        )
+        cmd.extend(gemini_canvas_directory_flags(session_id, resources))
+        baseline = await capture_git_baseline(session_id, run_id, cwd)
+        spawn = asyncio.create_task(asyncio.create_subprocess_exec(
+            sys.executable, str(CURSOR_PROCESS_GUARD), "--parent-pid", str(os.getpid()), "--", *cmd,
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            cwd=cwd, env=env, start_new_session=True, limit=PROCESS_STREAM_LIMIT,
+        ))
+        try:
+            proc = await asyncio.shield(spawn)
+        except asyncio.CancelledError:
+            proc = await join_task_despite_caller_cancellation(spawn)
+            raise
+        stderr_task = asyncio.create_task(drain_bounded_process_stream(proc.stderr, limit_bytes=65536))
+        bound, stopped = await bind_active_turn(session_id, run_id, {
+            "proc": proc, "pid": proc.pid, "pgid": process_group_for_pid(proc.pid), "run_id": run_id,
+            "backend": BACKEND_GEMINI, "transport": "exec", "cwd": cwd, "argv": cmd,
+            "started_at": time.time(), "started_at_iso": now_iso(), "provider_tools_ready": ready,
+            "cursor_mcp_owner_token": owner, "provider_turn_ready": False,
+            "stdout_tail": deque(maxlen=LIVE_STDOUT_MAX_LINES), "stdout_total_lines": 0, "stdout_updated_at": None,
+        })
+        if not bound or stopped:
+            return
+        await append_event(session_id, "process_started", {**metadata, "argv": cmd, "cwd": cwd})
+        watcher = asyncio.create_task(watch_manifest_artifacts(session_id, run_id, manifest, seen_artifacts))
+        writer = asyncio.create_task(write_cursor_process_stdin(proc, prompt))
+        deadline = time.monotonic() + 3600
+        stream_bytes = 0
+        for _ in range(20000):
+            timeout = min(10 if stream.done else 600 if stream.started else 60, deadline - time.monotonic())
+            line = await asyncio.wait_for(proc.stdout.readline(), timeout)
+            if not line:
+                break
+            if run_id in STOPPED_RUNS or not await turn_slot_is_owned(session_id, run_id):
+                stopped = True
+                break
+            stream_bytes += len(line)
+            if stream_bytes > 64 * 1024 * 1024:
+                raise ValueError("Gemini exceeded the stream size limit.")
+            was_started = stream.started
+            events = stream.consume(line)
+            if stream.started and not was_started:
+                await mark_provider_turn_ready(session_id, run_id, native_id)
+                ready.set()
+            for kind, data in events:
+                if kind == "tool_started":
+                    tool = data["tool"]
+                    tool["input"] = bounded_codex_interaction_value(
+                        tool["input"], remaining=CODEX_APP_SERVER_TOOL_OUTPUT_MAX_CHARS,
+                    )
+                    changed_paths.update(tool_changed_paths(tool))
+                await append_event(session_id, kind, {**metadata, **data})
+        else:
+            raise ValueError("Gemini exceeded the stream event limit.")
+        if not stopped:
+            await asyncio.wait_for(proc.wait(), 10)
+            await writer
+            if not stream.done or stream.failed or proc.returncode != 0:
+                failure = stream.failure or f"Gemini CLI did not complete the turn (exit {proc.returncode})."
+    except asyncio.CancelledError:
+        stopped = True
+        raise
+    except asyncio.TimeoutError:
+        failure = "Gemini CLI timed out."
+    except (gemini_gateway.GatewayError, hub_provider_auth.HubLoginError, gemini_agent_client.GeminiConfigurationError) as exc:
+        failure = str(exc)
+    except Exception as exc:
+        logger.warning("Gemini turn failed error_type=%s", type(exc).__name__)
+        failure = "Gemini CLI failed to start or returned an invalid stream."
+    finally:
+        async def finish():
+            nonlocal failure, stopped
+            try:
+                if writer is not None:
+                    writer.cancel()
+                    await asyncio.gather(writer, return_exceptions=True)
+                if proc is not None and proc.returncode is None:
+                    await terminate_process_tree(proc, grace=CURSOR_GUARD_TEARDOWN_GRACE_SECONDS)
+                if stderr_task is not None:
+                    stderr = await finish_bounded_process_stream(stderr_task)
+                    if failure:
+                        failure = gemini_agent_client.failure_message(stderr.decode("utf-8", "replace")) or failure
+                await broker.close()
+                if watcher is not None:
+                    watcher.cancel()
+                    await asyncio.gather(watcher, return_exceptions=True)
+                if not await turn_slot_is_owned(session_id, run_id):
+                    return
+                stopped = stopped or run_id in STOPPED_RUNS or session_id in STOP_REQUESTS
+                for kind, data in stream.text_events(end=True):
+                    await append_event(session_id, kind, {**metadata, **data})
+                for call_id, tool in stream.calls.items():
+                    await append_event(session_id, "tool_finished", {
+                        **metadata, "tool_id": call_id, "tool": tool, "exit_code": None,
+                        "output": "Gemini CLI stopped before reporting the tool result.",
+                    })
+                success = stream.done and not failure and not stopped
+                saved = stream.started and not standalone_provider_context and (
+                    bool(resume) or await asyncio.to_thread(gemini_agent_client.has_native_history, cwd, native_id)
+                )
+                if success and not standalone_provider_context and not saved:
+                    failure = "Gemini CLI completed without saving a resumable session in this workspace."
+                if failure and not stopped:
+                    await append_event(session_id, "error", {**metadata, "message": failure})
+                if saved and (success or not resume):
+                    persisted = await persist_run_provider_session(session_id, run_id, BACKEND_GEMINI, native_id, cwd=cwd)
+                    if persisted and success and memory:
+                        async with STORE._lock:
+                            current = STORE.sessions.get(session_id)
+                            if current and current.get("gemini_session_id") == native_id:
+                                current["memory_seed_used"] = True
+                        await STORE.save()
+                await collect_manifest(session_id, run_id, manifest, seen_artifacts=seen_artifacts, final=True)
+                if baseline is not None:
+                    await publish_turn_code_diff(session_id, run_id, BACKEND_GEMINI, cwd, baseline, changed_paths)
+            finally:
+                resources.close()
+                stopped = stopped or run_id in STOPPED_RUNS
+                await finalize_owned_turn_finished(session_id, run_id, stopped=stopped, payload={
+                    **metadata, "exit_code": proc.returncode if proc else None,
+                    "is_error": bool(failure and not stopped), "stopped": stopped,
+                    "result_text": "".join(stream.parts) if stream.done and not failure and not stopped else "",
+                    **({"message": failure} if failure and not stopped else {}), **stream.usage,
+                })
+
+        finalizer = asyncio.create_task(finish())
+        try:
+            await asyncio.shield(finalizer)
+        except asyncio.CancelledError:
+            stopped = True
+            await join_task_despite_caller_cancellation(finalizer)
+            raise
 
 
 async def run_opencode(
@@ -76736,8 +77113,18 @@ async def _start_turn_locked(
 
         backend = sess.get("backend") or DEFAULT_BACKEND
         runtime_status = await ensure_runtime_available(backend, session=sess)
+        if backend == BACKEND_GEMINI:
+            names = runtime_status.get("_gemini_models", [])
+            if not names or (sess.get("model") and sess["model"] not in names):
+                raise HTTPException(409, "The selected Gemini model is not available from NVIDIA Inference Hub.")
+            default = gemini_agent_client.DEFAULT_MODEL if gemini_agent_client.DEFAULT_MODEL in names else names[0]
+            if sess.get("effort") and ((sess.get("model") or default) != gemini_gateway.ARGON_MODEL
+                                      or not runtime_status.get("_gemini_thinking_level")):
+                raise HTTPException(409, "This Gemini model or hub cannot apply reasoning levels. Select Server default.")
         if provider_context_mode == "chat":
             sess = await STORE.mark_backend_started(session_id, str(backend))
+        if backend == BACKEND_GEMINI:
+            sess = {**sess, "_gemini_executable": runtime_status["_executable"], "_gemini_default_model": default}
         if backend in (BACKEND_CURSOR, BACKEND_OPENCODE):
             # Keep the exact compatibility-probed executable pinned through
             # admission; mark_backend_started returns a fresh durable snapshot.
@@ -77042,7 +77429,7 @@ async def _start_turn_locked(
                     else None
                 ),
             )
-        if turn_obligation_ids and backend in (BACKEND_CURSOR, BACKEND_OPENCODE):
+        if turn_obligation_ids and backend in (BACKEND_CURSOR, BACKEND_GEMINI, BACKEND_OPENCODE):
             provider_authority_context += (
                 "\n\n[AgentsDock final-result handoff]\n"
                 "Your successful non-empty final answer will be delivered once to the explicitly referenced chat. "
@@ -77371,6 +77758,10 @@ async def _start_turn_locked(
                     else {}
                 ),
             )
+        elif backend == BACKEND_GEMINI:
+            task = run_gemini(session_id, run_id, provider_prompt, dict(sess), manifest_path,
+                              standalone_provider_context=provider_context_mode == "standalone",
+                              runtime_context=provider_turn_payload.runtime_context)
         elif backend == BACKEND_OPENCODE:
             task = run_opencode(
                 session_id,
@@ -82569,7 +82960,7 @@ async def require_agent_token(request: Request, call_next):
         "/api/admin/codex/provider/models",
     }
     claude_token_admin_route = request.url.path == "/api/admin/claude/token"
-    runtime_update_admin_route = request.url.path in {"/api/admin/runtimes/claude/update", "/api/admin/runtimes/codex/update", "/api/admin/runtimes/cursor/update"}
+    runtime_update_admin_route = request.url.path in {"/api/admin/runtimes/claude/update", "/api/admin/runtimes/codex/update", "/api/admin/runtimes/cursor/update", "/api/admin/runtimes/gemini/update"}
     public_chat_shares_admin_route = (
         request.url.path == "/api/admin/chat-shares"
         or request.url.path.startswith("/api/admin/chat-shares/")
@@ -85315,6 +85706,10 @@ async def health() -> dict[str, Any]:
                 "max_batch_items": MAX_BULK_IMPORT_ITEMS,
                 "max_list_items": MAX_LOCAL_SESSION_LIST_ITEMS,
             },
+            "gemini_backend": {"available": True, "version": 1, "native_resume": True},
+            "local_session_import_gemini_v1": {
+                "available": True, "version": 1, "history_mode": "initial_text_snapshot",
+            },
             "local_session_import_cursor_v1": {
                 "available": True,
                 "required": False,
@@ -86691,7 +87086,9 @@ def runtime_cli_installer_owns(backend: str, env: dict[str, str], executable: st
     if not executable:
         return False
     home = env.get("HOME", str(Path.home()))
-    if backend == BACKEND_CURSOR:
+    if backend == BACKEND_GEMINI:
+        root = Path(home) / ".local/share/agentsdock-gemini-cli"
+    elif backend == BACKEND_CURSOR:
         root = Path(home) / ".local/share/cursor-agent/versions"
     elif backend == BACKEND_CODEX:
         root = Path(env.get("CODEX_HOME") or f"{home}/.codex") / "packages" / "standalone"
@@ -86701,7 +87098,7 @@ def runtime_cli_installer_owns(backend: str, env: dict[str, str], executable: st
 
 
 @app.post("/api/admin/runtimes/{backend}/update")
-async def update_runtime_cli(backend: Literal["claude", "codex", "cursor"], request: Request):
+async def update_runtime_cli(backend: Literal["claude", "codex", "cursor", "gemini"], request: Request):
     """Update CLI on this server, installing it when it is missing or `update` cannot manage it: the per-row button, and the update-all job's remote step."""
 
     require_native_admin_control(request)
@@ -86764,7 +87161,12 @@ async def run_runtime_cli_update(backend: str) -> dict[str, Any]:
             if not {"node_modules", "Caskroom"} & set(real.parts):
                 with suppress(OSError), real.open("rb") as binary:
                     unmanaged = binary.read(2) != b"#!"
-        if executable and not unmanaged:
+        if backend == BACKEND_GEMINI:
+            if configured != "gemini" and Path(configured) != Path(env.get("HOME", str(Path.home()))) / ".local/bin/gemini":
+                raise HTTPException(409, "GEMINI_BIN is externally managed; update it on the server.")
+            command = [sys.executable, str(SERVER_ROOT / "gemini_agent_client.py"), "--install"]
+            action, label = ("update" if executable else "install"), "Gemini CLI npm installer"
+        elif executable and not unmanaged:
             command = [executable, "update"]
             action, label = "update", f"`{'agent' if backend == BACKEND_CURSOR else backend} update`"
         elif os.sep in configured or (backend == BACKEND_CURSOR and configured not in CURSOR_EXECUTABLE_CANDIDATES):
@@ -87074,6 +87476,138 @@ async def create_native_side_chat(session_id: str, *, persisted_state=None, pers
     return NativeSideChat()
 
 
+class CopiedSessionSideChat:
+    """Answers a Canvas question for Gemini and Cursor, which have no native side chat.
+
+    Each question resumes a copy of the chat's native session, as it stands then, in a process of its own
+    and without write tools. The chat's session is only read, and the copy is deleted once its answer
+    returns. ``history`` is not used: create_canvas_comment_side_chat puts it in the question.
+    """
+
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+
+    async def ask(self, question: str, *, history, on_step=None) -> dict[str, Any]:
+        session = dict(STORE.sessions[self.session_id])
+        backend = str(session.get("backend") or DEFAULT_BACKEND).lower()
+        requested_cwd = str(session.get("cwd") or DEFAULT_CWD)
+        cwd = existing_cwd(requested_cwd)
+        copy_id = str(uuid.uuid4())
+        env = agent_runner_env(self.session_id)
+        answer = None
+
+        def remove_copy(copying: asyncio.Future) -> None:
+            if not copying.done():
+                copying.add_done_callback(remove_copy)
+            elif not copying.cancelled() and copying.exception() is None:
+                for path in copying.result():
+                    if path.is_dir():
+                        shutil.rmtree(path, ignore_errors=True)
+                    else:
+                        path.unlink(missing_ok=True)
+
+        with ExitStack() as resources:
+            try:
+                if str(Path(requested_cwd).expanduser()) != cwd:
+                    # Both CLIs find a session by its workspace: from another one the copy would start an unrelated session.
+                    raise FileNotFoundError(requested_cwd)
+                if backend == BACKEND_GEMINI:
+                    runtime = await ensure_runtime_available(BACKEND_GEMINI, session=session)
+                    names = runtime["_gemini_models"]
+                    model = session.get("model") or (gemini_agent_client.DEFAULT_MODEL if gemini_agent_client.DEFAULT_MODEL in names else names[0])
+                    access = (await asyncio.to_thread(hub_provider_auth.request, HUB_PROVIDER_INSTALL, BACKEND_GEMINI) if HUB_PROVIDER_INSTALL
+                              else resources.enter_context(gemini_gateway.open_gateway(CONFIG_ENV_FILE.parent)))
+                    secret = access["accessToken"]
+                    env = resources.enter_context(gemini_agent_client.native_environment(env, access, cwd=cwd, effort=session.get("effort")))
+                    add_provider_no_proxy_environment(env, "127.0.0.1")
+                    # "default": without a terminal the CLI denies every tool that asks, which leaves the read tools.
+                    cmd = gemini_agent_client.command(runtime["_executable"], model, "default", copy_id, True)
+                    cmd.extend(gemini_canvas_directory_flags(self.session_id, resources))
+                    (source,) = await asyncio.to_thread(
+                        lambda: list(gemini_history.local_sessions(cwd=cwd, provider_id=session["gemini_session_id"])))
+                    copy = functools.partial(gemini_history.copy_session, source, copy_id)
+                else:
+                    if HUB_PROVIDER_INSTALL:
+                        env = await asyncio.to_thread(cursor_hub_env, env)
+                    secret = env.get("CURSOR_AUTH_TOKEN") if HUB_PROVIDER_INSTALL else None
+                    cmd = [await asyncio.to_thread(resolve_cursor_executable), "-p", "--output-format", "json", "--resume", copy_id,
+                           "--trust", "--mode", "ask", *(["--model", str(session["model"])] if session.get("model") else [])]
+                    copy = functools.partial(cursor_history.copy_session, str(session["cursor_session_id"]), copy_id, cwd)
+                copying = asyncio.ensure_future(asyncio.to_thread(copy))
+                # load-bearing: a worker thread cannot be cancelled, so a cancelled wait removes the copy when the thread is done.
+                resources.callback(remove_copy, copying)
+                await asyncio.shield(copying)
+                proc = await asyncio.create_subprocess_exec(
+                    sys.executable, str(CURSOR_PROCESS_GUARD), "--parent-pid", str(os.getpid()), "--", *cmd,
+                    stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                    cwd=cwd, env=env, limit=PROCESS_STREAM_LIMIT, start_new_session=True)
+                try:
+                    stream = gemini_agent_client.GeminiStream(copy_id, secrets=(secret,)) if backend == BACKEND_GEMINI else None
+                    # The bounds of a Gemini turn: an hour and 64 MiB of output.
+                    async with asyncio.timeout(3600):
+                        proc.stdin.write(question.encode())
+                        await proc.stdin.drain()
+                        proc.stdin.close()
+                        size = 0
+                        async for line in proc.stdout:
+                            size += len(line)
+                            if size > 64 * 1024 * 1024:
+                                raise ValueError("output limit")
+                            if stream is not None:
+                                stream.consume(line)
+                                if stream.done:
+                                    stream.text_events(end=True)
+                                    answer = None if stream.failed else "".join(stream.parts)
+                                    break
+                            elif line.startswith(b"{"):
+                                result = json.loads(line)
+                                if result.get("type") == "result":
+                                    if result["is_error"] is False:
+                                        answer = result["result"].replace(secret, "[REDACTED]") if secret else result["result"]
+                                    break
+                finally:
+                    # Not left to exit on its own: the Cursor CLI can stay up after its result.
+                    if proc.returncode is None:
+                        await terminate_process_tree(proc, grace=CURSOR_GUARD_TEARDOWN_GRACE_SECONDS)
+            except Exception as exc:
+                # Native errors can contain the prompt or a credential.
+                logger.warning("Canvas question in a copied %s session failed error_type=%s", backend, type(exc).__name__)
+                answer = None
+        if not isinstance(answer, str) or not answer.strip():
+            raise side_questions.SideQuestionError(503, "The provider did not answer in a copy of this chat")
+        return {"backend": backend, "answer": answer,
+                "context_note": "A copy of the chat's native session from when the question was asked, without write tools."}
+
+    async def close(self):
+        pass  # The copy and its process end with ask.
+
+
+async def create_canvas_comment_side_chat(session_id: str, **_persistence):
+    """Answers a Canvas question in a copy of the chat as it stands, keeping nothing for the comment thread's next question.
+
+    Claude's /btw and a Codex fork are native copies; Gemini and Cursor resume a copied session. The side
+    chat store offers a thread's saved provider state and its earlier exchanges. Only /btw replays the
+    exchanges itself, so the other handles get them in the question.
+    """
+    backend = str((STORE.sessions.get(session_id) or {}).get("backend") or DEFAULT_BACKEND).lower()
+    # load-bearing: the store's `durable` and saved state are dropped, so a Codex fork is ephemeral and
+    # bound to no earlier conversation of the chat.
+    handle = (CopiedSessionSideChat(session_id) if backend in (BACKEND_GEMINI, BACKEND_CURSOR)
+              else await create_native_side_chat(session_id))
+    if backend == BACKEND_CLAUDE:
+        return handle
+
+    class WithEarlierExchanges:
+        async def ask(self, question, *, history, on_step=None):
+            return await handle.ask(agentsdock_canvas.with_earlier_exchanges(
+                question, ((item["question"], item["response"]) for item in history)), history=[], on_step=on_step)
+
+        async def close(self):
+            await handle.close()
+
+    return WithEarlierExchanges()
+
+
 def require_side_question_admission():
     # Reuse the main provider admission boundary only during actual process
     # replacement. An ordinary update waiting for idle leaves side chats usable.
@@ -87084,7 +87618,11 @@ def require_side_question_admission():
 
 SIDE_QUESTIONS = side_questions.SideQuestions(native_factory=create_native_side_chat,
     storage_path=STATE_DIR / "side_chats.sqlite3", notify=lambda session_id, event: HUB.broadcast(session_id, event),
-    admission_check=require_side_question_admission)
+    admission_check=require_side_question_admission,
+    comment_storage_path=STATE_DIR / "canvas_comment_side_chats.sqlite3", comment_factory=create_canvas_comment_side_chat,
+    # Invalidation only, as for a client's side chat: the open Canvas reads its threads again.
+    comment_notify=lambda session_id, event: HUB.broadcast(
+        session_id, {"type": "canvas_comments_updated", "session_id": session_id}))
 app.include_router(side_questions.create_side_question_router(
     authorize=require_native_admin_control,
     session_exists=public_chat_share_session_exists,
@@ -90504,6 +91042,7 @@ def resumed_chat_runtime(
 async def get_local_sessions(
     limit: int = Query(default=200, ge=1, le=MAX_LOCAL_SESSION_LIST_ITEMS),
     include_cursor: bool = False,
+    include_gemini: bool = False,
 ) -> dict[str, Any]:
     """List main conversations unused by any installed same-user local instance."""
 
@@ -90514,6 +91053,8 @@ async def get_local_sessions(
             for key in local_session_ownership.provider_session_keys(session, DEFAULT_BACKEND)
         }
     options = {"include_cursor": True} if include_cursor else {}
+    if include_gemini:
+        options["include_gemini"] = True
     sessions = await asyncio.to_thread(local_session_candidates, limit, known_provider_keys, **options)
     return {"sessions": sessions}
 
@@ -90585,8 +91126,8 @@ async def bulk_import_sessions_guarded(
         available = await asyncio.to_thread(
             local_session_candidates,
             MAX_LOCAL_SESSION_LIST_ITEMS,
-            set(),
-            **({"include_cursor": True} if any(item.backend == BACKEND_CURSOR for item in req.items) else {}),
+            known_provider_keys | foreign_keys,
+            **{f"include_{item.backend}": True for item in req.items if item.backend in (BACKEND_CURSOR, BACKEND_GEMINI)},
         )
         candidate_by_key = {
             (str(candidate["backend"]), str(candidate["provider_session_id"])): candidate
@@ -90637,9 +91178,10 @@ async def bulk_import_sessions_guarded(
 
             staged_session: dict[str, Any] | None = None
             try:
-                if item.backend == BACKEND_CURSOR:
+                if item.backend in (BACKEND_CURSOR, BACKEND_GEMINI):
+                    reader = gemini_initial_history if item.backend == BACKEND_GEMINI else cursor_initial_history
                     source_path, history_items = await asyncio.to_thread(
-                        cursor_initial_history, item.provider_session_id, candidate_cwd or "",
+                        reader, item.provider_session_id, candidate_cwd or "",
                     )
                 else:
                     source_path, history_items = await asyncio.to_thread(
@@ -95218,6 +95760,8 @@ async def fork_session(session_id: str, req: ForkSessionRequest) -> dict[str, An
     async with session_lifecycle_lock(session_id):
         try:
             ensure_session_not_deleting(session_id)
+            if (STORE.sessions.get(session_id) or {}).get("backend") == BACKEND_GEMINI:
+                raise HTTPException(status_code=409, detail="Gemini CLI does not support native chat fork.")
             if (STORE.sessions.get(session_id) or {}).get("backend") == BACKEND_OPENCODE:
                 raise HTTPException(status_code=409, detail="OpenCode native chat fork is unavailable; no transcript-copy fallback is enabled.")
             async with ACTIVE_LOCK:
@@ -97448,6 +97992,7 @@ async def create_provider_chat(req: ProviderNewChatRequest, request: Request) ->
             backend=backend,
             model=model,
             effort=effort,
+            gemini_permission_mode=source.get("gemini_permission_mode") if backend == source_backend == BACKEND_GEMINI else None,
             codex_provider="custom" if custom else None,
         )))["session"]
         # load-bearing: a staged pair stays hidden until an event carrying its admission id is durable, and no
@@ -102549,10 +103094,33 @@ async def start_canvas_comment_turn(session_id: str, prompt: str, display_prompt
     return await post_turn(session_id, TurnRequest(prompt=prompt, display_prompt=display_prompt, client_capabilities=client_capabilities))
 
 
+def canvas_comment_side_chat_available(session_id: str, prompt: str) -> bool:
+    """Whether a copy of the chat can answer a Canvas question; otherwise the comment starts a turn.
+
+    Each condition is one the side chat would fail on after the comment was accepted: a chat without a
+    native conversation to copy, Claude without the Agent SDK that carries /btw, and a question over
+    Claude's limit.
+    """
+    session = STORE.sessions.get(session_id) or {}
+    backend = str(session.get("backend") or DEFAULT_BACKEND).lower()
+    if backend == BACKEND_CODEX:
+        return bool(session_codex_thread_id(session))
+    if backend == BACKEND_CLAUDE:
+        return (bool(str(session.get("claude_session_id") or session.get("session_id") or "").strip())
+                and CLAUDE_TRANSPORT != CLAUDE_TRANSPORT_PRINT and claude_sdk_dependency_available()
+                and len(prompt) <= side_questions.MAX_QUESTION_CHARS)
+    if backend == BACKEND_GEMINI:
+        return bool(session.get("gemini_session_id"))
+    if backend == BACKEND_CURSOR:
+        return bool(session.get("cursor_session_id"))
+    return False  # OpenCode
+
+
 agentsdock_canvas.register_canvas_routes(
     app, state_dir=STATE_DIR, session_exists=lambda session_id: session_id in STORE.sessions,
     # iter_session_events is defined further down this module.
     session_events=lambda session_id: iter_session_events(session_id), start_turn=start_canvas_comment_turn,
+    side_chats=SIDE_QUESTIONS.comment_chats, side_chat_available=canvas_comment_side_chat_available,
 )
 # Hub for SSH-only remote servers: registry, tunnels, deploy, and the /api/remote/{id} proxy.
 # Only the hub on the default state directory keeps the remotes' ssh aliases: another instance, such as an
@@ -102561,7 +103129,7 @@ HUB_GRANT_LOCKS = {provider: asyncio.Lock() for provider in ("codex", "cursor")}
 
 
 async def issue_hub_provider_grant(backend: str, previous: str, refresh: bool) -> dict:
-    if HUB_PROVIDER_INSTALL:
+    if HUB_PROVIDER_INSTALL or backend not in ("codex", "cursor"):
         raise hub_provider_auth.HubLoginError(hub_provider_auth.FAILURE)
     async with HUB_GRANT_LOCKS[backend]:
         if backend == "codex":
@@ -102609,7 +103177,8 @@ def hub_cursor_access_token() -> str:
 
 
 REMOTE_SERVERS = remote_servers.RemoteServerManager(STATE_DIR, source_dir=SERVER_ROOT,
-    ssh_aliases=STATE_DIR == Path.home() / ".agentsdock", provider_auth_source=issue_hub_provider_grant)
+    ssh_aliases=STATE_DIR == Path.home() / ".agentsdock",
+    provider_auth_source=None if HUB_PROVIDER_INSTALL else issue_hub_provider_grant)
 remote_servers.register_remote_server_routes(
     app, manager=REMOTE_SERVERS, authorize_admin=require_native_admin_control, websocket_authorized=websocket_authorized,
     # Update & redeploy all: the hub's own running chats (as /api/health lists them), CLI updates and restart.

@@ -29,8 +29,8 @@ export function localSessionImportCapability(health: Health | null | undefined):
   return capability
 }
 
-export function cursorLocalSessionImportSupported(health: Health | null | undefined): boolean {
-  const capability = health?.capabilities?.local_session_import_cursor_v1
+export function snapshotImportSupported(health: Health | null | undefined, backend: 'cursor' | 'gemini'): boolean {
+  const capability = health?.capabilities?.[`local_session_import_${backend}_v1`]
   return localSessionImportCapability(health) != null
     && isRecord(capability) && capability.available === true
     && Number.isInteger(capability.version) && Number(capability.version) >= 1
@@ -116,7 +116,7 @@ function positiveInteger(value: unknown): value is number {
 }
 
 function parseBackendResponse(value: unknown, field: string): Backend {
-  if (value !== 'claude' && value !== 'codex' && value !== 'cursor') throw invalidResponse(field)
+  if (value !== 'claude' && value !== 'codex' && value !== 'cursor' && value !== 'gemini') throw invalidResponse(field)
   return value
 }
 
@@ -126,7 +126,7 @@ function responseString(value: unknown, max: number, field: string, allowWhitesp
 }
 
 function responseLabel(value: unknown, backend: Backend, providerSessionId: string): string {
-  const fallback = `${backend === 'claude' ? 'Claude' : backend === 'cursor' ? 'Cursor' : 'Codex'} chat ${providerSessionId.slice(0, 8)}`
+  const fallback = `${backend === 'claude' ? 'Claude' : backend === 'cursor' ? 'Cursor' : backend === 'gemini' ? 'Gemini CLI' : 'Codex'} chat ${providerSessionId.slice(0, 8)}`
   if (typeof value !== 'string' || value.length === 0 || value.length > MAX_LABEL_CHARS || containsControl(value, true)) return fallback
   return value
 }

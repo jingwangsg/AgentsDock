@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import fnmatch
 import io
 import json
@@ -38,6 +39,7 @@ from urllib.parse import parse_qsl, urlencode
 import httpx
 import websockets
 
+import gemini_gateway
 import hub_provider_auth
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -135,7 +137,7 @@ SKY_LOGIN_ERROR = ("SkyPilot on the hub's machine needs a new login. Click Autho
 # site-specific, so they stay out of the source. Sites mount different storage (an oci@ target can
 # be a SkyPilot cluster on GCP, without OCI's Lustre), so a variable may name several homes,
 # space-separated: a default deploy takes the first that holds the target's install, else the
-# first the host has, else a directory on the host's NFS or Lustre mounts named like the first
+# first the ssh user can write, else a directory on the host's NFS or Lustre mounts named like the first
 # home's last path component, normally the user name (see remote_probe.sh).
 CLUSTER_HOME_ENV = {"oci@": "AGENTSDOCK_OCI_HOME", "osmo@": "AGENTSDOCK_OSMO_HOME"}
 # workflow -> OSMO pool, recorded by osmo_lead_task on every tunnel and deploy query. Pools mount different
@@ -1250,20 +1252,53 @@ class Tunnel:
     async def _serve_provider_auth(self, route: SSHRoute) -> None:
         directory = validate_remote_dir(self.server.install_dir)
         command = f'cd {directory} && exec server/.venv/bin/python -I server/hub_provider_auth.py "$PWD"'
+        config_dir = Path(os.environ.get("AGENTS_SERVER_CONFIG_DIR") or Path.home() / ".config/agents-server")
         delay = MIN_BACKOFF
         while True:
             proc = None
+            # This private master lets the verified peer request a loopback-only
+            # Gemini forward. SSH reports the allocated remote port on stdout.
+            resources = contextlib.ExitStack()
+            control = str(Path(resources.enter_context(tempfile.TemporaryDirectory(prefix="ad-auth-", dir="/tmp"))) / "ssh")
+            gemini_access = None
+
+            async def issue(backend, previous, refresh):
+                nonlocal gemini_access
+                if backend != "gemini":
+                    return await self._issue_provider_grant(backend, previous, refresh)
+                if gemini_access is None:
+                    with contextlib.ExitStack() as opening:
+                        gateway = opening.enter_context(gemini_gateway.open_gateway(config_dir))
+                        forward = await asyncio.create_subprocess_exec(
+                            ssh_binary(), "-F", "/dev/null", "-S", control, "-O", "forward", "-R",
+                            f"127.0.0.1:0:127.0.0.1:{gateway['port']}", route.destination,
+                            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.DEVNULL, env=route.env)
+                        try:
+                            output, _ = await asyncio.wait_for(forward.communicate(), 8)
+                        finally:
+                            if forward.returncode is None:
+                                forward.kill()
+                                await forward.wait()
+                        if forward.returncode or not output.strip().isdigit() or not 1 <= int(output) <= 65535:
+                            raise OSError("Gemini SSH forward unavailable")
+                        gemini_access = {**gateway, "port": int(output)}
+                        resources.enter_context(opening.pop_all())
+                return gemini_access
+
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    ssh_binary(), "-T", "-o", "ClearAllForwardings=yes", *route.options, *SSH_BATCH_OPTIONS,
+                    ssh_binary(), "-T", "-S", control, "-o", "ControlMaster=yes", "-o", "ControlPersist=no",
+                    "-o", "ClearAllForwardings=yes", *route.options, *SSH_BATCH_OPTIONS,
                     route.destination, "bash", "-c", shlex.quote(command),
                     env=route.env, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL, start_new_session=True)
                 tell_group_killer(f"+{proc.pid}")
-                await hub_provider_auth.forward_requests(proc, self.server.provider_auth_key, self._issue_provider_grant)
+                await hub_provider_auth.forward_requests(proc, self.server.provider_auth_key, issue)
             except (OSError, ValueError, asyncio.TimeoutError, hub_provider_auth.HubLoginError):
                 pass
             finally:
+                resources.close()
                 if proc is not None:
                     kill_process_group(proc)
                     await proc.wait()
@@ -2028,8 +2063,9 @@ class RemoteServerManager:
                           hub_restart: Callable[[], Awaitable[str | None]]) -> None:
         failures: list[str] = []
 
-        async def update_clis(label: str, run: Callable[[str], Awaitable[tuple[str, bool]]]) -> None:
-            for backend, product in CLI_PRODUCT_NAMES.items():
+        async def update_clis(label: str, run: Callable[[str], Awaitable[tuple[str, bool]]], *, gemini: bool) -> None:
+            products = {**CLI_PRODUCT_NAMES, "gemini": "Gemini CLI"} if gemini else CLI_PRODUCT_NAMES
+            for backend, product in products.items():
                 # The hub learns that a CLI was missing only from the server's answer, so this line says "updating"
                 # and the result line says "installed".
                 job.progress("cli", f"{label}: updating {product}…")
@@ -2058,8 +2094,11 @@ class RemoteServerManager:
                     failures.append(f"{server.name}: {child.error}")
                 # The entry the deploy saved: it may carry a new token.
                 server = self.servers.get(server.id, server)
-                await update_clis(server.name, lambda backend, server=server: self.update_cli(server, backend))
-            await update_clis("hub", hub_update_cli)
+                health = await self.probe_health(server) or {}
+                gemini = (health.get("capabilities") or {}).get("gemini_backend") or {}
+                await update_clis(server.name, lambda backend, server=server: self.update_cli(server, backend),
+                                  gemini=gemini.get("available") is True and gemini.get("version") == 1)
+            await update_clis("hub", hub_update_cli, gemini=True)
             job.progress("restart", "Restarting the hub…")
             restart_error = await hub_restart()
             if restart_error:
@@ -2147,7 +2186,7 @@ class RemoteServerManager:
                     requested_port = 0
                     job.progress("connect", f"Found an existing install at {probe['install_dir']}; deploying there to keep its chats.")
                 else:
-                    job.progress("connect", f"{install_dir.rpartition('/')[0]} does not exist on {ssh_host}; installing in {probe['install_dir']}.")
+                    job.progress("connect", f"{install_dir.rpartition('/')[0]} is missing or not writable on {ssh_host}; installing in {probe['install_dir']}.")
                 # load-bearing: a found directory's path comes from the host's mount table, not from validated
                 # hub input. Unvalidated, it would go unquoted into the upload's shell command, and the registry
                 # would fail to load its whole file.

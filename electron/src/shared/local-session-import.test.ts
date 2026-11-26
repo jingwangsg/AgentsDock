@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Health } from './types'
 import {
-  cursorLocalSessionImportSupported,
+  snapshotImportSupported,
   localSessionImportBatchLimit,
   localSessionImportCapability,
   localSessionImportListLimit,
@@ -30,26 +30,26 @@ function supportedHealth(overrides: Partial<Health> = {}): Health {
 }
 
 describe('local session import contract', () => {
-  it('requires the explicit Cursor public-snapshot capability', () => {
+  it.each(['cursor', 'gemini'] as const)('requires the explicit %s public-snapshot capability', backend => {
     const base = supportedHealth()
-    expect(cursorLocalSessionImportSupported(base)).toBe(false)
+    expect(snapshotImportSupported(base, backend)).toBe(false)
     for (const [override, expected] of [
       [{}, true], [{ available: false }, false], [{ version: 0 }, false],
       [{ history_mode: 'unknown' }, false]
     ] as const) {
-      expect(cursorLocalSessionImportSupported({ ...base, capabilities: {
+      expect(snapshotImportSupported({ ...base, capabilities: {
         ...base.capabilities,
-        local_session_import_cursor_v1: { available: true, version: 1, history_mode: 'initial_text_snapshot', ...override }
-      } })).toBe(expected)
+        [`local_session_import_${backend}_v1`]: { available: true, version: 1, history_mode: 'initial_text_snapshot', ...override }
+      } }, backend)).toBe(expected)
     }
   })
 
-  it('accepts Cursor candidates, requests and durable results without weakening identity validation', () => {
-    const item = { provider_session_id: 'cursor-native', backend: 'cursor' as const, cwd: '/work' }
+  it.each(['cursor', 'gemini'] as const)('accepts %s candidates, requests and durable results without weakening identity validation', backend => {
+    const item = { provider_session_id: 'cursor-native', backend, cwd: '/work' }
     expect(parseBulkImportSessionItems([item])).toEqual([item])
     expect(parseLocalSessionCandidatesResponse({ sessions: [{
       ...item, label: 'Native title', updated_at: '2026-09-20T00:00:00Z'
-    }] })[0].backend).toBe('cursor')
+    }] })[0].backend).toBe(backend)
     expect(parseBulkImportSessionResultsResponse({ results: [{
       ...item, session_id: 'imported', ok: true, imported: 2
     }] }, [item])[0].ok).toBe(true)

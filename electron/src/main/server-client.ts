@@ -883,13 +883,13 @@ export class AgentServerClient {
     }
   }
   /** The server stops the CLI after 10 minutes; a download can take several. */
-  async updateRuntimeCli(backend: 'claude' | 'codex' | 'cursor'): Promise<RuntimeCliUpdate> {
+  async updateRuntimeCli(backend: 'claude' | 'codex' | 'cursor' | 'gemini'): Promise<RuntimeCliUpdate> {
     try {
       return await this.privilegedNativeRequest(`/api/admin/runtimes/${backend}/update`, { method: 'POST' }, 11 * 60_000, 200)
     } catch (error) {
-      if (backend === 'cursor' && error instanceof ServerError
+      if ((backend === 'cursor' || backend === 'gemini') && error instanceof ServerError
         && (error.status === 422 || (error.status === 404 && error.detail === 'Not Found'))) {
-        throw new Error('Update this AgentsServer to enable Cursor CLI updates.')
+        throw new Error(`Update this AgentsServer to enable ${backend === 'gemini' ? 'Gemini' : 'Cursor'} CLI updates.`)
       }
       throw error
     }
@@ -1084,6 +1084,9 @@ export class AgentServerClient {
     const codexProvider = validateCodexProviderSelection(input.codex_provider)
     if (codexProvider === 'custom' && input.backend !== 'codex') throw new Error('Custom endpoints require Codex.')
     const providerId = 'providerId' in input ? input.providerId : undefined
+    if (providerId && input.backend === 'gemini' && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(providerId)) {
+      throw new Error('Gemini CLI requires a canonical session UUID.')
+    }
     if (providerId && input.backend === 'opencode') throw new Error(t('opencode.resumeUnavailable'))
     const response = await this.post<{ session: Session }>('/api/sessions', {
       title: input.title,
@@ -1098,17 +1101,17 @@ export class AgentServerClient {
       provider_session_id: providerId,
       // Keep legacy manual-ID resume compatible. Cursor text-snapshot import
       // uses the capability-gated local picker and bulk endpoint instead.
-      import_history: Boolean(providerId) && input.backend !== 'cursor'
+      import_history: Boolean(providerId) && input.backend !== 'cursor' && input.backend !== 'gemini'
     })
     return response.session
   }
 
-  async listLocalSessions(limit = LOCAL_SESSION_IMPORT_HARD_LIST_LIMIT, includeCursor = false): Promise<LocalSessionCandidate[]> {
+  async listLocalSessions(limit = LOCAL_SESSION_IMPORT_HARD_LIST_LIMIT, includeCursor = false, includeGemini = false): Promise<LocalSessionCandidate[]> {
     if (!Number.isInteger(limit) || limit < 1 || limit > LOCAL_SESSION_IMPORT_HARD_LIST_LIMIT) {
       throw new Error('Import Chat local session limit is invalid.')
     }
     const response = await this.get<unknown>(
-      `/api/local-sessions?limit=${limit}${includeCursor ? '&include_cursor=true' : ''}`,
+      `/api/local-sessions?limit=${limit}${includeCursor ? '&include_cursor=true' : ''}${includeGemini ? '&include_gemini=true' : ''}`,
       this.configuration,
       DEFAULT_REQUEST_TIMEOUT_MS,
       LOCAL_SESSION_LIST_RESPONSE_MAX_BYTES
@@ -2460,7 +2463,8 @@ export class AgentServerClient {
     onPinnedItemsChanged?: (event: TimelinePinsChanged) => void,
     onReasoningStream?: (snapshot: ReasoningSummaryStreamSnapshot) => void,
     onSideChatChanged?: (revision: number) => void,
-    onProviderUsageChanged?: (backend: 'codex' | 'claude') => void
+    onProviderUsageChanged?: (backend: 'codex' | 'claude') => void,
+    onCanvasCommentsChanged?: () => void
   ): () => void {
     const configuration = this.configuration
     const endpoint = new URL(configurationURL(configuration, `/api/sessions/${encodeURIComponent(sessionId)}/events`))
@@ -2515,6 +2519,10 @@ export class AgentServerClient {
           if (packet && typeof packet === 'object' && 'type' in packet && packet.type === 'provider_usage_changed') {
             const notice = packet as { session_id?: string; backend?: string }
             if (notice.session_id === sessionId && (notice.backend === 'codex' || notice.backend === 'claude')) onProviderUsageChanged?.(notice.backend)
+            return
+          }
+          if (packet && typeof packet === 'object' && 'type' in packet && packet.type === 'canvas_comments_updated') {
+            if ((packet as { session_id?: string }).session_id === sessionId) onCanvasCommentsChanged?.()
             return
           }
           if (isProviderRuntimeChanged(packet)) {
@@ -3009,7 +3017,7 @@ function isSessionSummaryPacket(value: unknown): value is Session {
   const session = value as Record<string, unknown>
   return typeof session.id === 'string' && session.id.length > 0 && session.id.length <= 128
     && typeof session.title === 'string' && session.title.length <= 240
-    && (session.backend === 'codex' || session.backend === 'claude' || session.backend === 'cursor' || session.backend === 'opencode')
+    && (session.backend === 'codex' || session.backend === 'claude' || session.backend === 'cursor' || session.backend === 'opencode' || session.backend === 'gemini')
 }
 
 function isEmergencySessionPacket(value: unknown): value is Session {
@@ -3022,7 +3030,7 @@ function isEmergencySessionPacket(value: unknown): value is Session {
     || typeof session.title !== 'string'
     || !session.title
     || session.title.length > 240
-    || (session.backend !== 'codex' && session.backend !== 'claude' && session.backend !== 'cursor' && session.backend !== 'opencode')
+    || (session.backend !== 'codex' && session.backend !== 'claude' && session.backend !== 'cursor' && session.backend !== 'opencode' && session.backend !== 'gemini')
     || typeof session.unacknowledged_emergency_count !== 'number'
     || !Number.isSafeInteger(session.unacknowledged_emergency_count)
     || session.unacknowledged_emergency_count < 0
@@ -3578,7 +3586,7 @@ function isPrivilegedNativeControlTarget(
   }
   if (path === '/api/admin/codex/auth') return !target.search && method === 'GET'
   if (path === '/api/admin/claude/token') return !target.search && method === 'PUT'
-  if (/^\/api\/admin\/runtimes\/(claude|codex|cursor)\/update$/.test(path)) return !target.search && method === 'POST'
+  if (/^\/api\/admin\/runtimes\/(claude|codex|cursor|gemini)\/update$/.test(path)) return !target.search && method === 'POST'
   if (path === '/api/admin/codex/provider') return !target.search && ['GET', 'PUT', 'DELETE'].includes(method)
   if (path === '/api/admin/codex/provider/test') return !target.search && method === 'POST'
   if (path === '/api/admin/codex/provider/models') return method === 'GET' && (!target.search

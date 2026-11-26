@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Health, RuntimeCatalog } from '../types'
+import { runtimeChipLabel } from './runtime-chip'
 import { readyChatBackends,
   cursorBackendSupported,
   isBackendLocked,
@@ -156,6 +157,15 @@ test('a chat backend is switchable only before a provider session exists', () =>
   assert.equal(isBackendLocked({ session_id: 'legacy-1' }), true)
 })
 
+test('a temporary Cursor listing failure cannot rule out a saved model', () => {
+  const backend = { available: true, models: [{ value: 'auto', label: 'Auto' }], efforts: [] }
+  for (const model_source of ['cursor-agent --list-models failed', 'agent --list-models empty', 'Runtime refresh deadline']) {
+    const backends = { cursor: { ...backend, model_source } }
+    assert.equal(runtimeSelectionError(cursorHealth(2), { backends }, 'cursor', 'gemini-4-argon-high'), null)
+    assert.match(runtimeSelectionError(cursorHealth(2), { backends: { cursor: { ...backends.cursor, model_list_complete: true } } }, 'cursor', 'gemini-4-argon-high') ?? '', /not offered/)
+  }
+})
+
 test('locked and unknown Cursor models cannot be admitted', () => {
   const locked: RuntimeCatalog = {
     ...cursorCatalog,
@@ -204,4 +214,37 @@ test('model-scoped Ultra remains an explicit selectable reasoning option', () =>
   }
   assert.deepEqual(runtimeEffortOptions(scoped, 'codex', 'gpt-5.6-sol').map(option => option.value), ['', 'medium', 'high', 'ultra'])
   assert.equal(runtimeEffortAfterModelChange(scoped, 'codex', 'gpt-5.6-sol', 'ultra'), 'ultra')
+})
+
+test('gates Gemini independently of other CLIs and admits only this server’s models', () => {
+  const health: Health = { ok: true, capabilities: { gemini_backend: { available: true, version: 1, native_resume: true } } }
+  const runtime: RuntimeCatalog = { backends: { gemini: { available: true, models: [{ value: 'gcp/google/gemini', label: 'Gemini' }], efforts: [] } } }
+  assert.equal(readyChatBackends(health, runtime).includes('gemini'), true)
+  assert.equal(readyChatBackends({ ok: true }, runtime).includes('gemini'), false)
+  assert.equal(runtimeSelectionError(health, runtime, 'gemini', 'gcp/google/gemini'), null)
+  assert.equal(Boolean(runtimeSelectionError(health, runtime, 'gemini', 'gemini-through-cursor')), true)
+  assert.equal(runtimeEffortAfterModelChange(runtime, 'gemini', 'gcp/google/gemini', 'high'), null)
+})
+
+test('Gemini reasoning and chip follow the capabilities of the selected or default model', () => {
+  const argon = 'gcp/google/gemini-4-argon'
+  const flash = 'gcp/google/gemini-3.8-flash'
+  const levels = [{ value: 'low', label: 'Low' }, { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }]
+  const runtime: RuntimeCatalog = { backends: { gemini: {
+    models: [{ value: argon, label: 'Argon' }, { value: flash, label: 'Flash' }],
+    default_model: argon, efforts: [], model_efforts: { [argon]: levels },
+  } } }
+  for (const model of [null, argon]) {
+    assert.deepEqual(runtimeEffortOptions(runtime, 'gemini', model, 'xhigh'), [{ value: '', label: 'Server default' }, ...levels])
+    for (const { value, label } of levels) {
+      assert.equal(runtimeEffortAfterModelChange(runtime, 'gemini', model, value), value)
+      assert.equal(runtimeChipLabel(runtime, 'gemini', model, value), `Argon · ${label}`)
+    }
+    assert.equal(runtimeEffortAfterModelChange(runtime, 'gemini', model, 'xhigh'), null)
+    assert.equal(runtimeChipLabel(runtime, 'gemini', model, null), 'Argon')
+  }
+  assert.deepEqual(runtimeEffortOptions(runtime, 'gemini', flash, 'high'), [{ value: '', label: 'Server default' }])
+  assert.deepEqual(runtimeEffortOptions(runtime, 'gemini', flash, null), [])
+  assert.equal(runtimeEffortAfterModelChange(runtime, 'gemini', flash, 'high'), null)
+  assert.equal(runtimeChipLabel(runtime, 'gemini', flash, 'high'), 'Flash')
 })

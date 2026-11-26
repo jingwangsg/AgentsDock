@@ -4035,3 +4035,19 @@ describe('parseUnifiedDiff', () => {
     expect(summarizeStructuredToolDiff(events)).toMatchObject({ additions: 4, deletions: 0 })
   })
 })
+
+it('preserves exact native Gemini deltas up to Stop and through completed replay', () => {
+  const native = { backend: 'gemini' as const, run_id: 'gemini-run' }
+  const chunk = (seq: number, text: string, item_id: string) => event(seq, 'assistant_text', { ...native, delta: true, text, item_id })
+  const stream = [event(1, 'turn_started', { ...native, prompt: 'Test chunks' }),
+    chunk(2, '  ha', 'one'), chunk(3, 'ha', 'one'), chunk(4, 'ha', 'one'), chunk(5, '\n', 'one'),
+    event(6, 'tool_started', { ...native, tool_id: 't', text: 'read_file' }),
+    event(7, 'tool_finished', { ...native, tool_id: 't', text: 'read_file' }), chunk(8, 'done ', 'two')]
+  const texts = (items: TimelineItem[]) => renderTimelineItems(items).flatMap(row => row.kind === 'message' && row.role === 'assistant' ? [messageItemText(row)] : [])
+  const projector = new TimelineProjector([])
+  for (const entry of stream) projector.append([entry])
+  expect(texts(projector.items)).toEqual(['  hahaha\n', 'done '])
+  for (const terminal of [{ stopped: true }, { result_text: '  hahaha\ndone ' }]) {
+    expect(texts(projectTimeline([...stream, event(9, 'turn_finished', { ...native, ...terminal })], []))).toEqual(['  hahaha\n', 'done '])
+  }
+})

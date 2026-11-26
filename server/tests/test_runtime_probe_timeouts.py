@@ -192,7 +192,7 @@ class RuntimeProbeTimeoutTests(unittest.TestCase):
         ) as run:
             result = agent_server.discover_cursor_catalog()
         run.assert_not_called()
-        self.assertEqual(result["models"], [{"value": "auto", "label": "Auto"}])
+        self.assertEqual(result["models"], [{"value": "", "label": "Server default"}, {"value": "auto", "label": "Auto"}])
 
     def test_budget_exhaustion_is_not_a_normal_auth_timeout(self):
         clock = [100.0]

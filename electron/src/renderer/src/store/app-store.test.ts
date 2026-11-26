@@ -685,8 +685,11 @@ describe('session refresh identity', () => {
   })
 })
 
-describe('provider scheduled-jobs access session updates', () => {
-  it('preserves the server-enforced mode in the renderer-to-server patch', async () => {
+describe('session permission updates', () => {
+  it.each<Partial<Session>>([
+    { provider_jobs_access: 'read_only' },
+    { gemini_permission_mode: 'plan' }
+  ])('passes the selected permission through to the server: %o', async patch => {
     const session = { ...sessionFor('chat-1'), provider_jobs_access: 'full' as const }
     const update = vi.fn().mockImplementation(async (_sessionId: string, patch: Partial<Session>) => ({
       ...session,
@@ -704,10 +707,10 @@ describe('provider scheduled-jobs access session updates', () => {
       error: null
     })
 
-    await useAppStore.getState().updateSession('chat-1', { provider_jobs_access: 'read_only' })
+    await useAppStore.getState().updateSession('chat-1', patch)
 
-    expect(update).toHaveBeenCalledWith('chat-1', { provider_jobs_access: 'read_only' })
-    expect(useAppStore.getState().sessions[0].provider_jobs_access).toBe('read_only')
+    expect(update).toHaveBeenCalledWith('chat-1', patch)
+    expect(useAppStore.getState().sessions[0]).toMatchObject(patch)
   })
 })
 
@@ -3389,6 +3392,29 @@ describe('selected live timeline', () => {
       else expect(runNow).not.toHaveBeenCalled()
     } finally {
       vi.useRealTimers()
+    }
+  })
+
+  it('refreshes the open Canvas when a comment side chat changes or the chat stream reconnects', async () => {
+    const handlers = await initializeLiveEventHandlers()
+    const refreshed: string[] = []
+    const listener: EventListener = event => refreshed.push((event as CustomEvent<{ sessionId: string }>).detail.sessionId)
+    window.addEventListener('agentsdock:canvases-changed', listener)
+    try {
+      handlers.get('canvas-comments:changed')?.({ profileId: null, profileGeneration: 0, sessionId: 'chat-a' })
+      handlers.get('canvas-comments:changed')?.({ profileId: 'another-profile', profileGeneration: 0, sessionId: 'chat-b' })
+      expect(refreshed).toEqual(['chat-a'])
+      // A notice sent while the chat's stream was down is not replayed: the reconnect refreshes too.
+      // 'live' sent again by a background refresh does not.
+      const sync = (state: string) => handlers.get('server:sync')?.({ profileId: null, profileGeneration: 0, sessionId: 'chat-a', state })
+      sync('live')
+      sync('live')
+      expect(refreshed).toEqual(['chat-a', 'chat-a'])
+      sync('reconnecting')
+      sync('live')
+      expect(refreshed).toEqual(['chat-a', 'chat-a', 'chat-a'])
+    } finally {
+      window.removeEventListener('agentsdock:canvases-changed', listener)
     }
   })
 

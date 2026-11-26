@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import type { Health } from '../types'
 import {
-  cursorLocalSessionImportSupported,
+  snapshotImportSupported,
   localSessionImportBatchLimit,
   localSessionImportCapability,
   localSessionImportListLimit,
@@ -23,10 +23,12 @@ assert.equal(localSessionImportBatchLimit(oversized), 25)
 assert.equal(localSessionImportListLimit(oversized), 500)
 
 // Cursor needs its own public-snapshot capability on top of the base import.
-assert.equal(cursorLocalSessionImportSupported(supported()), false)
-for (const [override, expected] of [[{}, true], [{ available: false }, false], [{ version: 0 }, false], [{ history_mode: 'unknown' }, false]] as const) {
-  const health = supported({ capabilities: { local_session_import_v1: capability, local_session_import_cursor_v1: { available: true, version: 1, history_mode: 'initial_text_snapshot', ...override } } })
-  assert.equal(cursorLocalSessionImportSupported(health), expected)
+for (const backend of ['gemini', 'cursor'] as const) {
+  assert.equal(snapshotImportSupported(supported(), backend), false)
+  for (const [override, expected] of [[{}, true], [{ available: false }, false], [{ version: 0 }, false], [{ history_mode: 'unknown' }, false]] as const) {
+    const health = supported({ capabilities: { local_session_import_v1: capability, [`local_session_import_${backend}_v1`]: { available: true, version: 1, history_mode: 'initial_text_snapshot', ...override } } })
+    assert.equal(snapshotImportSupported(health, backend), expected)
+  }
 }
 
 // Candidate lists: malformed labels fall back without hiding other rows; duplicate identities are refused.
@@ -34,8 +36,9 @@ const sessions = parseLocalSessionCandidatesResponse({ sessions: [
   { provider_session_id: 'claude-session-1', backend: 'claude', label: 'Linear-123 \u001b[31mfix', updated_at: '2026-08-01T00:00:00Z', cwd: '/work' },
   { provider_session_id: 'codex-session-2', backend: 'codex', label: null, updated_at: '2026-08-02T00:00:00Z', cwd: null },
   { provider_session_id: 'cursor-session-3', backend: 'cursor', label: '普通标题 — 🚀', updated_at: '2026-08-03T00:00:00Z', cwd: null },
+  { provider_session_id: 'gemini-native', backend: 'gemini', label: null, updated_at: '2026-08-04T00:00:00Z', cwd: '/gemini' },
 ] })
-assert.deepEqual(sessions.map(session => session.label), ['Claude chat claude-s', 'Codex chat codex-se', '普通标题 — 🚀'])
+assert.deepEqual(sessions.map(session => session.label), ['Claude chat claude-s', 'Codex chat codex-se', '普通标题 — 🚀', 'Gemini CLI chat gemini-n'])
 assert.throws(() => parseLocalSessionCandidatesResponse({ sessions: [
   { provider_session_id: 'p', backend: 'claude', label: 'One', updated_at: '2026-08-01T00:00:00Z', cwd: null },
   { provider_session_id: 'p', backend: 'claude', label: 'Two', updated_at: '2026-08-02T00:00:00Z', cwd: null },
