@@ -180,6 +180,25 @@ class CodexAppServerClientTests(unittest.IsolatedAsyncioTestCase):
             **kwargs,
         )
 
+    async def test_start_waits_for_initialize_for_the_longer_of_request_and_lifecycle_timeout(self) -> None:
+        # Seen live 2026-11-27 on a new install on a shared home: app-server built its thread index before
+        # it answered initialize, was ended after the 30 s request timeout, and no later start succeeded.
+        # Title generation sets a lifecycle timeout below its request timeout; that must not shorten its start.
+        for request_timeout, lifecycle_timeout in ((0.05, 5), (5, 0.05)):
+            with self.subTest(request_timeout=request_timeout, lifecycle_timeout=lifecycle_timeout):
+                factory = FakeProcessFactory()
+                factory.process.responders["initialize"] = lambda _: NO_RESPONSE
+                client = CodexAppServerClient(
+                    "codex", cwd="/tmp", env_factory=lambda: {"PATH": "/usr/bin"}, process_factory=factory,
+                    request_timeout=request_timeout, lifecycle_timeout=lifecycle_timeout,
+                )
+                self.addAsyncCleanup(client.close)
+                starting = asyncio.create_task(client.start())
+                await asyncio.sleep(0.3)
+                self.assertFalse(starting.done())
+                factory.process.feed({"id": factory.process.messages[0]["id"], "result": {"userAgent": "fake"}})
+                await asyncio.wait_for(starting, 2)
+
     async def test_guarded_notice_is_connected_only_and_preserves_active_turn(self) -> None:
         factory = FakeProcessFactory()
         client = self.make_client(factory)
