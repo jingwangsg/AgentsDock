@@ -253,6 +253,8 @@ const TRACE_DETAIL_EVENT_LIMIT = 240
 const FILE_PAGE_LIMIT = 60
 const MAX_AGENT_TEXT_PREVIEW_BYTES = 2 * 1024 * 1024
 const AGENT_TEXT_FILE_TIMEOUT_MS = 30_000
+// A save's body arrives in many chunks per second; the windows get its progress at most this often.
+const SAVE_PROGRESS_INTERVAL_MS = 250
 const WORKSPACE_PREVIEW_PROBE_TIMEOUT_MS = 30_000
 const RUNTIME_CATALOG_CACHE_KEY = 'runtimeCatalog:v1'
 // The revision of the shared folder order (folder_order_v1) the `folderOrder` preference holds; absent while
@@ -5420,14 +5422,30 @@ export class AppService {
     if (result.canceled || !result.filePath) return null
     this.assertCurrentScope(scope)
     appLog('files', 'save requested', { fileId: file.id, filename: file.filename, destination: result.filePath })
+    const saveId = randomUUID()
+    let reportedAt = 0
+    const report = (written: number, total: number | null): void => {
+      if (Date.now() - reportedAt < SAVE_PROGRESS_INTERVAL_MS) return
+      reportedAt = Date.now()
+      this.emit('files:save-progress', { saveId, name: file.title || file.filename, written, total })
+    }
+    report(0, file.size ?? null)
     try {
-      await this.downloadFile(scope, sessionId, file, result.filePath)
-      this.assertCurrentScope(scope)
+      await this.ensureValidatedScope(scope)
+      // The file goes to the path the user chose and nothing of it enters the profile's state, so
+      // from here the save continues when the user switches servers. A switch disposes
+      // scope.client, which aborts its requests; this client belongs to the save alone.
+      const client = this.clientFactory(scope.serverUrl, await this.settings.accessTokenForConnectionAsync(scope.profileId))
+      try {
+        await this.downloadFile(sessionId, file, result.filePath, resume => client.fileRequest(sessionId, file.id, resume), report)
+      } finally { client.dispose() }
       appLog('files', 'save completed', { fileId: file.id, filename: file.filename, destination: result.filePath })
       return result.filePath
     } catch (error) {
       appLog('files', 'save failed', { fileId: file.id, filename: file.filename, destination: result.filePath, error: errorText(error) })
       throw error
+    } finally {
+      this.emit('files:save-progress', { saveId, done: true })
     }
   }
 
@@ -8467,7 +8485,12 @@ export class AppService {
       return existingPath
     }
     await this.ensureValidatedScope(scope)
-    const download = this.downloadFile(scope, sessionId, file, path)
+    const download = this.downloadFile(sessionId, file, path, async resume => {
+      this.assertCurrentScope(scope)
+      const response = await scope.client.fileRequest(sessionId, file.id, resume)
+      this.assertCurrentScope(scope)
+      return response
+    })
       .then(() => {
         this.assertCurrentScope(scope)
         return path
@@ -8486,9 +8509,18 @@ export class AppService {
     return join(app.getPath('temp'), 'AgentsDockFiles', profileKey, sessionKey, fileKey, basename(file.filename))
   }
 
-  private async downloadFile(scope: ConnectionScope, sessionId: string, file: AgentFile, path: string): Promise<void> {
+  /**
+   * `send` requests the file, or the rest of it when given Range headers. Its caller chooses the
+   * client and decides whether a profile switch ends the download.
+   */
+  private async downloadFile(
+    sessionId: string,
+    file: AgentFile,
+    path: string,
+    send: (resume?: Pick<RequestInit, 'headers'>) => Promise<Response>,
+    onProgress?: (written: number, total: number | null) => void
+  ): Promise<void> {
     requireSessionFile(sessionId, file)
-    await this.ensureValidatedScope(scope)
     mkdirSync(dirname(path), { recursive: true })
     const partial = `${path}.part-${randomUUID()}`
     // Only clean up a file this download created; another save may target the
@@ -8499,13 +8531,9 @@ export class AppService {
     let written = 0
     let etag: string | null = null
     try {
-      await readFileWithRetry(async () => {
-        this.assertCurrentScope(scope)
-        const resume = written > 0 && etag ? { headers: { Range: `bytes=${written}-`, 'If-Range': etag } } : undefined
-        const response = await scope.client.fileRequest(sessionId, file.id, resume)
-        this.assertCurrentScope(scope)
-        return response
-      }, async response => {
+      await readFileWithRetry(() => (
+        send(written > 0 && etag ? { headers: { Range: `bytes=${written}-`, 'If-Range': etag } } : undefined)
+      ), async response => {
         if (!response.ok) {
           const detail = (await response.text().catch(() => '')).trim().slice(0, 500)
           const status = `${response.status}${response.statusText ? ` ${response.statusText}` : ''}`
@@ -8517,8 +8545,16 @@ export class AppService {
           throw new Error('Download failed: the server resumed the file at another byte')
         }
         etag = response.headers.get('etag')
+        const body = Readable.fromWeb(response.body as never)
+        if (onProgress) {
+          // Content-Length counts the bytes of this answer, which starts at `written`; a proxy may leave it out.
+          const length = Number(response.headers.get('content-length'))
+          const total = length ? written + length : file.size ?? null
+          let received = written
+          body.on('data', (chunk: Buffer) => onProgress(received += chunk.length, total))
+        }
         try {
-          await pipeline(Readable.fromWeb(response.body as never), createWriteStream(partial, { flags: written ? 'r+' : 'w', start: written }))
+          await pipeline(body, createWriteStream(partial, { flags: written ? 'r+' : 'w', start: written }))
         } finally {
           // Count what reached the disk, also when the body stopped mid-way; pipeline settles only after the file is closed.
           written = (await stat(partial)).size

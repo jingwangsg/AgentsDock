@@ -13,7 +13,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent
 } from 'react'
 import { LoaderCircle, RotateCcw, Siren, X } from 'lucide-react'
-import type { AppUpdateStatus } from '@shared/types'
+import type { AppUpdateStatus, FileSaveProgress } from '@shared/types'
 import { normalizeSecurePeerJoinTarget } from '@shared/secure-peer'
 import { openInZedInput } from '@shared/ssh-host-alias'
 import { isLoopbackHostname } from '@shared/team-hub-url'
@@ -58,6 +58,7 @@ import { installRendererStallMonitor } from './lib/renderer-stall-monitor'
 import { nativeFileRefsFromFiles } from './lib/native-files'
 import { profileSessionKey, rendererWorkspaceKey } from './lib/profile-scope'
 import { ChatFontApplier } from './lib/chat-font'
+import { formatBytes } from './lib/format'
 import { requestOpenWorkspaceReference, type WorkspaceCodeReference } from './lib/workspace-file-links'
 import { flushActiveWorkspace, useAppStore } from './store/app-store'
 
@@ -975,6 +976,7 @@ export function App() {
           <button type="button" disabled={retryingStorage} onClick={() => { void retryStorage() }}>{t('storage.retrySaving')}</button>
         </div>}
         <UpdateNotice />
+        <FileSaveNotices />
       </div>
       <Dialogs key={`dialogs:${activeRenderKey}`} />
     </main>
@@ -1150,4 +1152,21 @@ function UpdateNotice() {
     <button type="button" className="primary-button" onClick={() => void window.agentsDock.updates.install()}>{t("ui.App.UpdateNotice.restart_6b983a8")}</button>
     <button type="button" className="icon-button" aria-label={t("ui.App.UpdateNotice.later_73b6e48")} title={t("ui.App.UpdateNotice.later_73b6e48")} onClick={() => setDismissedVersion(update.availableVersion ?? '')}><X size={14} /></button>
   </aside>
+}
+
+function FileSaveNotices() {
+  useLocale()
+  const [saves, setSaves] = useState<Record<string, FileSaveProgress>>({})
+
+  useEffect(() => window.agentsDock.events.on('files:save-progress', payload => setSaves(current => {
+    const next = { ...current }
+    if ('done' in payload) delete next[payload.saveId]
+    else next[payload.saveId] = payload
+    return next
+  })), [])
+
+  // No live-region role: a screen reader would read every update aloud.
+  return Object.values(saves).map(save => <div key={save.saveId} className="update-toast file-save-notice"><span>{save.total
+    ? t('fileDownload.progress', { name: save.name, written: formatBytes(save.written), total: formatBytes(save.total), percent: Math.floor(save.written / save.total * 100) })
+    : t('fileDownload.progressWithoutTotal', { name: save.name, written: formatBytes(save.written) })}</span></div>)
 }

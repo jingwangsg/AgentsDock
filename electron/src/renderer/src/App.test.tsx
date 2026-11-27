@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { useEffect, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentsDockAPI } from '@shared/ipc'
-import type { PublicServerProfile, Session } from '@shared/types'
+import type { AppEventMap, PublicServerProfile, Session } from '@shared/types'
 import { handleMenuCommand, useAppStore } from './store/app-store'
 import { installChatSwitcherShortcut } from './lib/chat-switcher-shortcut'
 import { App } from './App'
@@ -774,6 +774,33 @@ describe('App chat workspace identity', () => {
 
     expect(screen.queryByText('AgentsDock 0.2.7-beta.17 is ready')).not.toBeInTheDocument()
     expect(window.agentsDock.updates.install).not.toHaveBeenCalled()
+  })
+
+  it('shows one line per running save, also after a server switch, and removes it when the save ends', () => {
+    render(<App />)
+    const progress = vi.mocked(window.agentsDock.events.on).mock.calls
+      .find(([name]) => name === 'files:save-progress')![1] as (payload: AppEventMap['files:save-progress']) => void
+    const mebibyte = 1024 * 1024
+    act(() => {
+      progress({ saveId: 'save-1', name: 'Model weights', written: 4 * mebibyte, total: 148.2 * mebibyte })
+      progress({ saveId: 'save-2', name: 'episode.mp4', written: 512, total: null })
+    })
+    expect(screen.getByText('Downloading Model weights: 4.0 MB of 148.2 MB (2%)')).toBeVisible()
+    expect(screen.getByText('Downloading episode.mp4: 512 B')).toBeVisible()
+
+    act(() => useAppStore.setState({
+      profiles: [profile, { ...profile, id: 'profile-b', name: 'Beta', serverIdentity: 'server-b' }],
+      activeProfileId: 'profile-b',
+      profileGeneration: 5
+    }))
+    act(() => progress({ saveId: 'save-1', name: 'Model weights', written: 17.7 * mebibyte, total: 148.2 * mebibyte }))
+    expect(screen.getByText('Downloading Model weights: 17.7 MB of 148.2 MB (11%)')).toBeVisible()
+    expect(screen.getByText('Downloading episode.mp4: 512 B')).toBeVisible()
+
+    act(() => progress({ saveId: 'save-1', done: true }))
+    expect(screen.queryByText(/^Downloading Model weights/)).not.toBeInTheDocument()
+    act(() => progress({ saveId: 'save-2', done: true }))
+    expect(screen.queryByText(/^Downloading /)).not.toBeInTheDocument()
   })
 
   it('toggles and persists the chat sidebar with Ctrl+/ off macOS even when the code editor has focus', () => {
