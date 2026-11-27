@@ -61,6 +61,13 @@ export const Alert = {
   __reset() { alerts.length = 0 },
 }
 
+const announcements: string[] = []
+export const AccessibilityInfo = {
+  announceForAccessibility(message: string) { announcements.push(message) },
+  __calls: announcements,
+  __reset() { announcements.length = 0 },
+}
+
 const appStateListeners = new Set<(state: string) => void>()
 export const AppState = {
   currentState: 'active',

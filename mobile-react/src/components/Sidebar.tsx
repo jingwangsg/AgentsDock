@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Image, Platform, Pressable, StyleSheet, View } from 'react-native'
+import { AccessibilityInfo, Image, Platform, Pressable, StyleSheet, View } from 'react-native'
+import * as Clipboard from 'expo-clipboard'
 import DraggableFlatList, { ScaleDecorator, type DragEndParams } from 'react-native-draggable-flatlist'
 import { MenuView, type MenuAction, type MenuComponentRef } from './material/MenuView'
 import { Bell, ChevronDown, ChevronRight, FolderPlus, Globe, Network, Plus, RefreshCw, Search, Server, Settings, Terminal, GripVertical, Undo2 } from 'lucide-react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { noteUserScroll, useAppStore } from '../store/useAppStore'
+import { client, noteUserScroll, useAppStore } from '../store/useAppStore'
 import { Alert } from '../lib/alert'
 import { radius, usePalette } from '../theme'
 import type { Backend, Session, Surface, SurfaceKind, TimelineSearchResult } from '../types'
 import { backendLabel, formatChatDateTime, isUnread, runtimeSummary } from '../lib/format'
-import { sidebarVisibleSessions, compareSessions, orderedSessionSections, resolveSidebarDrop, sessionSection, sharesFolderOrder, sidebarFolderOrder } from '../lib/session-order'
+import { sidebarVisibleSessions, compareSessions, orderedSessionSections, providerSessionId, resolveSidebarDrop, sessionSection, sharesFolderOrder, sidebarFolderOrder } from '../lib/session-order'
 import { folderIsWithin, folderOrderAfterRename, folderOwnName, folderParent, folderPath, folderPathIn, folderSegments, renamedFolder, reorderFolderList } from '../lib/folders'
 import { geminiBackendSupported, readyChatBackends, runtimeSelectionError } from '../lib/runtime-catalog'
 import { promptSurfaceRename, surfaceSubline, surfaceTitle } from '../lib/surfaces'
@@ -796,6 +797,24 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
     if (!sessionScopeIsCurrent(profileScope, session.id)) return
     if (id === 'read-state') void (unread ? markRead(session.id, profileScope.profileGeneration) : markUnread(session.id, profileScope.profileGeneration))
     else if (id === 'rename') requestRename()
+    else if (id === 'copy-session-id') void (async () => {
+      const scope = profileScope
+      try {
+        // The chat list carries no provider IDs, and an ID the app stored earlier can predate a rewind
+        // that changed it, so the current one is read from the server.
+        const current = (await client.sessionsWithProviderIds()).find(candidate => candidate.id === session.id)
+        if (!sessionScopeIsCurrent(scope, session.id)) return
+        const value = current && providerSessionId(current)
+        if (!value) {
+          Alert.alert('Copy Session ID', 'This chat has no session ID yet.')
+          return
+        }
+        await Clipboard.setStringAsync(value)
+        if (sessionScopeIsCurrent(scope, session.id)) AccessibilityInfo.announceForAccessibility('Session ID copied')
+      } catch (cause) {
+        if (sessionScopeIsCurrent(scope, session.id)) Alert.alert('Could not copy session ID', cause instanceof Error ? cause.message : String(cause))
+      }
+    })()
     else if (id === 'fork') void fork(session.id, profileScope.profileGeneration)
     else if (id === 'reload-history') confirmReloadHistory()
     else if (id === 'move-up') onMoveUp()
@@ -813,6 +832,7 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
   const actions: MenuAction[] = [
     { id: 'read-state', title: unread ? 'Mark as Read' : 'Mark as Unread', image: unread ? 'envelope.open' : 'envelope.badge' },
     { id: 'rename', title: 'Rename Chat', image: 'pencil' },
+    { id: 'copy-session-id', title: 'Copy Session ID', image: 'doc.on.doc' },
     { id: 'primary-actions', title: '', displayInline: true, subactions: [
       ...(session.backend === 'gemini' ? [] : [{ id: 'fork', title: 'Fork Chat', image: 'arrow.triangle.branch' } satisfies MenuAction]),
       ...(reloadable ? [{ id: 'reload-history', title: 'Reload History…', image: 'clock.arrow.circlepath' } satisfies MenuAction] : []),

@@ -3249,5 +3249,7 @@
   "importChats.resume.alreadyOpen": "这个会话已属于当前打开的对话“{title}”。",
   "serverConnection.availableOnceConnected": "连接到此 AgentsServer 后可用。",
   "fileDownload.progress": "正在下载 {name}：{written} / {total}（{percent}%）",
-  "fileDownload.progressWithoutTotal": "正在下载 {name}：{written}"
+  "fileDownload.progressWithoutTotal": "正在下载 {name}：{written}",
+  "sessionIdCopy.menu": "复制会话 ID",
+  "sessionIdCopy.none": "此会话还没有会话 ID。"
 }
