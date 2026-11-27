@@ -177,9 +177,9 @@ fi
 if [ "$HOME_DIR" != "$HOME" ] && ! grep -qxF "export CODEX_SQLITE_HOME=$INSTALL_DIR/codex-state" env; then
   (umask 077; { grep -v '^export CODEX_SQLITE_HOME=' env || true; printf 'export CODEX_SQLITE_HOME=%s/codex-state\n' "$INSTALL_DIR"; } > env.new && mv env.new env)
 fi
-# Start that state as a copy of the shared home's databases. Left empty, Codex rebuilds
-# its thread index from every rollout file on the shared mount; that outlasts the 30 s
-# it allows itself, and the interrupted rebuild leaves a "running" marker that makes
+# Start that state as a copy of the shared home's databases. Left empty, Codex builds
+# its thread index from every rollout file on the shared mount before it answers the
+# server, and a start ended during the build leaves a "running" marker that makes
 # every later start wait and fail. Logs are diagnostics only and the largest file.
 if [ "$HOME_DIR" != "$HOME" ] && [ -d "$HOME_DIR/.codex" ] && [ ! -d "$INSTALL_DIR/codex-state" ]; then
   mkdir -p "$INSTALL_DIR/codex-state"

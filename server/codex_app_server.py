@@ -803,6 +803,11 @@ class CodexAppServerClient:
                 result = await self._request_connected(
                     "initialize",
                     dict(self._initialize_params),
+                    # app-server may build its thread index from every rollout file before it answers: 29 s
+                    # for 2254 files on a shared mount (2026-11-27). A start ended during the build leaves a
+                    # "running" marker, and every later start waits on it and exits. max(): title generation
+                    # sets lifecycle_timeout below request_timeout, which must not shorten its start.
+                    timeout=max(self.request_timeout, self.lifecycle_timeout),
                     discard_on_send_timeout=False,
                 )
                 self._initialize_result = result if isinstance(result, dict) else {}

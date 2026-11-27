@@ -1,5 +1,10 @@
 # Public development log
 
+## 2026-11-27 — Let Codex finish building its thread index at its first start
+
+- On a server whose home directory is shared between machines, each installation keeps its own Codex thread index. The deploy copies it from the shared home; a home with none to copy leaves Codex to build one from every stored session at its first start, before it answers the server. With 2254 sessions on a shared mount this took 29 seconds, and the server stopped waiting after 30 seconds: the first Codex message on a new installation failed with "initialize timed out after 30s". The interrupted build then made every later start wait 30 seconds and fail, and still did 9 minutes later. The server now waits for this first answer as long as it waits for a thread to start, 300 seconds by default; a Codex that never answers is reported after that time instead of after 30 seconds.
+- Checked with the real Codex program on that mount under a 10-second limit: before, the start failed and left the index marked as being built with 831 of 2254 sessions; after, it succeeded in 26 seconds with the index complete. In the server, with a Codex that answers 40 seconds late, the message ended without an answer after 30 seconds before the change and was answered after 47 seconds with it.
+
 ## 2026-11-26 — Recover hub sign-in on a remote after its connection dies silently
 
 - A remote server gets provider sign-in from the hub over a separate SSH connection that the hub opens to it. When that connection died without a close reaching the hub, the hub kept waiting on it, and Codex, Cursor and Gemini on that remote reported "Hub provider login is unavailable" until the hub was restarted or the operating system's TCP keepalive ended the connection, about two hours later. The hub now sends a keepalive on this connection every 10 seconds, as it does for the tunnels, and opens a new connection once three go unanswered.
