@@ -163,6 +163,58 @@ describe('sidebar chat rename', () => {
     expect(screen.getByText('Original chat')).toBeInTheDocument()
   })
 
+  // Copy Session ID. The chat list carries no provider session ID, and an ID the app holds can predate a rewind
+  // that changed it on the server, so the item reads the server's full chat list each time.
+  async function copySessionId(serverList: () => Promise<Session[]>, held: Session = session) {
+    const listWithProviderIds = vi.fn(serverList)
+    const writeClipboard = vi.fn().mockResolvedValue(undefined)
+    Object.assign(window.agentsDock, { sessions: { listWithProviderIds }, native: { writeClipboard } })
+    useAppStore.setState({ sessions: [held] })
+    const user = userEvent.setup()
+    render(<Sidebar />)
+
+    fireEvent.contextMenu(screen.getByText('Original chat').closest('.session-row')!)
+    const labels = (await screen.findAllByRole('menuitem')).map(item => item.textContent)
+    expect(labels[labels.indexOf('Rename Chat') + 1]).toBe('Copy Session ID')
+    await user.click(screen.getByRole('menuitem', { name: 'Copy Session ID' }))
+    return { listWithProviderIds, writeClipboard }
+  }
+
+  it('copies the session ID the server lists for the chat, not an older one the app holds', async () => {
+    const { listWithProviderIds, writeClipboard } = await copySessionId(
+      async () => [{ ...session, codex_thread_id: 'thread-after-rewind' }],
+      { ...session, codex_thread_id: 'thread-before-rewind' }
+    )
+
+    await waitFor(() => expect(writeClipboard.mock.calls).toEqual([['thread-after-rewind']]))
+    expect(listWithProviderIds).toHaveBeenCalledTimes(1)
+  })
+
+  it('copies the session ID the server lists for a chat whose row has none', async () => {
+    const other: Session = { id: 'chat-2', title: 'Other chat', folder: 'General', backend: 'claude', claude_session_id: 'claude-other' }
+    const { writeClipboard } = await copySessionId(async () => [other, { ...session, codex_thread_id: 'thread-listed' }])
+
+    await waitFor(() => expect(writeClipboard.mock.calls).toEqual([['thread-listed']]))
+    expect(useAppStore.getState().error).toBeNull()
+  })
+
+  it.each([
+    ['lists the chat without one', [session]],
+    ['no longer lists the chat', []]
+  ])('says a chat has no session ID yet when the server %s, and copies nothing', async (_case, listed) => {
+    const { writeClipboard } = await copySessionId(async () => listed, { ...session, codex_thread_id: 'thread-held' })
+
+    await waitFor(() => expect(useAppStore.getState().error).toBe('This chat has no session ID yet.'))
+    expect(writeClipboard).not.toHaveBeenCalled()
+  })
+
+  it('shows why the read of the server\'s list failed, and copies nothing', async () => {
+    const { writeClipboard } = await copySessionId(async () => { throw new Error('Server unavailable') }, { ...session, codex_thread_id: 'thread-held' })
+
+    await waitFor(() => expect(useAppStore.getState().error).toBe('Server unavailable'))
+    expect(writeClipboard).not.toHaveBeenCalled()
+  })
+
   it('dispatches agentsdock:rename-folder from the folder context menu', async () => {
     useAppStore.setState({ sessions: [{ ...session, folder: 'Research' }], folderOrder: ['Research', 'General'] })
     const renameFolder = vi.fn()

@@ -3249,5 +3249,7 @@
   "importChats.resume.alreadyOpen": "This session already belongs to the chat that is open now, “{title}”.",
   "serverConnection.availableOnceConnected": "Available once this AgentsServer is connected.",
   "fileDownload.progress": "Downloading {name}: {written} of {total} ({percent}%)",
-  "fileDownload.progressWithoutTotal": "Downloading {name}: {written}"
+  "fileDownload.progressWithoutTotal": "Downloading {name}: {written}",
+  "sessionIdCopy.menu": "Copy Session ID",
+  "sessionIdCopy.none": "This chat has no session ID yet."
 }

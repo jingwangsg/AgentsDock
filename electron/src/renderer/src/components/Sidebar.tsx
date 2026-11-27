@@ -9,7 +9,7 @@ import {
 } from '@dnd-kit/core'
 import {
   Archive, ArchiveRestore, ArrowDown, ArrowUp, Bell, ChevronDown, ChevronRight, Clock3, Download, Folder, FolderPlus, Globe, GripVertical, Inbox, LoaderCircle, MoreHorizontal,
-  Columns2, History, PanelLeftClose, Pencil, Pin, PinOff, Plus, RefreshCw, Search, Settings, Share2, SquareTerminal, Trash2, Undo2, UsersRound, X
+  Columns2, Copy, History, PanelLeftClose, Pencil, Pin, PinOff, Plus, RefreshCw, Search, Settings, Share2, SquareTerminal, Trash2, Undo2, UsersRound, X
 } from 'lucide-react'
 import type { Session, Surface } from '@shared/types'
 import { isHiddenRunChat, sessionUnread } from '@shared/chat-visibility'
@@ -22,7 +22,7 @@ import { activeEmergencyAlert } from '../lib/emergency-alert'
 import { backendLabel, shortRelativeTime, workingDirectoryTail } from '../lib/format'
 import { openSessionHistoryResult } from '../lib/session-history-search'
 import { TEAM_NETWORK_UI_ENABLED } from '../lib/team-network-ui'
-import { rankSessionsForSearch, sidebarFolders } from '../lib/sessions'
+import { providerSessionId, rankSessionsForSearch, sidebarFolders } from '../lib/sessions'
 import { surfaceSubline, surfaceTitle } from '../lib/surfaces'
 import { useTerminalStatus } from '../lib/terminal-status'
 import { getWorkspacePreference, setWorkspacePreference } from '../lib/workspace-preferences'
@@ -554,6 +554,16 @@ function SessionContextMenu({ session, unread, folders }: { session: Session; un
         <MenuItem icon={unread ? Inbox : Inbox} label={unread ? t("ui.Sidebar.SessionContextMenu.mark_as_read_75c4ef2") : t("ui.Sidebar.SessionContextMenu.mark_as_unread_1a9220e")} onSelect={() => unread ? void useAppStore.getState().markRead(session.id, true) : void useAppStore.getState().markUnread(session.id)} />
         {!session.archived && <MenuItem icon={Columns2} label={t("ui.Sidebar.SessionContextMenu.open_in_split_view_fd78f06")} onSelect={() => void useAppStore.getState().openSessionInSplit(session.id)} />}
         <MenuItem icon={Pencil} label={t("ui.Sidebar.SessionContextMenu.rename_chat_a257dec")} onSelect={() => window.dispatchEvent(new CustomEvent('agentsdock:rename-chat', { detail: session }))} />
+        <MenuItem icon={Copy} label={t('sessionIdCopy.menu')} onSelect={() => void (async () => {
+          try {
+            // The chat list carries no provider IDs, and an ID the app stored earlier can predate a rewind
+            // that changed it, so the current one is read from the server.
+            const current = (await window.agentsDock.sessions.listWithProviderIds()).find(candidate => candidate.id === session.id)
+            const id = current && providerSessionId(current)
+            if (id) await window.agentsDock.native.writeClipboard(id)
+            else useAppStore.getState().setError(t('sessionIdCopy.none'))
+          } catch (error) { useAppStore.getState().setError(error instanceof Error ? error.message : String(error)) }
+        })()} />
         <MenuItem icon={Share2} label={t('chatShare.menu')} onSelect={() => window.dispatchEvent(new CustomEvent('agentsdock:share-chat', {
           detail: { session, scope: { profileId: shareProfileId, profileGeneration: shareGeneration, serverIdentity: shareIdentity } }
         }))} />
