@@ -83,7 +83,7 @@ describe('@ picker ranking', () => {
     { title: 'Slack 搜索 OSMO GitLab', folder: 'General', server: '', model: 'gpt' },
     { title: 'Launch nightly check', folder: 'General', server: '', model: 'haiku' }
   ]
-  const rank = (query: string) => rankMentionRows(rows, query, row => [row.title, row.folder, row.server], row => row.model.includes(query))
+  const rank = (query: string) => rankMentionRows(rows, query, row => [row.title, row.folder, row.server], () => [], row => row.model.includes(query))
     .map(row => row.title)
 
   it('ranks a title match as the sidebar search does, before fuzzy matches', () => {
@@ -101,6 +101,24 @@ describe('@ picker ranking', () => {
     expect(rank('fable')).toEqual(['OSMO 定制功能与负载均衡'])
     expect(rank('zzz')).toEqual([])
     expect(rank('')).toEqual(rows.map(row => row.title))
+  })
+
+  it('finds a chat by a part of an id after title matches, and puts the chat a complete id names first', () => {
+    const sessionId = '7f3e9c1a-4b2d-4e8a-9c1f-2a3b4c5d6e7f'
+    const chats = [
+      { title: `Investigate ${sessionId}`, chatId: 'sess_00000000000000a1', sessionId: null },
+      { title: 'Planner notes', chatId: 'sess_00000000000000a2', sessionId },
+      // A chat on a server older than the session id field.
+      { title: 'Build runner', chatId: 'sess_00000000000000a3', sessionId: undefined }
+    ]
+    const rankChats = (query: string) => rankMentionRows(chats, query, chat => [chat.title], chat => [chat.chatId, chat.sessionId], () => false)
+      .map(chat => chat.title)
+    // A part of the id: the title that quotes it is a title match and stays above the chat that owns the id.
+    expect(rankChats('7F3E9C1A')).toEqual([`Investigate ${sessionId}`, 'Planner notes'])
+    // The complete id, in any letter case, names its chat: without the first tier the quoting title would lead.
+    expect(rankChats(sessionId.toUpperCase())).toEqual(['Planner notes', `Investigate ${sessionId}`])
+    expect(rankChats(' sess_00000000000000a3 ')).toEqual(['Build runner'])
+    expect(rankChats('00a')).toEqual(chats.map(chat => chat.title))
   })
 })
 

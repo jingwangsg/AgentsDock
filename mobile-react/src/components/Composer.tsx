@@ -79,7 +79,7 @@ import {
 import { liveChatTitle } from '../lib/live-chat-title'
 import { liveChatReferenceTitle } from '../lib/timeline-inline-references'
 import { selectConnectionNotice } from '../lib/server-profile-ui'
-import { rankMentionRows } from '../lib/session-order'
+import { providerSessionId, rankMentionRows } from '../lib/session-order'
 import {
   COMPOSER_CARD_MAX_HEIGHT,
   COMPOSER_COMPACT_BACKEND_SLOT_WIDTH,
@@ -135,8 +135,11 @@ type ChatTargetCandidate =
   | { kind: 'local'; id: string; session: Session; tag: string }
   | { kind: 'remote'; id: string; server: CrossServerChats; chat: ChatSearchTarget }
   | { kind: 'new_agent'; id: typeof NEW_AGENT_REFERENCE_ID }
-/** The hub's chat list seen from the active server: this server's tag, the other servers, and whether the hub creates chats on them. */
-type CrossServerTargets = { localTag: string; servers: CrossServerChats[]; createChats: boolean }
+/**
+ * The hub's chat list seen from the active server: this server's tag, the other servers, and whether the hub creates chats on them.
+ * `localSessionIds` holds this server's session ids by chat id, as the hub lists them.
+ */
+type CrossServerTargets = { localTag: string; localSessionIds: ReadonlyMap<string, string | null | undefined>; servers: CrossServerChats[]; createChats: boolean }
 const EMPTY_CANDIDATES: ChatTargetCandidate[] = []
 const EMPTY_ROUTES: AgentCrossChatRoute[] = []
 const EMPTY_ROUTE_IDS: ReadonlySet<string> = new Set()
@@ -1728,7 +1731,7 @@ export function useCrossServerTargets(open: boolean, sourceSessionId: string, pa
     if (!crossServerMailAvailable || crossServerSnapshot?.key !== crossServerKey) return null
     const local = crossServerSnapshot.servers.find(server => server.server_identity === serverIdentity)
     // The hub lists only servers that can pair; without this one, nothing here can.
-    return local ? { localTag: local.name, servers: crossServerSnapshot.servers.filter(server => server !== local && !server.hidden), createChats: crossServerSnapshot.createChats } : null
+    return local ? { localTag: local.name, localSessionIds: new Map(local.chats.map(chat => [chat.id, chat.provider_session_id])), servers: crossServerSnapshot.servers.filter(server => server !== local && !server.hidden), createChats: crossServerSnapshot.createChats } : null
   }, [crossServerKey, crossServerMailAvailable, crossServerSnapshot, serverIdentity])
 }
 
@@ -2001,11 +2004,20 @@ function chatTargetCandidates(sessions: readonly Session[], crossServer: CrossSe
       : candidate.kind === 'local'
         ? [candidate.session.title, candidate.session.folder, candidate.tag]
         : [candidate.chat.title, candidate.chat.folder, candidate.server.name],
-    // Every field the picker has always matched by substring, so a pasted chat id still finds its chat.
+    // The chat id and the session id the chat header shows. The chat list carries no session id until a
+    // chat is opened, so the picker also reads it from the hub's list, which holds at most 500 chats per
+    // server. Both count: a chat opened earlier may hold the id it had before a rewind on another device.
+    // Without the hub's list, a chat never opened here is found by title and chat id only.
+    candidate => candidate.kind === 'new_agent'
+      ? []
+      : candidate.kind === 'local'
+        ? [candidate.session.id, providerSessionId(candidate.session), crossServer?.localSessionIds.get(candidate.session.id)]
+        : [candidate.chat.id, candidate.chat.provider_session_id],
+    // Every other field the picker has always matched by substring.
     candidate => {
       if (candidate.kind === 'new_agent') return false
-      const { id, title, folder, backend } = candidate.kind === 'local' ? candidate.session : candidate.chat
-      return [title, folder, backend, id].some(value => value?.toLocaleLowerCase().includes(needle))
+      const { title, folder, backend } = candidate.kind === 'local' ? candidate.session : candidate.chat
+      return [title, folder, backend].some(value => value?.toLocaleLowerCase().includes(needle))
     },
   )
 }

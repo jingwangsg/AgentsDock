@@ -5956,6 +5956,74 @@ describe('Composer', () => {
     expect(within(picker).queryByRole('option', { name: /Launch hidden/ })).toBeNull()
   })
 
+  it('finds a chat by its session id in the @ picker, on this server and on another one', async () => {
+    const opened = '7f3e9c1a-4b2d-4e8a-9c1f-2a3b4c5d6e7f'
+    const notOpened = '019a3f2c-7b1e-7c43-9a51-0d6e8f2b4c11'
+    const remote = '0b1c2d3e-4f50-4617-8293-a4b5c6d7e8f9'
+    const beforeRewind = 'a1b2c3d4-0000-4000-8000-000000000001'
+    const afterRewind = 'a1b2c3d4-0000-4000-8000-000000000002'
+    let answer: (snapshot: CrossServerChatsSnapshot) => void = () => undefined
+    const chats = vi.fn(() => new Promise<CrossServerChatsSnapshot>(resolve => { answer = resolve }))
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
+        agentRoutes: { list: vi.fn().mockResolvedValue({ routes: [], max_routes: 16 }) },
+        crossServer: { chats, pair: vi.fn() }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      activeProfileId: 'profile-a', profileGeneration: 7, connected: true,
+      profiles: [{ id: 'profile-a', name: 'Hub', serverIdentity: 'server-a' } as PublicServerProfile],
+      sessions: [
+        { id: 'chat-1', title: 'Chat', backend: 'codex' },
+        { id: 'chat-2', title: 'Opened here', backend: 'claude', session_id: opened, claude_session_id: opened },
+        { id: 'chat-3', title: 'Not opened here', backend: 'codex' },
+        { id: 'chat-4', title: `Investigate ${opened}`, backend: 'claude' },
+        { id: 'chat-5', title: 'Rewound elsewhere', backend: 'claude', session_id: beforeRewind, claude_session_id: beforeRewind }
+      ],
+      health: { ok: true, capabilities: {
+        cross_chat_handoffs_v1: durableComposerCapability(),
+        cross_server_mail_v1: { available: true, required: false, message: '', action: null }
+      } }
+    })
+    const user = userEvent.setup()
+    render(<Composer />)
+    const editor = screen.getByPlaceholderText('Message')
+    const listed = async (query: string) => {
+      await user.clear(editor)
+      await user.type(editor, `@${query}`)
+      const picker = await screen.findByRole('listbox', { name: 'Chats' })
+      return within(picker).queryAllByRole('option').map(option => option.querySelector('strong')?.textContent)
+    }
+
+    // Without the hub's list: a chat opened here is found by its session id, a chat never opened is not.
+    // A part of the id: the title that quotes it stays above. The complete id puts its chat first.
+    expect(await listed('7f3e9c1a')).toEqual([`Investigate ${opened}`, 'Opened here'])
+    expect(await listed(opened.toUpperCase())).toEqual(['Opened here', `Investigate ${opened}`])
+    expect(await listed('019a3f2c')).toEqual([])
+
+    await act(async () => answer({ servers: [
+      // The hub's records of this server's chats carry the session ids the chat list omits.
+      { server_identity: 'server-a', name: '', chats: [
+        { id: 'chat-3', title: 'Not opened here', folder: 'General', backend: 'codex', provider_session_id: notOpened, cross_chat_handoff_supported: true },
+        { id: 'chat-5', title: 'Rewound elsewhere', folder: 'General', backend: 'claude', provider_session_id: afterRewind, cross_chat_handoff_supported: true }
+      ] },
+      { server_identity: 'server-l40', name: 'osmo_dev_l40', chats: [
+        { id: 'sess_remote', title: 'Remote planner', folder: 'General', backend: 'gemini', provider_session_id: remote, cross_chat_handoff_supported: true },
+        // A server older than the field: its chat is still found by chat id.
+        { id: 'sess_older', title: 'Remote on an older server', folder: 'General', backend: 'claude', cross_chat_handoff_supported: true }
+      ] }
+    ] }))
+    expect(await listed('019a3f2c')).toEqual(['Not opened here'])
+    expect(await listed('0B1C2D3E')).toEqual(['Remote planner'])
+    expect(await listed(remote)).toEqual(['Remote planner'])
+    expect(await listed('sess_older')).toEqual(['Remote on an older server'])
+    // The id this app holds from before a rewind on another device and the hub's current one both find the chat.
+    expect(await listed(beforeRewind)).toEqual(['Rewound elsewhere'])
+    expect(await listed(afterRewind)).toEqual(['Rewound elsewhere'])
+  })
+
   it('keeps granted chats usable while disabling new targets at route capacity', async () => {
     const granted = grantedComposerRoute('chat-2', 'Granted target')
     const routeSnapshot = { routes: [granted], max_routes: 1 }

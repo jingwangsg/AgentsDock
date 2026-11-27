@@ -151,6 +151,29 @@ class HubCreateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((session["title"], session["folder"], session["backend"]), ("Fix login", "Research", "claude"))
 
 
+class ChatSearchRecordTests(unittest.IsolatedAsyncioTestCase):
+    async def test_search_record_carries_the_session_id_of_every_backend(self):
+        # The @ picker finds a chat by the session id its header shows; the hub's chat list is made of these records.
+        session_ids = {
+            "sess_00000000000000c1": ("claude", "claude_session_id", "7f3e9c1a-4b2d-4e8a-9c1f-2a3b4c5d6e7f"),
+            "sess_00000000000000c2": ("codex", "codex_thread_id", "019a3f2c-7b1e-7c43-9a51-0d6e8f2b4c11"),
+            "sess_00000000000000c3": ("gemini", "gemini_session_id", "0b1c2d3e-4f50-4617-8293-a4b5c6d7e8f9"),
+            "sess_00000000000000c4": ("cursor", "cursor_session_id", "c0ffee12-3456-4789-abcd-ef0123456789"),
+            "sess_00000000000000c5": ("opencode", "opencode_session_id", "ses_5f1e2d3c4b5a69788796a5b4c3"),
+        }
+        with fresh_store() as store:
+            for chat_id, (backend, field, session_id) in session_ids.items():
+                # Only the backend's own field: a record read from `session_id` alone would be empty.
+                store.sessions[chat_id] = {"id": chat_id, "title": f"{backend} worker", "backend": backend, field: session_id}
+            store.sessions["sess_00000000000000c6"] = {"id": "sess_00000000000000c6", "title": "Not started", "backend": "claude"}
+            chats = (await agent_server.search_chats(q="", limit=20, exclude_session_id=None))["chats"]
+        self.assertEqual(
+            {chat["id"]: chat["provider_session_id"] for chat in chats},
+            {**{chat_id: session_id for chat_id, (_backend, _field, session_id) in session_ids.items()},
+             "sess_00000000000000c6": None},
+        )
+
+
 class PairLabelTests(unittest.IsolatedAsyncioTestCase):
     async def test_pair_installs_the_chip_label_on_the_source_side_and_retires_an_older_one(self):
         hub = FakeEnd("srv-hub", "", {"sess_src": "E2E source"})
