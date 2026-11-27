@@ -163,10 +163,40 @@ test('comments: pick an element, Ask or Edit it as a stored thread, and pin open
   assert.match(store, /syncStatus: 'live',[\s\S]{0,240}?noticeCanvasComments\(\)/)
   assert.match(store, /onCanvasCommentsChanged: guarded\(noticeCanvasComments\)/)
   assert.match(sheet, /const commentNotice = useAppStore\(state => state\.canvasCommentNotices\[sessionId\] \?\? 0\)/)
-  assert.match(sheet, /seenCommentNotice\.current = commentNotice\n\s*void loadComments\(\)/)
+  assert.match(sheet, /seen\.current = \{ running, commentNotice \}\n\s*void loadComments\(\)/)
   // A turn starting or ending refreshes the threads and reloads a canvas the agent changed.
   assert.match(sheet, /const running = useAppStore\(state => state\.activeSessionIds\.has\(sessionId\)\)/)
   assert.match(sheet, /if \(current && \(current\.revision !== recordLive\.current\?\.revision \|\| error\)\) setReloadToken/, 'a failed check is repeated for the same revision')
+})
+
+test('a comment notice reloads a canvas that a comment changed without a turn', () => {
+  // An Edit answered in its thread's side chat changes the canvas and starts no turn: the notice runs the
+  // check a turn's start and end run, which reloads the canvas when its revision changed.
+  assert.match(sheet, /const seen = useRef\(\{ running, commentNotice \}\)/)
+  assert.match(sheet, /if \(seen\.current\.running === running && seen\.current\.commentNotice === commentNotice\) return\n\s*seen\.current = \{ running, commentNotice \}\n\s*void loadComments\(\)\n\s*void client\.listCanvases\(sessionId\)\n\s*\.then\(list => list\.canvases\.find\(canvas => canvas\.name === name\)\)\n\s*\.then\(current => \{ if \(current && \(current\.revision !== recordLive\.current\?\.revision \|\| error\)\) setReloadToken\(token => token \+ 1\) \}\)/)
+  assert.match(sheet, /\}, \[commentNotice, error, loadComments, name, running, sessionId\]\)/)
+})
+
+test('comment threads: the active thread shows its messages, another one is its header line with the state of its reply, and the active one collapses from its header', () => {
+  // A thread that is not active renders no messages and no reply box.
+  assert.match(threads, /\{active \? thread\.messages\.map\(message => <View key=\{message\.id\} style=\{styles\.exchange\}>/)
+  assert.match(threads, /<\/View>\) : null\}\n\s*\{active \? <View style=\{styles\.replyBox\}>/)
+  // Its header says that a reply is still coming, or how the latest one ended; a completed answer says nothing.
+  assert.match(threads, /const noted = active \? undefined : thread\.messages\.find\(message => !message\.reply \|\| message\.reply\.status === 'queued' \|\| message\.reply\.status === 'running'\) \?\? thread\.messages\.at\(-1\)/)
+  assert.match(threads, /const status = noted && replyStatus\(noted\.reply\)/)
+  assert.match(threads, /\{status \? <Text style=\{\[styles\.status, \{ color: colors\.muted \}\]\}>\{status\}<\/Text> : null\}\n\s*\{thread\.status === 'open'/)
+  assert.match(threads, /if \(reply\.status === 'done'\) return null\n\s*return reply\.status === 'stopped' \? 'Stopped' : 'The reply failed'/)
+  // The texts are the ones the active thread shows under a question.
+  assert.match(threads, /const status = <Text style=\{\[styles\.status, \{ color: colors\.muted \}\]\}>\{replyStatus\(reply\)\}<\/Text>/)
+  // The header button says whether its thread is expanded.
+  assert.match(threads, /accessibilityState=\{\{ expanded: active \}\} onPress=\{\(\) => onActivate\(thread\.id\)\}/)
+  // Activating a thread collapses the active one; a thread below it moves up, and the list follows it there.
+  assert.match(threads, /if \(active && before !== undefined && before !== y\) scrollRef\.current\?\.scrollTo\(\{ y: Math\.max\(0, y - 8\), animated: true \}\)\n\s*offsets\.current\.set\(thread\.id, y\)/)
+  // The active thread collapses from the right end of its header, after Resolve and Delete.
+  // Its reply input may hold the keyboard, which Android leaves on screen when the input is removed.
+  assert.match(threads, /label="Delete thread" onPress=\{\(\) => onDelete\(thread\)\} \/>\n\s*\{active \? <IconButton icon=\{X\} size=\{16\} touchSize=\{36\} label="Collapse thread" onPress=\{\(\) => \{/)
+  assert.match(threads, /dismissAppKeyboard\(\)\n\s*onDeactivate\(\)\n\s*\}\} \/> : null\}\n\s*<\/View>/)
+  assert.match(sheet, /onDeactivate=\{\(\) => setActiveThread\(null\)\}/)
 })
 
 test('a check that fails leaves the canvas on screen with the reason above it, unless the server no longer lists it', () => {
