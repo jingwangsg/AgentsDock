@@ -712,6 +712,8 @@ export interface ChatSearchTarget {
   title: string
   folder: string | null
   backend: Backend
+  /** The provider's session id, as the chat header shows it. Absent from a server older than this field. */
+  provider_session_id?: string | null
   cross_chat_handoff_supported: boolean
   updated_at?: string | null
 }

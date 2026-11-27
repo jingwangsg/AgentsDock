@@ -9,6 +9,7 @@ import type { Session } from '@shared/types'
 import { completedPrefixForkAvailable } from '@shared/session-fork'
 import { openInZedInput, sshHostAlias } from '@shared/ssh-host-alias'
 import { backendLabel, shortId } from '../lib/format'
+import { providerSessionId } from '../lib/sessions'
 import { useTransientClose } from '../lib/transient-close'
 import { useAppStore } from '../store/app-store'
 import { ShortcutTooltip } from './ShortcutTooltip'
@@ -104,7 +105,7 @@ export function ChatHeader({
     : null
   if (!session) return <header className="chat-header empty"><strong>AgentsDock</strong><div className="header-actions">{sidebarButton}</div></header>
   const save = () => { const clean = title.trim(); if (clean && clean !== session.title) void useAppStore.getState().updateSession(session.id, { title: clean }) }
-  const sessionIdValue = session.session_id || session.codex_thread_id || session.claude_session_id || session.gemini_session_id || session.cursor_session_id || session.opencode_session_id
+  const sessionIdValue = providerSessionId(session)
   const copySessionId = () => {
     if (!sessionIdValue) return
     void window.agentsDock.native.writeClipboard(sessionIdValue).then(() => {

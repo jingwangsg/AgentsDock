@@ -246,13 +246,13 @@ test('the unread count leaves out archived chats and the job run chats the sideb
 
 test('@ picker rows rank a title match first, then every term matching a field in order, then other matches', () => {
   const rows = [
-    { id: 'chat-1a', title: 'Launch agent team 负载均衡检查', folder: 'General', server: 'osmo_dev_l40' },
-    { id: 'chat-2b', title: 'OSMO 定制功能与负载均衡', folder: 'AgentsDock', server: '' },
-    { id: 'chat-3c', title: 'Launch check', folder: 'General', server: '' },
-    { id: 'chat-4d', title: 'Slack 搜索 OSMO GitLab', folder: 'General', server: '' },
-    { id: 'chat-5e7f', title: 'Launch nightly check', folder: 'General', server: '' },
+    { id: 'chat-1a', title: 'Launch agent team 负载均衡检查', folder: 'General', server: 'osmo_dev_l40', backend: 'codex' },
+    { id: 'chat-2b', title: 'OSMO 定制功能与负载均衡', folder: 'AgentsDock', server: '', backend: 'claude' },
+    { id: 'chat-3c', title: 'Launch check', folder: 'General', server: '', backend: 'codex' },
+    { id: 'chat-4d', title: 'Slack 搜索 OSMO GitLab', folder: 'General', server: '', backend: 'codex' },
+    { id: 'chat-5e7f', title: 'Launch nightly check', folder: 'General', server: '', backend: 'codex' },
   ]
-  const rank = (query: string) => rankMentionRows(rows, query, row => [row.title, row.folder, row.server], row => row.id.includes(query))
+  const rank = (query: string) => rankMentionRows(rows, query, row => [row.title, row.folder, row.server], row => [row.id], row => row.backend.includes(query))
     .map(row => row.title)
   // Title matches lead: exact, then prefix, then substring; ties keep the given order.
   assert.deepEqual(rank('launch check'), ['Launch check', 'Launch nightly check'])
@@ -261,8 +261,27 @@ test('@ picker rows rank a title match first, then every term matching a field i
   // Each term matches on its own, in any field and with gaps.
   assert.deepEqual(rank('launch 负载'), ['Launch agent team 负载均衡检查'])
   assert.deepEqual(rank('l40 负载检查'), ['Launch agent team 负载均衡检查'])
-  // A chat id is found by otherMatch only.
+  // A part of an id finds its chat; so does a field only otherMatch reads.
   assert.deepEqual(rank('5e7f'), ['Launch nightly check'])
+  assert.deepEqual(rank('claude'), ['OSMO 定制功能与负载均衡'])
   assert.deepEqual(rank('zzz'), [])
   assert.deepEqual(rank(''), rows.map(row => row.title))
+})
+
+test('@ picker rows put the chat a complete id names first, above a title that quotes the id', () => {
+  const sessionId = '7f3e9c1a-4b2d-4e8a-9c1f-2a3b4c5d6e7f'
+  const chats = [
+    { title: `Investigate ${sessionId}`, chatId: 'sess_00000000000000a1', sessionId: null },
+    { title: 'Planner notes', chatId: 'sess_00000000000000a2', sessionId },
+    // A chat on a server older than the session id field.
+    { title: 'Build runner', chatId: 'sess_00000000000000a3', sessionId: undefined },
+  ]
+  const rank = (query: string) => rankMentionRows(chats, query, chat => [chat.title], chat => [chat.chatId, chat.sessionId], () => false)
+    .map(chat => chat.title)
+  // A part of the id: the title that quotes it is a title match and stays above the chat that owns the id.
+  assert.deepEqual(rank('7F3E9C1A'), [`Investigate ${sessionId}`, 'Planner notes'])
+  // The complete id, in any letter case, names its chat: without the first tier the quoting title would lead.
+  assert.deepEqual(rank(sessionId.toUpperCase()), ['Planner notes', `Investigate ${sessionId}`])
+  assert.deepEqual(rank(' sess_00000000000000a3 '), ['Build runner'])
+  assert.deepEqual(rank('00a'), chats.map(chat => chat.title))
 })

@@ -19,7 +19,7 @@ import { CodexModelDiscovery } from './CodexModelDiscovery'
 import { cancelComposerEditorLayout, composerTextCanUseMirror, observeComposerEditorWidth, scheduleComposerEditorLayout, syncComposerEditorMirror } from '../lib/composer-editor-layout'
 import { nativeFileRefsFromFiles } from '../lib/native-files'
 import { profileSessionKey } from '../lib/profile-scope'
-import { orderedActiveSessions, rankMentionRows, rankSessionsForSearch, sessionMatchesQuery, sidebarFolders } from '../lib/sessions'
+import { orderedActiveSessions, providerSessionId, rankMentionRows, rankSessionsForSearch, sessionMatchesQuery, sidebarFolders } from '../lib/sessions'
 import {
   assertTeamNetworkExpectedIdentity,
   loadTeamNetworkServers as loadCachedTeamNetworkServers,
@@ -262,8 +262,11 @@ type ChatMentionCandidate =
   | { kind: 'remote'; id: string; server: CrossServerChats; chat: ChatSearchTarget }
   | { kind: 'new_agent'; id: typeof NEW_AGENT_REFERENCE_ID }
 
-/** The hub's chat list for the @ picker, seen from the active server; null when it cannot pair across servers. */
-type CrossServerMention = { localTag: string; servers: CrossServerChats[]; createChats: boolean }
+/**
+ * The hub's chat list for the @ picker, seen from the active server; null when it cannot pair across servers.
+ * `localSessionIds` holds this server's session ids by chat id, as the hub lists them.
+ */
+type CrossServerMention = { localTag: string; localSessionIds: ReadonlyMap<string, string | null | undefined>; servers: CrossServerChats[]; createChats: boolean }
 
 const remoteAgentRouteUnavailable = () => t('teamNetwork.mention.remoteRouteUnavailable')
 
@@ -774,7 +777,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
     const local = crossServerSnapshot.servers.find(server => server.server_identity === serverIdentity)
     // The hub lists only servers that can pair; without this one, nothing here can.
     if (!local) return null
-    return { localTag: local.name, servers: crossServerSnapshot.servers.filter(server => server !== local && !server.hidden), createChats: crossServerSnapshot.createChats }
+    return { localTag: local.name, localSessionIds: new Map(local.chats.map(chat => [chat.id, chat.provider_session_id])), servers: crossServerSnapshot.servers.filter(server => server !== local && !server.hidden), createChats: crossServerSnapshot.createChats }
   }, [crossServerAvailable, crossServerKey, crossServerSnapshot, serverIdentity])
   const grantedTargetIds = useMemo(
     () => new Set(grantedRoutes.map(route => route.target_session_id)),
@@ -2658,7 +2661,6 @@ function currentMentionCandidates(
   const remote: ChatMentionCandidate[] = (crossServer?.servers ?? []).flatMap(server => server.chats
     .filter(chat => chat.cross_chat_handoff_supported)
     .map(chat => ({ kind: 'remote' as const, id: `remote-${server.server_identity}-${chat.id}`, server, chat })))
-  const idQuery = mention.query.trim().toLocaleLowerCase()
   return rankMentionRows(
     [...newAgent, ...local, ...remote],
     mention.query,
@@ -2667,12 +2669,17 @@ function currentMentionCandidates(
       : candidate.kind === 'local'
         ? [candidate.session.title, candidate.session.folder, candidate.tag]
         : [candidate.chat.title, candidate.chat.folder, candidate.server.name],
-    // What the sidebar search also covers (backend, model, folder path, ids); a pasted remote chat id.
+    // The chat id and the session id the chat header shows. The chat list carries no session id until a
+    // chat is opened, so the picker also reads it from the hub's list, which holds at most 500 chats per
+    // server. Both count: a chat opened earlier may hold the id it had before a rewind on another device.
+    // Without the hub's list, a chat never opened here is found by title and chat id only.
     candidate => candidate.kind === 'new_agent'
-      ? false
+      ? []
       : candidate.kind === 'local'
-        ? sessionMatchesQuery(candidate.session, mention.query)
-        : candidate.chat.id.toLocaleLowerCase().includes(idQuery)
+        ? [candidate.session.id, providerSessionId(candidate.session), crossServer?.localSessionIds.get(candidate.session.id)]
+        : [candidate.chat.id, candidate.chat.provider_session_id],
+    // What the sidebar search also covers (backend, model, folder path).
+    candidate => candidate.kind === 'local' && sessionMatchesQuery(candidate.session, mention.query)
   )
 }
 

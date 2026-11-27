@@ -97056,6 +97056,11 @@ async def search_chats(
                 "title": title,
                 "folder": folder or None,
                 "backend": session.get("backend") or DEFAULT_BACKEND,
+                # The session id, the provider's own, as the chat header shows it; `id` is the chat id.
+                # The @ picker finds a chat by either. List summaries omit provider ids; this record may
+                # carry one: it is read only with this server's or the hub's access token, which already
+                # reads the chat's detail.
+                "provider_session_id": session_provider_id(session),
                 "cross_chat_handoff_supported": cross_chat_target_backend_supported(
                     str(session.get("backend") or DEFAULT_BACKEND)
                 ),

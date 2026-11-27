@@ -507,6 +507,30 @@ test('chat picker lists other servers under the hub with server tags, hub chats 
   }finally{await act(async()=>renderer.unmount())}
 })
 
+test('chat picker finds a chat by the session id its header shows, on this server and on another one',async()=>{
+  const opened='7f3e9c1a-4b2d-4e8a-9c1f-2a3b4c5d6e7f',notOpened='019a3f2c-7b1e-7c43-9a51-0d6e8f2b4c11',remote='0b1c2d3e-4f50-4617-8293-a4b5c6d7e8f9'
+  const beforeRewind='a1b2c3d4-0000-4000-8000-000000000001',afterRewind='a1b2c3d4-0000-4000-8000-000000000002'
+  resetCrossServer({patch:{sessions:[{id:'chat',title:'Mobile',backend:'codex'},{...targetSession(),gemini_session_id:opened},targetSession('new'),{...targetSession('quote'),title:`Investigate ${opened}`},{...targetSession('rewound'),session_id:beforeRewind}]}})
+  // The hub's records of this server's chats carry the session ids the chat list omits.
+  fixture.crossServer.servers[0].chats=[remoteChat('new','Chat new',{provider_session_id:notOpened}),remoteChat('rewound','Chat rewound',{provider_session_id:afterRewind})]
+  fixture.crossServer.servers[2].chats=[remoteChat('l40-chat','Launch agent team 负载均衡检查',{provider_session_id:remote})]
+  const pending=deferred();fixture.client.crossServerChats=()=>pending.promise
+  const {renderer,props}=await renderChatPicker()
+  try{
+    const listed=async query=>{await act(async()=>renderer.update(React.createElement(ChatTargetPicker,{...props,query})));return rowIDs(renderer)}
+    assert.deepEqual(await listed('7f3e9c1a'),['chat-target-quote','chat-target-target'],'Without the hub list, a part of an opened chat\'s id: the title that quotes it stays above')
+    assert.deepEqual(await listed(opened.toUpperCase()),['chat-target-target','chat-target-quote'],'The complete id puts its chat first')
+    assert.deepEqual(await listed('019a3f2c'),[],'Without the hub list a chat this app has not opened is not found by session id')
+    await act(async()=>pending.resolve(fixture.crossServer))
+    assert.deepEqual(await listed('019a3f2c'),['chat-target-new'],'A chat this app has not opened')
+    assert.deepEqual(await listed('0B1C2D3E'),['chat-target-remote:l40-server:l40-chat'])
+    assert.deepEqual(await listed(remote),['chat-target-remote:l40-server:l40-chat'])
+    assert.deepEqual(await listed('hub-chat'),['chat-target-remote:hub-server:hub-chat'],'A server older than the field: still found by chat id')
+    assert.deepEqual(await listed(beforeRewind),['chat-target-rewound'],'The id this app holds from before a rewind on another device')
+    assert.deepEqual(await listed(afterRewind),['chat-target-rewound'],'The hub\'s current id of the same chat')
+  }finally{await act(async()=>renderer.unmount())}
+})
+
 test('chat picker shows only this server while the hub list loads, fails, or lacks this server; stale lists are dropped',async()=>{
   resetCrossServer({localHub:true})
   const pending=deferred();fixture.client.crossServerChats=()=>pending.promise

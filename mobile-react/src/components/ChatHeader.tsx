@@ -6,6 +6,7 @@ import { ArrowLeft, FolderOpen, Layers, PanelLeftClose, PanelLeftOpen, PanelRigh
 import { useAppStore } from '../store/useAppStore'
 import { usePalette } from '../theme'
 import { runtimeSummary } from '../lib/format'
+import { providerSessionId } from '../lib/session-order'
 import { isWelcomeSession } from '../lib/welcome-session'
 import { Text } from './AppText'
 import { CodexContextIndicator, CodexStatusButton } from './CodexControls'
@@ -61,7 +62,7 @@ export function ChatHeader({ sessionId, compact, inlineInspectorAvailable, sideb
   return <View onLayout={event => setWidth(event.nativeEvent.layout.width)} style={[styles.root, { backgroundColor: colors.background, borderColor: colors.border }]}>
     {sidebarButton}
     {compact ? <IconButton icon={ArrowLeft} onPress={onBack} label="Chats" /> : null}
-    <View style={styles.titleWrap}><Text style={[styles.title, { color: colors.text }]} numberOfLines={1}>{session.title}</Text><Text style={[styles.subtitle, { color: visibleSyncError ? colors.orange : colors.muted }]} numberOfLines={1}>{visibleSyncError || `${runtimeSummary(session, runtime)}${session.session_id || session.codex_thread_id || session.claude_session_id || session.gemini_session_id || session.cursor_session_id ? ` · session ${(session.session_id || session.codex_thread_id || session.claude_session_id || session.gemini_session_id || session.cursor_session_id)?.slice(0, 12)}` : ''}`}</Text></View>
+    <View style={styles.titleWrap}><Text style={[styles.title, { color: colors.text }]} numberOfLines={1}>{session.title}</Text><Text style={[styles.subtitle, { color: visibleSyncError ? colors.orange : colors.muted }]} numberOfLines={1}>{visibleSyncError || `${runtimeSummary(session, runtime)}${providerSessionId(session) ? ` · session ${providerSessionId(session)?.slice(0, 12)}` : ''}`}</Text></View>
     {!phoneHeader ? <IconButton icon={RefreshCw} onPress={() => void retryConnection()} label="Refresh" /> : null}
     <IconButton icon={Search} onPress={onSearch} label="Find in chat" />
     <IconButton icon={FolderOpen} onPress={onFiles} label="Browse workspace files" testID="chat-workspace-files" />

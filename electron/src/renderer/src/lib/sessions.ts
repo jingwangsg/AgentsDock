@@ -36,6 +36,14 @@ export function isUntouchedNewChat(session: Session): boolean {
     && (session.latest_agent_event_seq ?? 0) === 0
 }
 
+/**
+ * The provider's session id, as the chat header shows it. The chat list omits it until the chat is opened.
+ * Same as providerSessionId in mobile-react/src/lib/session-order.ts, which has no OpenCode field; change both.
+ */
+export function providerSessionId(session: Session): string | null | undefined {
+  return session.session_id || session.codex_thread_id || session.claude_session_id || session.gemini_session_id || session.cursor_session_id || session.opencode_session_id
+}
+
 export function sessionMatchesQuery(session: Session, query: string): boolean {
   const needle = query.trim().toLocaleLowerCase()
   if (!needle) return true
@@ -83,21 +91,31 @@ export function rankSessionsForSearch(sessions: Session[], query: string, histor
 }
 
 /**
- * Ranks @ picker rows. A title match comes first, ranked as the sidebar search
+ * Ranks @ picker rows. A row comes first when the whole trimmed query equals
+ * one of its `ids`: a complete id names one chat, and a title that quotes it
+ * would otherwise rank above. Then a title match, ranked as the sidebar search
  * ranks it; then rows where every space-separated term matches the title or
  * another field as characters in order (best `fuzzyScore` first, a title match
- * counting double); then rows `otherMatch` accepts. Ties keep the given order.
+ * counting double); then rows with one of `ids` containing the query, and rows
+ * `otherMatch` accepts. `ids` match in any letter case. Ties keep the given order.
  */
 export function rankMentionRows<T>(
   rows: readonly T[],
   query: string,
   fields: (row: T) => readonly [title: string, ...others: Array<string | null | undefined>],
+  ids: (row: T) => ReadonlyArray<string | null | undefined>,
   otherMatch: (row: T) => boolean
 ): T[] {
   const terms = query.trim().split(/\s+/).filter(Boolean)
   if (!terms.length) return [...rows]
+  const needle = query.trim().toLocaleLowerCase()
   const ranked: Array<{ row: T; index: number; tier: number; score: number }> = []
   rows.forEach((row, index) => {
+    const rowIds = ids(row).map(id => id?.toLocaleLowerCase())
+    if (rowIds.includes(needle)) {
+      ranked.push({ row, index, tier: -1, score: 0 })
+      return
+    }
     const [title, ...others] = fields(row)
     const nameRank = sessionNameMatchRank({ title }, query)
     if (nameRank !== null) {
@@ -109,7 +127,7 @@ export function rankMentionRows<T>(
       ...others.map(text => (text ? fuzzyScore(term, text)?.score : undefined) ?? Number.NEGATIVE_INFINITY)
     ))
     if (termScores.every(Number.isFinite)) ranked.push({ row, index, tier: 1, score: termScores.reduce((sum, score) => sum + score, 0) })
-    else if (otherMatch(row)) ranked.push({ row, index, tier: 2, score: 0 })
+    else if (rowIds.some(id => id?.includes(needle)) || otherMatch(row)) ranked.push({ row, index, tier: 2, score: 0 })
   })
   return ranked.sort((a, b) => a.tier - b.tier || b.score - a.score || a.index - b.index).map(entry => entry.row)
 }
