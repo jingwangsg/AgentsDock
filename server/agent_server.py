@@ -87476,18 +87476,25 @@ async def create_native_side_chat(session_id: str, *, persisted_state=None, pers
     return NativeSideChat()
 
 
-class CopiedSessionSideChat:
-    """Answers a Canvas question for Gemini and Cursor, which have no native side chat.
+# The time bound of a Gemini turn, for a copied session's process and for a Codex fork that answer a Canvas comment.
+CANVAS_COMMENT_SIDE_CHAT_SECONDS = 3600
 
-    Each question resumes a copy of the chat's native session, as it stands then, in a process of its own
-    and without write tools. The chat's session is only read, and the copy is deleted once its answer
-    returns. ``history`` is not used: create_canvas_comment_side_chat puts it in the question.
+
+class CopiedSessionSideChat:
+    """Answers a Canvas comment for Gemini and Cursor, which have no native side chat, and a Claude edit request,
+    which /btw cannot carry out: it has no tools.
+
+    Each comment runs in a process of its own on the chat's native session as it stands then: Gemini and
+    Cursor resume a copy of it, without write tools for a question and in the chat's permission mode for
+    an edit request; Claude's print CLI resumes a fork of it. The chat's session is only read, and what
+    the process leaves is deleted once its answer returns. ``history`` is not used:
+    create_canvas_comment_side_chat puts it in the question.
     """
 
     def __init__(self, session_id: str):
         self.session_id = session_id
 
-    async def ask(self, question: str, *, history, on_step=None) -> dict[str, Any]:
+    async def ask(self, question: str, *, history, edit: bool = False) -> dict[str, Any]:
         session = dict(STORE.sessions[self.session_id])
         backend = str(session.get("backend") or DEFAULT_BACKEND).lower()
         requested_cwd = str(session.get("cwd") or DEFAULT_CWD)
@@ -87509,9 +87516,25 @@ class CopiedSessionSideChat:
         with ExitStack() as resources:
             try:
                 if str(Path(requested_cwd).expanduser()) != cwd:
-                    # Both CLIs find a session by its workspace: from another one the copy would start an unrelated session.
+                    # The CLIs find a session by its workspace: from another one the copy or fork would start an unrelated session.
                     raise FileNotFoundError(requested_cwd)
-                if backend == BACKEND_GEMINI:
+                if backend == BACKEND_CLAUDE:
+                    require_claude_oauth_token()
+                    provider_id = resolve_claude_resume_provider(session, cwd)[0]
+                    if provider_id is None:
+                        # Without the chat's transcript the CLI would answer from an empty conversation.
+                        raise FileNotFoundError(requested_cwd)
+                    secret = None
+                    # The flags of a print transport turn, which include --dangerously-skip-permissions: this process
+                    # has nobody to ask. canvas_comment_side_chat_available admits it only for a chat with that access.
+                    # --no-session-persistence keeps the fork in memory, so the CLI writes no transcript of it; it is
+                    # added here because build_claude_cmd leaves its own parameter for it out when a provider id is set.
+                    cmd = [*build_claude_cmd(self.session_id, session, codex_manifest_path(self.session_id), provider_id=provider_id),
+                           "--fork-session", "--session-id", copy_id, "--no-session-persistence"]
+                    # Nothing is copied: the CLI forks the session itself. --session-id is passed only to know the name of
+                    # what the fork leaves, the directory the CLI creates for the environment files of the session's hooks.
+                    leftovers = lambda: [CLAUDE_PROJECTS_ROOT.with_name("session-env") / copy_id]
+                elif backend == BACKEND_GEMINI:
                     runtime = await ensure_runtime_available(BACKEND_GEMINI, session=session)
                     names = runtime["_gemini_models"]
                     model = session.get("model") or (gemini_agent_client.DEFAULT_MODEL if gemini_agent_client.DEFAULT_MODEL in names else names[0])
@@ -87520,20 +87543,25 @@ class CopiedSessionSideChat:
                     secret = access["accessToken"]
                     env = resources.enter_context(gemini_agent_client.native_environment(env, access, cwd=cwd, effort=session.get("effort")))
                     add_provider_no_proxy_environment(env, "127.0.0.1")
-                    # "default": without a terminal the CLI denies every tool that asks, which leaves the read tools.
-                    cmd = gemini_agent_client.command(runtime["_executable"], model, "default", copy_id, True)
+                    # "default" for a question: without a terminal the CLI denies every tool that asks, which leaves the
+                    # read tools. An edit request runs in the mode of the chat's turns.
+                    permission = (session.get("gemini_permission_mode") or gemini_agent_client.DEFAULT_PERMISSION_MODE) if edit else "default"
+                    cmd = gemini_agent_client.command(runtime["_executable"], model, permission, copy_id, True)
                     cmd.extend(gemini_canvas_directory_flags(self.session_id, resources))
                     (source,) = await asyncio.to_thread(
                         lambda: list(gemini_history.local_sessions(cwd=cwd, provider_id=session["gemini_session_id"])))
-                    copy = functools.partial(gemini_history.copy_session, source, copy_id)
+                    leftovers = functools.partial(gemini_history.copy_session, source, copy_id)
                 else:
                     if HUB_PROVIDER_INSTALL:
                         env = await asyncio.to_thread(cursor_hub_env, env)
                     secret = env.get("CURSOR_AUTH_TOKEN") if HUB_PROVIDER_INSTALL else None
+                    from cursor_agent_client import cursor_permission_flags
                     cmd = [await asyncio.to_thread(resolve_cursor_executable), "-p", "--output-format", "json", "--resume", copy_id,
-                           "--trust", "--mode", "ask", *(["--model", str(session["model"])] if session.get("model") else [])]
-                    copy = functools.partial(cursor_history.copy_session, str(session["cursor_session_id"]), copy_id, cwd)
-                copying = asyncio.ensure_future(asyncio.to_thread(copy))
+                           # An edit request gets the flags of the chat's turns; a question is read-only.
+                           *(cursor_permission_flags(effective_cursor_permission_mode(session)) if edit else ["--trust", "--mode", "ask"]),
+                           *(["--model", str(session["model"])] if session.get("model") else [])]
+                    leftovers = functools.partial(cursor_history.copy_session, str(session["cursor_session_id"]), copy_id, cwd)
+                copying = asyncio.ensure_future(asyncio.to_thread(leftovers))
                 # load-bearing: a worker thread cannot be cancelled, so a cancelled wait removes the copy when the thread is done.
                 resources.callback(remove_copy, copying)
                 await asyncio.shield(copying)
@@ -87544,7 +87572,7 @@ class CopiedSessionSideChat:
                 try:
                     stream = gemini_agent_client.GeminiStream(copy_id, secrets=(secret,)) if backend == BACKEND_GEMINI else None
                     # The bounds of a Gemini turn: an hour and 64 MiB of output.
-                    async with asyncio.timeout(3600):
+                    async with asyncio.timeout(CANVAS_COMMENT_SIDE_CHAT_SECONDS):
                         proc.stdin.write(question.encode())
                         await proc.stdin.drain()
                         proc.stdin.close()
@@ -87571,41 +87599,55 @@ class CopiedSessionSideChat:
                         await terminate_process_tree(proc, grace=CURSOR_GUARD_TEARDOWN_GRACE_SECONDS)
             except Exception as exc:
                 # Native errors can contain the prompt or a credential.
-                logger.warning("Canvas question in a copied %s session failed error_type=%s", backend, type(exc).__name__)
+                logger.warning("Canvas comment in a copy or fork of the %s session failed error_type=%s", backend, type(exc).__name__)
                 answer = None
         if not isinstance(answer, str) or not answer.strip():
-            raise side_questions.SideQuestionError(503, "The provider did not answer in a copy of this chat")
+            raise side_questions.SideQuestionError(503, "The provider did not answer in a copy or fork of this chat")
         return {"backend": backend, "answer": answer,
-                "context_note": "A copy of the chat's native session from when the question was asked, without write tools."}
+                "context_note": "The chat's native session from when the comment was sent."}
 
-    async def close(self):
-        pass  # The copy and its process end with ask.
+
+# By the canvas file's path. An entry lasts while an edit request of the file runs or waits.
+CANVAS_EDIT_LOCKS: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
 
 
 async def create_canvas_comment_side_chat(session_id: str, **_persistence):
-    """Answers a Canvas question in a copy of the chat as it stands, keeping nothing for the comment thread's next question.
+    """Answers a Canvas comment in a copy of the chat as it stands, keeping nothing for the comment thread's next comment.
 
-    Claude's /btw and a Codex fork are native copies; Gemini and Cursor resume a copied session. The side
-    chat store offers a thread's saved provider state and its earlier exchanges. Only /btw replays the
-    exchanges itself, so the other handles get them in the question.
+    Claude's /btw and a Codex fork are native copies; Gemini and Cursor resume a copied session, and a
+    Claude edit request runs in a fork that the print CLI makes. The side chat store offers a thread's saved
+    provider state and its earlier exchanges. Only /btw replays the exchanges itself, so the other handles
+    get them in the question.
     """
     backend = str((STORE.sessions.get(session_id) or {}).get("backend") or DEFAULT_BACKEND).lower()
     # load-bearing: the store's `durable` and saved state are dropped, so a Codex fork is ephemeral and
     # bound to no earlier conversation of the chat.
-    handle = (CopiedSessionSideChat(session_id) if backend in (BACKEND_GEMINI, BACKEND_CURSOR)
-              else await create_native_side_chat(session_id))
-    if backend == BACKEND_CLAUDE:
-        return handle
+    native = None if backend in (BACKEND_GEMINI, BACKEND_CURSOR) else await create_native_side_chat(session_id)
 
-    class WithEarlierExchanges:
+    class CommentSideChat:
         async def ask(self, question, *, history, on_step=None):
-            return await handle.ask(agentsdock_canvas.with_earlier_exchanges(
-                question, ((item["question"], item["response"]) for item in history)), history=[], on_step=on_step)
+            # Read before the earlier exchanges are put in front: they hold the thread's earlier prompts.
+            edited_file = agentsdock_canvas.edit_request_path(question)
+            if backend == BACKEND_CLAUDE and edited_file is None:
+                return await native.ask(question, history=history, on_step=on_step)
+            question = agentsdock_canvas.with_earlier_exchanges(
+                question, ((item["question"], item["response"]) for item in history))
+            # load-bearing: two Gemini copies that changed one canvas file at the same time both reported their
+            # change and the file held only one, so the edit requests of one canvas file run one after another,
+            # on every backend. A Codex fork keeps the lock while it waits for an approval. A turn of the chat
+            # itself takes no lock: it can write the file while a side chat does.
+            async with CANVAS_EDIT_LOCKS.setdefault(edited_file, asyncio.Lock()) if edited_file else nullcontext():
+                if backend == BACKEND_CODEX:
+                    # An approval that nobody answers would keep the fork, and the file's lock, without end.
+                    async with asyncio.timeout(CANVAS_COMMENT_SIDE_CHAT_SECONDS):
+                        return await native.ask(question, history=[], on_step=on_step)
+                return await CopiedSessionSideChat(session_id).ask(question, history=[], edit=edited_file is not None)
 
         async def close(self):
-            await handle.close()
+            if native is not None:
+                await native.close()
 
-    return WithEarlierExchanges()
+    return CommentSideChat()
 
 
 def require_side_question_admission():
@@ -103095,11 +103137,13 @@ async def start_canvas_comment_turn(session_id: str, prompt: str, display_prompt
 
 
 def canvas_comment_side_chat_available(session_id: str, prompt: str) -> bool:
-    """Whether a copy of the chat can answer a Canvas question; otherwise the comment starts a turn.
+    """Whether a copy of the chat can answer a Canvas comment; otherwise the comment starts a turn.
 
-    Each condition is one the side chat would fail on after the comment was accepted: a chat without a
-    native conversation to copy, Claude without the Agent SDK that carries /btw, and a question over
-    Claude's limit.
+    Each condition is one a question's side chat would fail on after the comment was accepted: a chat
+    without a native conversation to copy, Claude without the Agent SDK that carries /btw, and a question
+    over Claude's limit. An edit request starts a turn under the same conditions. On Claude it also starts
+    one for a chat without full access, because its fork runs with full access, and with a CLI that would
+    write the fork's transcript beside the chat's.
     """
     session = STORE.sessions.get(session_id) or {}
     backend = str(session.get("backend") or DEFAULT_BACKEND).lower()
@@ -103108,7 +103152,11 @@ def canvas_comment_side_chat_available(session_id: str, prompt: str) -> bool:
     if backend == BACKEND_CLAUDE:
         return (bool(str(session.get("claude_session_id") or session.get("session_id") or "").strip())
                 and CLAUDE_TRANSPORT != CLAUDE_TRANSPORT_PRINT and claude_sdk_dependency_available()
-                and len(prompt) <= side_questions.MAX_QUESTION_CHARS)
+                and len(prompt) <= side_questions.MAX_QUESTION_CHARS
+                and (agentsdock_canvas.edit_request_path(prompt) is None
+                     or effective_claude_permission_mode(session) == "bypassPermissions"
+                     # Last: its first call in a process runs `claude --help`, 0.07 s when measured.
+                     and claude_supports_no_session_persistence()))
     if backend == BACKEND_GEMINI:
         return bool(session.get("gemini_session_id"))
     if backend == BACKEND_CURSOR:

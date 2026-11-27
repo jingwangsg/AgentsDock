@@ -444,6 +444,18 @@ class CanvasCommentTests(unittest.TestCase):
         assert "continues an earlier comment thread" in edit
         assert edit_display == "Canvas edit on report · <h1> Title: make it shorter"
 
+    def test_an_edit_request_is_told_by_the_prompts_first_line_whatever_its_element_html_quotes(self) -> None:
+        def prompt(mode, html="<td>loss 2.41</td>"):
+            return canvas.comment_prompt(self.path, 7, canvas.comment_anchor({**ANCHOR, "html": html}), mode, "x", follow_up=False)[0]
+        assert canvas.edit_request_path(prompt("edit")) == str(self.path)
+        assert canvas.edit_request_path(prompt("ask")) is None
+        # The selected element shows an earlier comment's prompt: its HTML holds the other mode's instruction.
+        assert canvas.edit_request_path(prompt("ask", "<pre>x\n\n" + canvas.EDIT_INSTRUCTION + "\n\nRequest: delete it</pre>")) is None
+        assert canvas.edit_request_path(prompt("edit", "<pre>x\n\n" + canvas.ASK_INSTRUCTION + "\n\nQuestion: why?</pre>")) == str(self.path)
+        # After a thread's earlier exchanges the first line is an earlier prompt's: the mode is read before they are added.
+        assert canvas.edit_request_path(canvas.with_earlier_exchanges(prompt("edit"), [("why?", "Because.")])) is None
+        assert canvas.edit_request_path("Question: and then?") is None
+
     def test_resolve_replies_follows_queue_start_and_finish(self) -> None:
         def message(turn):
             return {"id": "m", "turn": turn, "reply": {"status": "queued"}}
@@ -647,7 +659,7 @@ class CanvasCommentRouteTests(unittest.TestCase):
 
 
 class CanvasCommentSideChatTests(unittest.IsolatedAsyncioTestCase):
-    """Canvas questions through the real side chat store, with a fake Codex fork that answers when released."""
+    """Canvas comments through the real side chat store, with a fake Codex fork that answers when released."""
 
     async def asyncSetUp(self) -> None:
         import httpx
@@ -672,7 +684,7 @@ class CanvasCommentSideChatTests(unittest.IsolatedAsyncioTestCase):
         class Fork:
             async def ask(self, question, *, history, on_step):
                 assert on_step is None  # nothing shows a comment's steps
-                body = question.rsplit("Question: ", 1)[1]
+                body = re.split("(?:Question|Request): ", question)[-1]
                 test.asked.append((body, history))
                 try:
                     await test.release.setdefault(body, asyncio.Event()).wait()
@@ -762,7 +774,8 @@ class CanvasCommentSideChatTests(unittest.IsolatedAsyncioTestCase):
         self.release["and then?"].set()
         await self.until(lambda: self.closed == 2)
         assert [reply["status"] for reply in (await self.replies())[0]] == ["done", "done"]
-        # The chat saw neither exchange: an edit request in the thread tells it both.
+        # The chat saw neither exchange: an edit request that starts a turn tells it both.
+        self.available = lambda: False
         assert (await self.comment("do that", thread=thread, mode="edit")).status_code == 200
         assert self.turns[0].startswith(
             "Earlier question in this comment thread:\nwhy?\n\nIts answer:\nanswer to why?\n\n"
@@ -771,15 +784,36 @@ class CanvasCommentSideChatTests(unittest.IsolatedAsyncioTestCase):
         assert (await self.comment("and that", thread=thread, mode="edit")).status_code == 200
         assert self.turns[1].startswith("Canvas comment (edit request)")
 
-    async def test_an_edit_or_a_client_or_provider_without_side_chats_starts_a_chat_turn(self) -> None:
-        edit = (await self.comment("fix it", mode="edit")).json()["thread"]["messages"][0]
-        assert edit["turn"] == {"run_id": "run_1", "queued_id": None} and "side_chat" not in edit
+    async def test_an_edit_request_is_answered_in_its_threads_side_chat_while_a_question_runs(self) -> None:
+        edit = (await self.comment("fix it", mode="edit")).json()["thread"]
+        await self.comment("why?")
+        assert edit["messages"][0]["turn"] is None and edit["messages"][0]["side_chat"] is True
+        # Both forks hold their comment before either answers; the chat got no turn.
+        await self.until(lambda: len(self.asked) == 2)
+        assert self.turns == [] and await self.replies() == [[{"status": "running"}], [{"status": "running"}]]
+        # One message per thread at a time, for an edit request too.
+        assert (await self.comment("and that", thread=edit["id"], mode="edit")).status_code == 409
+        notices = len(self.notices)
+        self.release["fix it"].set()
+        await self.until(lambda: self.closed == 1)
+        # The fork's summary is the reply, and its end told the chat's clients, which read the canvas again.
+        assert (await self.replies())[0][0]["text"] == "answer to fix it" and len(self.notices) > notices
+        # The thread's next edit request is offered the earlier one and its summary.
+        assert (await self.comment("and that", thread=edit["id"], mode="edit")).status_code == 200
+        await self.until(lambda: len(self.asked) == 3)
+        assert self.asked[2][0] == "and that" and [item["response"] for item in self.asked[2][1]] == ["answer to fix it"]
+        assert self.turns == []
+
+    async def test_a_client_or_provider_without_side_chats_starts_a_chat_turn(self) -> None:
         # A client that does not refresh on the side chat's notice.
         await self.comment("why?", side_chat=False)
+        await self.comment("fix it", mode="edit", side_chat=False)
         # A chat that no copy can answer for, such as one whose native conversation has not started.
         self.available = lambda: False
         await self.comment("how?")
-        assert len(self.turns) == 3 and self.asked == [] and self.notices == []
+        edit = (await self.comment("fix that", mode="edit")).json()["thread"]["messages"][0]
+        assert edit["turn"] == {"run_id": "run_4", "queued_id": None} and "side_chat" not in edit
+        assert len(self.turns) == 4 and self.asked == [] and self.notices == []
         assert not any(prompt.startswith("Earlier question") for prompt in self.turns)
 
     async def test_a_question_admitted_while_its_thread_is_deleted_is_stopped(self) -> None:

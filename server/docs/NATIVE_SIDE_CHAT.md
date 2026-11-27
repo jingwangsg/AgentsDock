@@ -46,13 +46,63 @@ Never import the production server or use a real user chat in test setup.
 
 ## Canvas comment threads
 
-A question on a Canvas element is answered in a side chat of its comment
-thread, kept in its own store and keyed by the thread, so the threads'
-questions run at the same time. Every question gets a new copy of the chat as
-it stands: an ephemeral Codex fork, a Claude side question, or, for Gemini and
-Cursor, a copy of the native session that the CLI resumes without write tools
-and that is deleted once its answer returns. Nothing is kept on the provider's
-side between a thread's questions: Claude replays the thread's earlier
-exchanges natively, and the others receive them in the question. Deleting the
-thread stops its running answer. The server announces a change with a
-`canvas_comments_updated` packet on the chat's stream.
+A comment on a Canvas element, a question or an edit request, is answered in a
+side chat of its comment thread. These side chats have their own store, keyed
+by the thread, and the chat itself gets no turn. Every comment is answered by
+a new copy of the chat as it stands. Nothing is kept on the provider's side
+between a thread's comments: Claude's side question replays the thread's
+earlier exchanges natively, and the others receive them with the comment.
+Deleting the thread stops its running answer.
+
+An edit request changes the Canvas file and runs the canvas check; its short
+summary is the thread's reply. The chat's own conversation does not record the
+edit.
+
+What runs at the same time:
+
+- The questions of one chat run in parallel, with each other and with a turn
+  of the chat. A thread takes one comment at a time.
+- The edit requests on one Canvas run one after another; edit requests on
+  different Canvases run in parallel. Without this order, two copies that
+  changed one Canvas file at the same time both reported their change, and
+  the file held only one.
+- Known limit: an edit in a side chat and a turn of the chat can both write
+  the same Canvas file at the same time. Nothing orders them.
+- A rewind restores the Canvas of the turn that is kept, including when a side
+  chat changed the file after that turn.
+
+Per provider:
+
+- Codex: an ephemeral native fork for both kinds of comment, with the chat's
+  approval policy and sandbox. An approval that the chat's settings require
+  appears among the chat's pending approvals and is answered there. The
+  comment waits for it up to an hour; while an edit request waits, the Canvas's
+  later edit requests wait behind it.
+- Claude: a question is a native side question, which has no tools. An edit
+  request runs in a side chat when the chat has full access, which is the
+  default. The Claude CLI then forks the session for one run with full access,
+  keeps the fork in memory and writes no transcript of it; the chat's process
+  and transcript are only read. In any other permission mode, or with a CLI
+  that cannot keep the fork in memory, the edit request starts a turn in the
+  chat.
+- Gemini and Cursor: a copy of the native session that the CLI resumes and
+  that is deleted once its answer returns. A question's copy has no write
+  tools. An edit request's copy has the chat's permissions. In a mode that
+  needs approval, nobody can approve in the copy: the edit is not applied, and
+  the reply says so if the CLI says so.
+
+The side chat store hands a comment to its side chat as text only, so the
+comment's mode is read from the first line of its prompt. The server builds
+that line; the lines after it hold the element's HTML as the client sent it.
+
+The server announces each change of a thread with a `canvas_comments_updated`
+packet on the chat's stream, including the end of an answer. On it the
+desktop reads the threads again and lists the canvases to reload one whose
+revision changed: that is how an edit shows without a turn. The mobile app
+reads the threads only.
+
+A comment starts a turn in the chat when the client does not send
+`side_chat`, the chat has no native conversation yet, the backend is
+OpenCode, Claude cannot take the comment as a side question (print transport,
+or a comment above the side question limit), or, for an edit request, the
+Claude conditions above are not met.

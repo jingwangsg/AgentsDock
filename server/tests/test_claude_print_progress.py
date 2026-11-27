@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import sys
 import tempfile
 import unittest
 from collections import deque
@@ -56,6 +57,60 @@ class FakeProcess:
 
 async def wait_forever(*_args: object, **_kwargs: object) -> None:
     await asyncio.Event().wait()
+
+
+# Reports its argv and prompt in stream-json, and creates the directory the real CLI leaves for a session's hooks.
+FORK_CLI = """#!PYTHON
+import json, sys
+from pathlib import Path
+(Path(ROOT) / 'session-env' / sys.argv[sys.argv.index('--session-id') + 1]).mkdir(parents=True)
+print(json.dumps({'type': 'system', 'subtype': 'init'}))
+print(json.dumps({'type': 'result', 'is_error': False, 'result': json.dumps([sys.argv[1:], sys.stdin.read()])}))
+"""
+
+
+class ClaudeEditRequestForkTests(unittest.IsolatedAsyncioTestCase):
+    """A Canvas edit request on Claude runs the print CLI, so it is tested beside the print transport.
+
+    The CLI here is a fake: the test shows the command the server starts and what the server removes. That
+    the real CLI writes no transcript with these flags was measured on CLI 2.1.332 and is not shown here.
+    """
+
+    async def test_an_edit_request_starts_the_print_cli_as_a_fork_and_removes_the_directory_the_fake_leaves(self) -> None:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        cwd = root / "workspace"
+        cwd.mkdir()
+        projects = root / ".claude" / "projects"
+        script = root / "claude"
+        script.write_text(FORK_CLI.replace("#!PYTHON", "#!" + sys.executable).replace("ROOT", repr(str(projects.parent))))
+        script.chmod(0o700)
+        session = {"id": "chat", "backend": "claude", "cwd": str(cwd), "claude_session_id": "native-claude", "model": "opus"}
+        prompt = agent_server.agentsdock_canvas.comment_prompt(
+            root / "report.canvas.tsx", 7, {"canvas_id": "summary", "tag": "td", "text": "loss 2.41", "html": ""},
+            "edit", "shorten it", follow_up=False)[0]
+        history = [{"question": "Question: why?", "response": "Because."}]
+        with patch.object(agent_server, "STATE_DIR", root / "state"), patch.dict(agent_server.STORE.sessions, {"chat": session}), \
+                patch.object(agent_server, "CLAUDE_BIN", str(script)), patch.object(agent_server, "CLAUDE_PROJECTS_ROOT", projects):
+            handle = await agent_server.create_canvas_comment_side_chat("chat")
+            # Nothing to fork: the CLI is not started on an empty conversation.
+            with self.assertRaises(agent_server.side_questions.SideQuestionError):
+                await handle.ask(prompt, history=history)
+            self.assertFalse((projects.parent / "session-env").exists())
+            transcript = agent_server.claude_resume_file_for_cwd("native-claude", str(cwd))
+            transcript.parent.mkdir(parents=True)
+            transcript.write_text('{"type":"user"}\n')
+            argv, question = json.loads((await handle.ask(prompt, history=history))["answer"])
+        # A fork under an id of its own that is not saved, with the print transport's permissions and the chat's model.
+        self.assertEqual(argv[-6:-2] + argv[-1:], ["--resume", "native-claude", "--fork-session", "--session-id", "--no-session-persistence"])
+        self.assertNotEqual(argv[-2], "native-claude")
+        self.assertIn("--dangerously-skip-permissions", argv)
+        self.assertEqual(argv[argv.index("--model") + 1], "opus")
+        # /btw replays a thread's exchanges; the fork gets them in the question.
+        self.assertEqual(question, "Earlier question in this comment thread:\nQuestion: why?\n\nIts answer:\nBecause.\n\n" + prompt)
+        # The server removed the directory named after the fork's id, and wrote nothing beside the chat's transcript.
+        self.assertEqual(list((projects.parent / "session-env").iterdir()), [])
+        self.assertEqual([path.name for path in transcript.parent.iterdir()], ["native-claude.jsonl"])
+        self.assertEqual(transcript.read_text(), '{"type":"user"}\n')
 
 
 class ClaudePrintProgressTests(unittest.IsolatedAsyncioTestCase):

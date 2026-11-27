@@ -382,6 +382,29 @@ class CursorImportTests(CursorFixture, unittest.IsolatedAsyncioTestCase):
                 await handle.ask("Question: why?", history=[])
         self.assertEqual([path.name for path in directory.iterdir()], ["native-cursor"])
 
+    async def test_an_edit_request_runs_in_a_copy_with_the_permission_flags_of_the_chats_turns(self):
+        directory = self.config / "chats" / hashlib.md5(str(self.cwd).encode(), usedforsecurity=False).hexdigest()
+        transcripts = self.config / "projects" / cursor_history.project_slug(str(self.cwd)) / "agent-transcripts"
+        script = self.root / "agent"
+        script.write_text(FAKE_ASK_CLI.replace("#!PYTHON", "#!" + sys.executable).replace("CONFIG", repr(str(self.config))))
+        script.chmod(0o700)
+        self.store.sessions["chat"] = {"id": "chat", "backend": "cursor", "cwd": str(self.cwd), "cursor_session_id": "native-cursor", "model": "auto"}
+        prompt = server.agentsdock_canvas.comment_prompt(
+            self.root / "report.canvas.tsx", 7, {"canvas_id": "summary", "tag": "td", "text": "loss 2.41", "html": ""},
+            "edit", "shorten it", follow_up=False)[0]
+        with patch.object(server, "resolve_cursor_executable", return_value=str(script)):
+            handle = await server.create_canvas_comment_side_chat("chat")
+            # Unattended edits by default; a chat that only plans gets a plan.
+            for selected, flags in ((None, ["--trust", "--force"]), ("plan", ["--trust", "--mode", "plan"]), ("default", ["--trust"])):
+                self.store.sessions["chat"]["cursor_permission_mode"] = selected
+                is_own_chat, argv, question = json.loads((await handle.ask(prompt, history=[]))["answer"])
+                self.assertTrue(is_own_chat)
+                self.assertEqual(argv[:4] + argv[5:], ["-p", "--output-format", "json", "--resume", *flags, "--model", "auto"])
+                self.assertEqual(question, prompt)
+        # Nothing of the copies is left.
+        self.assertEqual([path.name for path in directory.iterdir()], ["native-cursor"])
+        self.assertEqual([path.name for path in transcripts.iterdir()], ["native-cursor"])
+
     async def test_legacy_and_opt_in_picker(self):
         self.assertEqual((await server.get_local_sessions(limit=100))["sessions"], [])
         self.assertEqual((await server.get_local_sessions(limit=100, include_cursor=True))["sessions"][0]["backend"], "cursor")
