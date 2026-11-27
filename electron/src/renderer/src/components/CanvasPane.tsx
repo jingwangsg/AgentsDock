@@ -682,6 +682,7 @@ export function CanvasPane({ session, target, onClose }: { session: Session; tar
       activeId={activeThread}
       located={located}
       onActivate={activateThread}
+      onDeactivate={() => setActiveThread(null)}
       onReply={replyToThread}
       onStatus={setThreadStatus}
       onDelete={deleteThread}

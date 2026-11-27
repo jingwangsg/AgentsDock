@@ -634,6 +634,7 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
         activeId={activeThread}
         located={located}
         onActivate={activateThread}
+        onDeactivate={() => setActiveThread(null)}
         onReply={replyToThread}
         onStatus={setThreadStatus}
         onDelete={deleteThread}

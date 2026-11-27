@@ -318,6 +318,75 @@ describe('CanvasPane comments and source editing', () => {
     expect(post).toHaveBeenLastCalledWith({ source: 'agentsdock-canvas-host', call: 'focus-comment', args: ['cmt_1'] }, '*')
   })
 
+  it('shows the messages of the active thread only: another thread is its header line, which says that a reply is pending', async () => {
+    const answered: CanvasCommentThread = { ...thread(), id: 'cmt_2', messages: [{ ...thread().messages[0], id: 'msg_2', body: 'and at step 2000?', reply: { status: 'done', text: 'lower' } }] }
+    await renderWith({ comments: vi.fn().mockResolvedValue({ threads: [thread(), answered] }) })
+    fireEvent.click(screen.getByRole('button', { name: 'Comments' }))
+    const [pending, done] = await screen.findAllByRole('article')
+    expect(pending.querySelector('header')).toHaveTextContent('Waiting for the agent…')
+    expect(done).not.toHaveTextContent('Waiting for the agent…')
+    for (const text of ['why so high?', 'and at step 2000?', 'lower']) expect(screen.queryByText(text)).toBeNull()
+    expect(screen.queryByPlaceholderText('Reply…')).toBeNull()
+    const activate = done.querySelector('button')!
+    expect(activate).toHaveAttribute('aria-expanded', 'false')
+
+    // jsdom has no scrollIntoView; Chromium provides it.
+    const scrollIntoView = vi.fn()
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scrollIntoView })
+    try {
+      fireEvent.click(activate)
+      // The list shows the activated thread from its header, also when the thread is taller than the list.
+      expect(scrollIntoView.mock.contexts).toContain(done.querySelector('header'))
+    } finally {
+      Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView')
+    }
+    expect(activate).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('and at step 2000?')).toBeInTheDocument()
+    expect(await screen.findByText('lower')).toBeInTheDocument()
+    expect(screen.queryByText('why so high?')).toBeNull()
+  })
+
+  it('says in the header of a thread that is not active how its latest reply ended, unless that is an answer', async () => {
+    const ended = (status: 'done' | 'failed' | 'stopped' | 'cancelled'): CanvasCommentThread => ({ ...thread(), id: `cmt_${status}`, messages: [
+      { ...thread().messages[0], id: `first_${status}`, reply: { status: 'failed', text: 'an earlier failure' } },
+      { ...thread().messages[0], id: `latest_${status}`, reply: { status, text: 'the details' } }
+    ] })
+    await renderWith({ comments: vi.fn().mockResolvedValue({ threads: [ended('done'), ended('failed'), ended('stopped'), ended('cancelled')] }) })
+    fireEvent.click(screen.getByRole('button', { name: 'Comments' }))
+    const headers = (await screen.findAllByRole('article')).map(article => article.querySelector('header')!)
+    expect(headers.map(header => header.querySelector('.canvas-comment-status')?.textContent))
+      .toEqual([undefined, 'The reply failed', 'Stopped', 'Removed from the queue'])
+    expect(screen.queryByText('the details')).toBeNull()
+  })
+
+  it('collapses the active thread from its header, leaving it unresolved with its reply draft', async () => {
+    const { api, post, reply } = await renderWith({
+      comments: vi.fn().mockResolvedValue({ threads: [thread()] }), setCommentStatus: vi.fn(), deleteComment: vi.fn()
+    })
+    reply({ kind: 'comment-open', id: 'cmt_1' })
+    fireEvent.change(await screen.findByPlaceholderText('Reply…'), { target: { value: 'half a reply' } })
+    expect(screen.getByText('why so high?')).toBeInTheDocument()
+    const collapse = screen.getByRole('button', { name: 'Collapse thread' })
+    const header = collapse.parentElement!
+    expect(Array.from(header.querySelectorAll('button'), button => button.title)).toEqual(['Show the element', 'Resolve', 'Delete thread', 'Collapse thread'])
+    // Active, the thread says under the question that its reply is pending.
+    expect(header).not.toHaveTextContent('Waiting for the agent…')
+
+    fireEvent.click(collapse)
+    expect(screen.queryByPlaceholderText('Reply…')).toBeNull()
+    expect(screen.queryByText('why so high?')).toBeNull()
+    expect(header).toHaveTextContent('Waiting for the agent…')
+    expect(screen.queryByRole('button', { name: 'Collapse thread' })).toBeNull()
+    expect(screen.getByTitle('Show the element')).toHaveAttribute('aria-expanded', 'false')
+    await waitFor(() => expect(post).toHaveBeenLastCalledWith({ source: 'agentsdock-canvas-host', call: 'set-comments', args: [
+      [{ id: 'cmt_1', number: 1, canvasId: 'summary', tag: 'td', text: 'loss 2.41', label: 'summary · loss 2.41' }], null] }, '*'))
+    expect(api.setCommentStatus).not.toHaveBeenCalled()
+    expect(api.deleteComment).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByTitle('Show the element'))
+    expect(screen.getByPlaceholderText('Reply…')).toHaveValue('half a reply')
+  })
+
   it('refreshes threads after a turn and reloads the canvas only when its revision changed', async () => {
     const { api } = await renderWith({})
     const turnEvent = () => window.dispatchEvent(new CustomEvent('agentsdock:canvases-changed', { detail: { sessionId: 'chat-1' } }))

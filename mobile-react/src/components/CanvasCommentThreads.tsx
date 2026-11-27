@@ -1,10 +1,11 @@
 // Comment threads under a Canvas: port of electron/src/renderer/src/components/CanvasCommentThreads.tsx.
 import { useEffect, useRef, useState } from 'react'
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native'
-import { Check, RotateCcw, Trash2 } from 'lucide-react-native'
+import { Check, RotateCcw, Trash2, X } from 'lucide-react-native'
+import { dismissAppKeyboard } from '../lib/app-keyboard'
 import { fonts } from '../lib/typography'
 import { usePalette } from '../theme'
-import type { CanvasCommentAnchor, CanvasCommentMessage, CanvasCommentMode, CanvasCommentThread } from '../types'
+import type { CanvasCommentAnchor, CanvasCommentMessage, CanvasCommentMode, CanvasCommentReply, CanvasCommentThread } from '../types'
 import { Text, TextInput } from './AppText'
 import { MarkdownContent } from './MarkdownContent'
 import { IconButton } from './ui'
@@ -35,25 +36,33 @@ export function CanvasCommentSubmit({ disabled, onSubmit }: { disabled: boolean;
   </View>
 }
 
+/** What a reply shows besides an answer: that it is still coming, or how it ended. Null for a completed answer. */
+function replyStatus(reply: CanvasCommentReply | null): string | null {
+  if (!reply || reply.status === 'queued') return 'Waiting for the agent…'
+  if (reply.status === 'running') return 'The agent is working on it…'
+  if (reply.status === 'cancelled') return 'Removed from the queue'
+  if (reply.status === 'done') return null
+  return reply.status === 'stopped' ? 'Stopped' : 'The reply failed'
+}
+
 function Reply({ message }: { message: CanvasCommentMessage }) {
   const colors = usePalette()
   const reply = message.reply
-  const status = (text: string) => <Text style={[styles.status, { color: colors.muted }]}>{text}</Text>
-  if (!reply || reply.status === 'queued') return status('Waiting for the agent…')
-  if (reply.status === 'running') return status('The agent is working on it…')
-  if (reply.status === 'cancelled') return status('Removed from the queue')
+  const status = <Text style={[styles.status, { color: colors.muted }]}>{replyStatus(reply)}</Text>
+  if (!reply || reply.status === 'queued' || reply.status === 'running' || reply.status === 'cancelled') return status
   return <View style={[styles.reply, { borderColor: colors.border }]}>
-    {reply.status !== 'done' ? status(reply.status === 'stopped' ? 'Stopped' : 'The reply failed') : null}
+    {reply.status !== 'done' ? status : null}
     {reply.text ? <MarkdownContent value={reply.text} compact /> : null}
   </View>
 }
 
-export function CanvasCommentThreads({ threads, activeId, located, onActivate, onReply, onStatus, onDelete }: {
+export function CanvasCommentThreads({ threads, activeId, located, onActivate, onDeactivate, onReply, onStatus, onDelete }: {
   threads: CanvasCommentThread[]
   activeId: string | null
   /** Threads whose element exists in the rendered revision; null until the page reported. */
   located: ReadonlySet<string> | null
   onActivate: (id: string) => void
+  onDeactivate: () => void
   onReply: (thread: CanvasCommentThread, mode: CanvasCommentMode, body: string) => Promise<boolean>
   onStatus: (thread: CanvasCommentThread, status: CanvasCommentThread['status']) => void
   onDelete: (thread: CanvasCommentThread) => void
@@ -78,25 +87,40 @@ export function CanvasCommentThreads({ threads, activeId, located, onActivate, o
   const renderThread = ({ thread, number }: { thread: CanvasCommentThread; number: number }) => {
     const active = thread.id === activeId
     const draft = drafts[thread.id] ?? ''
-    return <View key={thread.id} testID={`canvas-comment-thread-${number}`} onLayout={event => { offsets.current.set(thread.id, event.nativeEvent.layout.y) }} style={[styles.thread, { borderColor: active ? colors.blue : colors.border, backgroundColor: colors.background, opacity: thread.status === 'resolved' ? 0.7 : 1 }]}>
+    // Only the active thread shows its messages. The header of another one says that a reply is still coming, or how its latest reply ended.
+    const noted = active ? undefined : thread.messages.find(message => !message.reply || message.reply.status === 'queued' || message.reply.status === 'running') ?? thread.messages.at(-1)
+    const status = noted && replyStatus(noted.reply)
+    return <View key={thread.id} testID={`canvas-comment-thread-${number}`} onLayout={event => {
+      const y = event.nativeEvent.layout.y
+      const before = offsets.current.get(thread.id)
+      // The effect above scrolled to where this thread was. The active thread above it collapsed in the same render, which moved this one up.
+      if (active && before !== undefined && before !== y) scrollRef.current?.scrollTo({ y: Math.max(0, y - 8), animated: true })
+      offsets.current.set(thread.id, y)
+    }} style={[styles.thread, { borderColor: active ? colors.blue : colors.border, backgroundColor: colors.background, opacity: thread.status === 'resolved' ? 0.7 : 1 }]}>
       <View style={styles.threadHeader}>
-        <Pressable accessibilityRole="button" accessibilityLabel={`Show the element for comment ${number}`} onPress={() => onActivate(thread.id)} style={styles.anchor}>
+        <Pressable accessibilityRole="button" accessibilityLabel={`Show the element for comment ${number}`} accessibilityState={{ expanded: active }} onPress={() => onActivate(thread.id)} style={styles.anchor}>
           <View style={[styles.number, { backgroundColor: colors.blue }]}><Text style={[styles.numberText, { color: colors.textOnAccent }]}>{number}</Text></View>
           <Text style={[styles.label, { color: colors.text }]} numberOfLines={1}>{canvasAnchorLabel(thread.anchor)}</Text>
         </Pressable>
         {located && !located.has(thread.id) ? <Text style={[styles.status, { color: colors.muted }]}>Not in this revision</Text> : null}
+        {status ? <Text style={[styles.status, { color: colors.muted }]}>{status}</Text> : null}
         {thread.status === 'open'
           ? <IconButton icon={Check} size={16} touchSize={36} label="Resolve" onPress={() => onStatus(thread, 'resolved')} />
           : <IconButton icon={RotateCcw} size={16} touchSize={36} label="Reopen" onPress={() => onStatus(thread, 'open')} />}
         <IconButton icon={Trash2} size={16} touchSize={36} label="Delete thread" onPress={() => onDelete(thread)} />
+        {active ? <IconButton icon={X} size={16} touchSize={36} label="Collapse thread" onPress={() => {
+          // Collapsing removes the reply input, and Android keeps the keyboard of an input removed while it has the focus.
+          dismissAppKeyboard()
+          onDeactivate()
+        }} /> : null}
       </View>
-      {thread.messages.map(message => <View key={message.id} style={styles.exchange}>
+      {active ? thread.messages.map(message => <View key={message.id} style={styles.exchange}>
         <View style={styles.message}>
           <Text style={[styles.mode, { color: message.mode === 'edit' ? colors.blue : colors.muted, backgroundColor: colors.raised }]}>{message.mode === 'ask' ? 'Ask' : 'Edit'}</Text>
           <Text selectable style={[styles.body, { color: colors.text }]}>{message.body}</Text>
         </View>
         <Reply message={message} />
-      </View>)}
+      </View>) : null}
       {active ? <View style={styles.replyBox}>
         <TextInput
           testID="canvas-comment-reply-input"

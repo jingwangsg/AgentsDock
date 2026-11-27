@@ -162,6 +162,7 @@
   "canvas.resolve": "Resolve",
   "canvas.reopen": "Reopen",
   "canvas.deleteComment": "Delete thread",
+  "canvas.collapseComment": "Collapse thread",
   "canvas.deleteCommentConfirm": "Delete this comment thread? A reply still running in the background is stopped; messages sent to the chat stay there.",
   "canvas.replyPlaceholder": "Reply…",
   "canvas.noComments": "No comments yet. Pick an element with the crosshair to comment on it.",

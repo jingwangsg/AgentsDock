@@ -95,6 +95,7 @@ body.canvas-resizing .canvas-pane iframe { pointer-events: none; }
 .canvas-comment-mode.edit { color: var(--accent); }
 .canvas-comment-reply { padding-left: 10px; border-left: 2px solid var(--border); font-size: var(--text-size-label); min-width: 0; }
 .canvas-comment-status { margin: 0; color: var(--muted); font-size: var(--text-size-caption); }
+.canvas-comment-thread header .canvas-comment-status { flex: none; }
 .canvas-comment-reply-box { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
 .canvas-comment-reply-box textarea { min-height: 34px; max-height: 120px; resize: vertical; border-radius: var(--radius-control); padding: 6px 8px; font: inherit; font-size: var(--text-size-label); background: var(--field-surface); color: var(--field-text); border: 1px solid var(--field-border); }
 .canvas-comment-submit { display: flex; align-items: end; gap: 6px; }

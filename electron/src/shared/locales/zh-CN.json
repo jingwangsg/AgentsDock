@@ -162,6 +162,7 @@
   "canvas.resolve": "标记为已解决",
   "canvas.reopen": "重新打开",
   "canvas.deleteComment": "删除评论",
+  "canvas.collapseComment": "收起评论",
   "canvas.deleteCommentConfirm": "删除这条评论？后台仍在进行的回复会被停止；已发到会话里的消息会保留。",
   "canvas.replyPlaceholder": "回复…",
   "canvas.noComments": "还没有评论。用准星按钮选中一个元素来评论。",
