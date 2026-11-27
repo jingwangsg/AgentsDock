@@ -278,29 +278,22 @@ function CanvasSheetBody({ sessionId, initialName, onClose }: { sessionId: strin
     void loadComments()
   }, [loadComments])
 
-  // A turn starting or ending can answer a comment or edit this canvas: refresh the threads, and check
-  // again only when the canvas has a new revision or the last check failed (a new page resets its own state).
+  // A turn starting or ending can answer a comment or edit this canvas. A comment answered in its thread's side
+  // chat does the same and starts and ends no turn: the server sends a notice, counted together with each time the
+  // chat's stream is live again, after one may have been missed. On either, refresh the threads, and check again
+  // only when the canvas has a new revision or the last check failed (a new page resets its own state).
   const running = useAppStore(state => state.activeSessionIds.has(sessionId))
-  const seenRunning = useRef(running)
+  const commentNotice = useAppStore(state => state.canvasCommentNotices[sessionId] ?? 0)
+  const seen = useRef({ running, commentNotice })
   useEffect(() => {
-    if (seenRunning.current === running) return
-    seenRunning.current = running
+    if (seen.current.running === running && seen.current.commentNotice === commentNotice) return
+    seen.current = { running, commentNotice }
     void loadComments()
     void client.listCanvases(sessionId)
       .then(list => list.canvases.find(canvas => canvas.name === name))
       .then(current => { if (current && (current.revision !== recordLive.current?.revision || error)) setReloadToken(token => token + 1) })
       .catch(() => undefined)
-  }, [error, loadComments, name, running, sessionId])
-
-  // A question answered in its thread's side chat starts and ends no turn: the threads are read again on the
-  // server's notice, and when the chat's stream is live again after one may have been missed.
-  const commentNotice = useAppStore(state => state.canvasCommentNotices[sessionId] ?? 0)
-  const seenCommentNotice = useRef(commentNotice)
-  useEffect(() => {
-    if (seenCommentNotice.current === commentNotice) return
-    seenCommentNotice.current = commentNotice
-    void loadComments()
-  }, [commentNotice, loadComments])
+  }, [commentNotice, error, loadComments, name, running, sessionId])
 
   // Pins for the open threads, numbered like the list; re-injected whenever the page (re)loads.
   const pins = useMemo<CanvasCommentPin[]>(() => threads.flatMap((thread, index) => thread.status === 'open' ? [{

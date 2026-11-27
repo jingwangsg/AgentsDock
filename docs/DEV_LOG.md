@@ -1,5 +1,10 @@
 # Public development log
 
+## 2026-11-27 — Reload a Canvas on mobile after a comment changed it
+
+- A comment answered in its thread's side chat starts no turn in the chat. On a server that answers Edit comments this way, the mobile Canvas showed the reply in the thread and kept showing the Canvas as it was before the edit, until it was reloaded or reopened. The mobile app now checks the revision of the Canvas when the server announces a comment change, as it does when a turn starts or ends and as the desktop app does, and reloads the Canvas when the revision changed.
+- Checked on an Android emulator with this JavaScript bundle in the current sideload package, against an isolated server that answers Edit comments in side chats, with a live Claude chat. An Edit comment sent from the phone renamed a heading. Before the change the thread showed the reply and the page kept the old heading; with it the page showed the new heading without interaction. The chat received no turn in either run. The desktop app, open on the same Canvas in its Source view, showed the new source without interaction. iOS was not run.
+
 ## 2026-11-27 — Collapse Canvas comment threads to one line
 
 - The comment list of a Canvas showed every thread with all its questions and answers, so a thread with long answers covered most of the Canvas, and nothing took it out of view: a thread's header offered only Resolve and Delete. In the desktop app and in the mobile app every thread is now collapsed until one is chosen. A collapsed thread is one line: its number, the element it is about, Resolve and Delete. A thread expands as it was selected before, from its pin in the Canvas, from its line in the list, or when a comment is sent. The expanded thread shows its questions, answers and reply box, and the Canvas outlines its element. Expanding one collapses the one that was expanded, and the list shows the expanded thread from its header. The header of the expanded thread ends with a Collapse button. Collapsing leaves the thread unresolved and keeps a reply being typed for when the thread is expanded again. On mobile the on-screen keyboard closes with it.

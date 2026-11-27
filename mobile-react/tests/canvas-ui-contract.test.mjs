@@ -163,10 +163,18 @@ test('comments: pick an element, Ask or Edit it as a stored thread, and pin open
   assert.match(store, /syncStatus: 'live',[\s\S]{0,240}?noticeCanvasComments\(\)/)
   assert.match(store, /onCanvasCommentsChanged: guarded\(noticeCanvasComments\)/)
   assert.match(sheet, /const commentNotice = useAppStore\(state => state\.canvasCommentNotices\[sessionId\] \?\? 0\)/)
-  assert.match(sheet, /seenCommentNotice\.current = commentNotice\n\s*void loadComments\(\)/)
+  assert.match(sheet, /seen\.current = \{ running, commentNotice \}\n\s*void loadComments\(\)/)
   // A turn starting or ending refreshes the threads and reloads a canvas the agent changed.
   assert.match(sheet, /const running = useAppStore\(state => state\.activeSessionIds\.has\(sessionId\)\)/)
   assert.match(sheet, /if \(current && \(current\.revision !== recordLive\.current\?\.revision \|\| error\)\) setReloadToken/, 'a failed check is repeated for the same revision')
+})
+
+test('a comment notice reloads a canvas that a comment changed without a turn', () => {
+  // An Edit answered in its thread's side chat changes the canvas and starts no turn: the notice runs the
+  // check a turn's start and end run, which reloads the canvas when its revision changed.
+  assert.match(sheet, /const seen = useRef\(\{ running, commentNotice \}\)/)
+  assert.match(sheet, /if \(seen\.current\.running === running && seen\.current\.commentNotice === commentNotice\) return\n\s*seen\.current = \{ running, commentNotice \}\n\s*void loadComments\(\)\n\s*void client\.listCanvases\(sessionId\)\n\s*\.then\(list => list\.canvases\.find\(canvas => canvas\.name === name\)\)\n\s*\.then\(current => \{ if \(current && \(current\.revision !== recordLive\.current\?\.revision \|\| error\)\) setReloadToken\(token => token \+ 1\) \}\)/)
+  assert.match(sheet, /\}, \[commentNotice, error, loadComments, name, running, sessionId\]\)/)
 })
 
 test('comment threads: the active thread shows its messages, another one is its header line with the state of its reply, and the active one collapses from its header', () => {
