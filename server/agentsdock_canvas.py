@@ -290,12 +290,12 @@ def save_source(path: Path, source: str, base_revision: int) -> None:
 # id (or by queued id until a queued turn starts) and stored once the turn is
 # over.
 #
-# A question from a client that sends `side_chat: true` is answered in the
+# A message from a client that sends `side_chat: true` is answered in the
 # thread's own side chat instead: a copy of the chat as it stands answers it,
-# the chat gets no turn, and the threads' questions run at the same time. Its
+# the chat gets no turn, and the threads' messages run at the same time. Its
 # reply is read from the side chat's exchange whose request id is the message's
-# id. An edit request stays a chat turn: the copy cannot write on most
-# providers, and the chat would not see an edit made beside it.
+# id. An edit request's copy changes the canvas file; the chat's own
+# conversation does not record that change.
 
 def read_comments(path: Path) -> list[dict[str, Any]]:
     try:
@@ -359,10 +359,12 @@ ASK_INSTRUCTION = "This is a question: answer it in your reply and do not modify
 EDIT_INSTRUCTION = ("Change the canvas file to do what this comment asks, keep everything else unchanged, "
                     "run the canvas check, and reply with a short summary of the change.")
 EARLIER_QUESTION = "Earlier question in this comment thread:"
+# The first line of the prompt comment_prompt builds: the only one that holds server values alone.
+COMMENT_PROMPT_FIRST_LINE = r"Canvas comment \((?P<kind>question|edit request)\) on (?P<path>[^\n]+) at revision \d+\.\n"
 # The prompt comment_prompt builds. The HTML is bounded as comment_anchor bounds it: unbounded, a text of
 # repeated headers without the instruction is scanned to its end from each of them.
 COMMENT_PROMPT_RE = re.compile(
-    r"Canvas comment \((?:question|edit request)\) on (?P<path>[^\n]+) at revision \d+\.\n"
+    COMMENT_PROMPT_FIRST_LINE +
     r"Selected element: <(?P<tag>[^>\n]+)> (?:inside data-canvas-id=\"(?P<canvas_id>[^\n]+)\"|\(no data-canvas-id\))\n"
     r"(?:Element text: (?P<text>\"[^\n]*\")\n)?"
     r"(?:Element HTML: .{0,2000}?\n)?"
@@ -395,6 +397,17 @@ def comment_prompt(path: Path, revision: int, anchor: dict[str, Any], mode: str,
         label = f"<{anchor['tag']}> {text}".rstrip()
     display = f"Canvas {'question' if mode == 'ask' else 'edit'} on {canvas_name(path)} · {label}: {body}"
     return "\n".join(lines), display[:4096]
+
+
+def edit_request_path(prompt: str) -> str | None:
+    """The canvas file that an edit request's prompt names; None for a question and for any other text.
+
+    The side chat store hands a comment to its side chat as text only (submit → _answer → handle.ask), so
+    the prompt is what tells a side chat the comment's mode. The first line alone is read: the lines after
+    it hold the element's HTML as the client sent it, and that can quote either instruction.
+    """
+    first_line = re.match(COMMENT_PROMPT_FIRST_LINE, prompt)
+    return first_line["path"] if first_line is not None and first_line["kind"] == "edit request" else None
 
 
 def comment_display_from_prompt(prompt: str) -> str | None:
@@ -634,9 +647,9 @@ def register_canvas_routes(
             "revision": revision,
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
-        # `side_chat`: the client refreshes its threads on `canvas_comments_updated`; one that does not
-        # would show the reply only after the chat's next turn.
-        if mode == "ask" and body.get("side_chat") is True and side_chat_available(session_id, prompt):
+        # `side_chat`: the client refreshes on `canvas_comments_updated`; one that does not would show the
+        # reply, and an edit of the canvas, only after the chat's next turn.
+        if body.get("side_chat") is True and side_chat_available(session_id, prompt):
             chat = await side_chats.snapshot(thread_id, session_id)
             try:
                 await side_chats.submit(thread_id, session_id, message["id"], prompt, chat["side_chat_id"], chat["last_request_id"])
@@ -794,7 +807,7 @@ def register_canvas_routes(
     async def reply_session_canvas_comment(session_id: str, name: str, thread_id: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
         _, path = resolve(session_id, name)
         thread = find_thread(await asyncio.to_thread(read_comments, path), thread_id)
-        # A reply reaches the comments file only when the threads are read: fill one finished since, so an Edit is told it.
+        # A reply reaches the comments file only when the threads are read: fill one finished since, so a turn is told it.
         await resolve_side_chat_replies(session_id, [thread])
         message = await start_comment_reply(session_id, path, thread_id, comment_anchor(thread.get("anchor") or {}), body,
                                             earlier_messages=thread.get("messages") or [])
