@@ -2869,10 +2869,21 @@ export interface NativeFileRef {
   type?: string
 }
 
+/** A running files:save. `total` is null when neither the server's answer nor the file record states the size. */
+export interface FileSaveProgress {
+  saveId: string
+  /** The file's title, else its filename: the name the renderer's failure notice shows. */
+  name: string
+  written: number
+  total: number | null
+}
+
 export interface AppEventMap {
   'provider-usage:changed': { profileId: string; profileGeneration: number; serverIdentity?: string | null; sessionId: string; backend: 'codex' | 'claude' }
   'side-chat:changed': { profileId: string; profileGeneration: number; sessionId: string; revision: number }
   'canvas-comments:changed': { profileId: string; profileGeneration: number; sessionId: string }
+  /** Names no profile: a save continues after a server switch. `done` ends it, whether it completed or failed. */
+  'files:save-progress': FileSaveProgress | { saveId: string; done: true }
   'app:storage': { full: boolean }
   'team:mail-hints': MailHintProjection
   'app:language': LanguageSettingsSnapshot

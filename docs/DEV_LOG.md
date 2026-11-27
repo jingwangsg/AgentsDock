@@ -1,5 +1,11 @@
 # Public development log
 
+## 2026-11-27 — Keep a file download running through a server switch and show its progress
+
+- Downloading a chat file to disk in the desktop app stopped when the user switched to another server: the switch cancelled the requests of the server that was left, the download ended with "This operation was aborted", and the partial file was removed. The app also showed nothing while a download ran, so a slow download could not be told from a stuck one. A download now uses a connection of its own and continues after a switch until the file is complete. Opening or previewing a file still stops at a switch, and so does a download whose save dialog is still open when the user switches.
+- While a download runs, the notice area at the top right shows one line per file with its name, the bytes received, the file size and the percentage, updated at most four times per second. The line goes away when the download ends. A failure appears in the error notice as before.
+- Checked in the built app against two local servers, the first reached through a link limited to about 1.4 MB/s, with a switch to the second server 9 seconds into a 60 MB download. Before the change the download ended at the switch with "This operation was aborted" and no file was left. After it the line advanced from 4% to 98%, the download finished 46 seconds after it began, and the file matched the source checksum with no partial file left.
+
 ## 2026-11-27 — Let Codex finish building its thread index at its first start
 
 - On a server whose home directory is shared between machines, each installation keeps its own Codex thread index. The deploy copies it from the shared home; a home with none to copy leaves Codex to build one from every stored session at its first start, before it answers the server. With 2254 sessions on a shared mount this took 29 seconds, and the server stopped waiting after 30 seconds: the first Codex message on a new installation failed with "initialize timed out after 30s". The interrupted build then made every later start wait 30 seconds and fail, and still did 9 minutes later. The server now waits for this first answer as long as it waits for a thread to start, 300 seconds by default; a Codex that never answers is reported after that time instead of after 30 seconds.

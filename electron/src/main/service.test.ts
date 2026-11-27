@@ -111,9 +111,9 @@ import { localHubConfigDirs, startLocalServerAgent } from './local-hub'
 import { openInZed as launchZed } from './open-in-zed'
 import { hubSshAliasHost } from './ssh-hosts'
 import {
+  AgentServerClient,
   ServerError,
   TeamHubBootstrapTransportError,
-  type AgentServerClient,
   type ServerUpdateTarget,
   type SessionPageOptions
 } from './server-client'
@@ -399,7 +399,8 @@ describe('concurrent artifact downloads', () => {
     const responses = [first.response, second.response]
     const a = fakeClient({ fileRequest: async () => responses.shift()! })
     const { service } = createProfileService({
-      'http://a.test:7850': [a],
+      // The profile's client, then the client each of the two saves downloads through.
+      'http://a.test:7850': [a, a, a],
       'http://b.test:7850': [fakeClient()]
     })
     const now = vi.spyOn(Date, 'now').mockReturnValue(1790050083758)
@@ -450,6 +451,143 @@ describe('concurrent artifact downloads', () => {
       await Promise.all(saves)
       now.mockRestore()
     }
+  })
+})
+
+describe('a running save', () => {
+  const file = { id: 'art_episode', filename: 'episode.mp4', content_type: 'video/mp4' }
+
+  function chooseDestination() {
+    const directory = mkdtempSync(join(tmpdir(), 'agentsdock-running-save-'))
+    cleanup.push(() => rmSync(directory, { recursive: true, force: true }))
+    const destination = join(directory, file.filename)
+    electronHarness.showSaveDialog.mockResolvedValue({ canceled: false, filePath: destination })
+    const partialSizes = () => readdirSync(directory).map(name => statSync(join(directory, name)).size)
+    return { destination, partialSizes }
+  }
+
+  function serviceWithWindow(client: ReturnType<typeof fakeClient>) {
+    const { service } = createProfileService({
+      // The profile's client, then the client the save downloads through.
+      'http://a.test:7850': [client, client],
+      'http://b.test:7850': [fakeClient()]
+    })
+    const send = vi.fn()
+    ;(service as unknown as { windows: Set<unknown> }).windows = new Set([{ isDestroyed: () => false, webContents: { send } }])
+    const progress = () => send.mock.calls.filter(([name]) => name === 'files:save-progress').map(([, payload]) => payload)
+    return { service, progress }
+  }
+
+  // Real loopback HTTP through the real client's fileRequest and dispose, so the switch aborts
+  // what it aborts in the app; the shared setup's fetch stub returns afterwards.
+  it('finishes after the user switches to another server', async () => {
+    const fetchStub = globalThis.fetch
+    vi.unstubAllGlobals()
+    cleanup.push(() => vi.stubGlobal('fetch', fetchStub))
+    const content = Buffer.from('frame '.repeat(20_000))
+    let finish!: () => void
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-length': String(content.length) })
+      response.write(content.subarray(0, 50_000))
+      finish = () => response.end(content.subarray(50_000))
+    })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    cleanup.push(() => server.close())
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+    const client = () => {
+      const real = new AgentServerClient(url, '')
+      return Object.assign(fakeClient(), { fileRequest: real.fileRequest.bind(real), dispose: () => real.dispose() })
+    }
+    const { service } = createProfileService(
+      { [url]: [client(), client()], 'http://b.test:7850': [fakeClient()] },
+      undefined, undefined, undefined, undefined, url
+    )
+    const { destination, partialSizes } = chooseDestination()
+
+    const saved = service.saveFile('chat', file).catch((error: unknown) => error)
+    await vi.waitFor(() => expect(partialSizes()).toEqual([50_000]))
+    await service.switchServer('b')
+    finish()
+
+    expect(await saved).toBe(destination)
+    expect(readFileSync(destination)).toEqual(content)
+  })
+
+  it('tells the windows its progress at most every 250 ms, and then its end', async () => {
+    let body!: ReadableStreamDefaultController<Uint8Array>
+    const response = new Response(new ReadableStream<Uint8Array>({ start(controller) { body = controller } }), {
+      headers: { 'content-length': '10' }
+    })
+    const { service, progress } = serviceWithWindow(fakeClient({ fileRequest: async () => response }))
+    const { destination, partialSizes } = chooseDestination()
+    const now = vi.spyOn(Date, 'now').mockReturnValue(10_000)
+    try {
+      // The file record's size stands in until the server's answer states the size.
+      const saved = service.saveFile('chat', { ...file, size: 99, title: 'Episode 12' })
+      body.enqueue(Buffer.from('12345'))
+      await vi.waitFor(() => expect(partialSizes()).toEqual([5]))
+      now.mockReturnValue(10_250)
+      body.enqueue(Buffer.from('67890'))
+      body.close()
+
+      await expect(saved).resolves.toBe(destination)
+      expect(progress()).toEqual([
+        { saveId: expect.any(String), name: 'Episode 12', written: 0, total: 99 },
+        { saveId: expect.any(String), name: 'Episode 12', written: 10, total: 10 },
+        { saveId: expect.any(String), done: true }
+      ])
+      expect(new Set(progress().map(event => event.saveId)).size).toBe(1)
+    } finally {
+      now.mockRestore()
+    }
+  })
+
+  it('tells the windows its end when the download fails', async () => {
+    const { service, progress } = serviceWithWindow(fakeClient({
+      fileRequest: async () => new Response('gone', { status: 404, statusText: 'Not Found' })
+    }))
+    chooseDestination()
+
+    await expect(service.saveFile('chat', file)).rejects.toThrow('Download failed (404 Not Found): gone')
+
+    expect(progress()).toEqual([
+      { saveId: expect.any(String), name: file.filename, written: 0, total: null },
+      { saveId: expect.any(String), done: true }
+    ])
+  })
+
+  it('checks the server before it reads the token or sends a request', async () => {
+    const saveClient = fakeClient()
+    const { service, settings } = createProfileService({
+      'http://a.test:7850': [fakeClient({ health: async () => { throw new Error('connect ECONNREFUSED') } }), saveClient],
+      'http://b.test:7850': [fakeClient()]
+    })
+    const token = vi.spyOn(settings, 'accessTokenForConnectionAsync')
+    chooseDestination()
+
+    await expect(service.saveFile('chat', file)).rejects.toThrow('connect ECONNREFUSED')
+
+    expect(token).not.toHaveBeenCalled()
+    expect(saveClient.fileRequest).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { outcome: 'completed', answer: () => new Response('file') },
+    { outcome: 'failed', answer: () => new Response('gone', { status: 404 }) }
+  ])('disposes its own client, and not the profile\'s, after a $outcome download', async ({ answer }) => {
+    const profileClient = fakeClient()
+    const saveClient = fakeClient({ fileRequest: async () => answer() })
+    const { service } = createProfileService({
+      'http://a.test:7850': [profileClient, saveClient],
+      'http://b.test:7850': [fakeClient()]
+    })
+    chooseDestination()
+
+    await service.saveFile('chat', file).catch(() => undefined)
+
+    expect(saveClient.fileRequest).toHaveBeenCalledOnce()
+    expect(saveClient.dispose).toHaveBeenCalledOnce()
+    expect(profileClient.dispose).not.toHaveBeenCalled()
   })
 })
 
@@ -507,7 +645,11 @@ describe('chat file reads after a dropped hub tunnel', () => {
       activeProfileId: scope.profileId,
       profileGeneration: scope.generation,
       validatedGeneration: scope.generation,
-      scope
+      scope,
+      // A save downloads through a client of its own and tells the windows its progress.
+      clientFactory: () => ({ fileRequest: send, dispose: () => undefined }),
+      settings: { accessTokenForConnectionAsync: async () => '' },
+      windows: new Set()
     })
     const directory = mkdtempSync(join(tmpdir(), 'agentsdock-dropped-tunnel-'))
     cleanup.push(() => rmSync(directory, { recursive: true, force: true }))
@@ -565,14 +707,54 @@ describe('chat file reads after a dropped hub tunnel', () => {
     expect(readdirSync(directory)).toEqual([])
   })
 
-  it('sends nothing more once the server profile changed during the wait', async () => {
+  it('sends nothing more for a file to open once the server profile changed during the wait', async () => {
     const { service, requests, directory } = await hubService(tunnelFailure('remote_unreachable'))
+    Object.assign(service, { fileDownloads: new Map(), localFilePath: vi.fn(() => join(directory, 'episode.mp4')) })
     vi.mocked(retryWait).mockImplementationOnce(async () => { Object.assign(service, { profileGeneration: 2 }) })
 
-    await expect(save(service, directory)).rejects.toThrow('Server profile switch superseded this operation.')
+    await expect(service.openFile('chat', { id: 'art_episode', filename: 'episode.mp4', content_type: 'video/mp4' }))
+      .rejects.toThrow('Server profile switch superseded this operation.')
 
     expect(requests).toHaveLength(1)
     expect(readdirSync(directory)).toEqual([])
+  })
+
+  it('continues a save when the server profile changed during the wait', async () => {
+    const { service, requests, directory } = await hubService(tunnelFailure('remote_unreachable'))
+    vi.mocked(retryWait).mockImplementationOnce(async () => { Object.assign(service, { profileGeneration: 2 }) })
+
+    const { saved, destination } = await save(service, directory)
+
+    expect(saved).toBe(destination)
+    expect(readFileSync(destination)).toEqual(content)
+    expect(requests).toHaveLength(2)
+  })
+
+  it('reports the whole file as a save\'s total after the download continued mid-way', async () => {
+    // Its Content-Length counts the bytes from 50 000 on.
+    const rest: Answer = (_request, response) => {
+      response.writeHead(206, {
+        etag,
+        'content-range': `bytes 50000-${content.length - 1}/${content.length}`,
+        'content-length': String(content.length - 50_000)
+      })
+      response.end(content.subarray(50_000))
+    }
+    const { service, directory } = await hubService(cutAfter(50_000), rest)
+    const send = vi.fn()
+    Object.assign(service, { windows: new Set([{ isDestroyed: () => false, webContents: { send } }]) })
+    // Each look at the clock is 250 ms after the one before, so no report is held back.
+    let clock = 0
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock += 250)
+    try {
+      await save(service, directory)
+    } finally {
+      now.mockRestore()
+    }
+
+    const afterResume = send.mock.calls.map(([, payload]) => payload).filter(payload => payload.written > 50_000)
+    expect(afterResume.at(-1)).toEqual({ saveId: expect.any(String), name: 'episode.mp4', written: content.length, total: content.length })
+    expect(new Set(afterResume.map(payload => payload.total))).toEqual(new Set([content.length]))
   })
 
   const mediaReads: Array<[string, (service: AppService, request: Request) => Promise<Response>]> = [
