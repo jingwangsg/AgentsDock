@@ -470,6 +470,19 @@ class CursorImportTests(CursorFixture, unittest.IsolatedAsyncioTestCase):
             "provider_session_id": "native-cursor", "backend": "cursor", "cwd": str(self.cwd), **kwargs,
         }])
 
+    async def test_a_side_run_of_a_chat_with_no_model_uses_the_servers_default_model(self):
+        script = self.root / "agent"
+        script.write_text(FAKE_ASK_CLI.replace("#!PYTHON", "#!" + sys.executable).replace("CONFIG", repr(str(self.config))))
+        script.chmod(0o700)
+        self.store.sessions["chat"] = {"id": "chat", "backend": "cursor", "cwd": str(self.cwd), "cursor_session_id": "native-cursor"}
+        for offered, expected in [(True, ["--model", "gemini-4-neon-xhigh"]), (False, [])]:
+            with self.subTest(offered=offered), patch.object(server, "resolve_cursor_executable", return_value=str(script)), \
+                    patch.object(server, "CURSOR_DEFAULT_MODEL_OFFERED", offered):
+                handle = await server.create_canvas_comment_side_chat("chat")
+                _own, argv, _question = json.loads((await handle.ask("Question: why?", history=[]))["answer"])
+                # The same model the chat's own turn would run.
+                self.assertEqual(argv[8:], expected)
+
     async def test_a_canvas_question_is_answered_in_a_copy_of_the_session_deleted_once_its_answer_returns(self):
         directory = self.config / "chats" / hashlib.md5(str(self.cwd).encode(), usedforsecurity=False).hexdigest()
         transcripts = self.config / "projects" / cursor_history.project_slug(str(self.cwd)) / "agent-transcripts"

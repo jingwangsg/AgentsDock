@@ -62541,6 +62541,11 @@ def discover_opencode_catalog(*, executable: str | None = None) -> dict[str, Any
     }
 
 
+def cursor_chat_model(sess: dict[str, Any]) -> str | None:
+    """The model a Cursor run of this chat passes: the chat's own, else the server's default where the account offers it."""
+    return str(sess.get("model") or "") or (CURSOR_DEFAULT_MODEL if CURSOR_DEFAULT_MODEL_OFFERED else None)
+
+
 def discover_cursor_catalog(*, executable: str | None = None) -> dict[str, Any]:
     """Discover per-account Cursor models from the compatible executable.
 
@@ -70526,8 +70531,7 @@ async def run_cursor_process(
     runner_sess["cursor_permission_mode"] = effective_cursor_permission_mode(
         sess
     )
-    if not runner_sess.get("model") and CURSOR_DEFAULT_MODEL_OFFERED:
-        runner_sess["model"] = CURSOR_DEFAULT_MODEL
+    runner_sess["model"] = cursor_chat_model(sess)
     cmd = build_cursor_cmd(
         runner_sess,
         cursor_bin=cursor_bin,
@@ -87681,7 +87685,7 @@ class CopiedSessionSideChat(side_questions.SideChatCarrier):
                     cmd = [await asyncio.to_thread(resolve_cursor_executable), "-p", "--output-format", "json", "--resume", copy_id,
                            # An edit request gets the flags of the chat's turns; a question is read-only.
                            *(cursor_permission_flags(effective_cursor_permission_mode(session)) if edit else ["--trust", "--mode", "ask"]),
-                           *(["--model", str(session["model"])] if session.get("model") else [])]
+                           *(["--model", model] if (model := cursor_chat_model(session)) else [])]
                     leftovers = functools.partial(cursor_history.copy_session, str(session["cursor_session_id"]), copy_id, cwd)
                 copying = asyncio.ensure_future(asyncio.to_thread(leftovers))
                 # load-bearing: a worker thread cannot be cancelled, so a cancelled wait removes the copy when the thread is done.
