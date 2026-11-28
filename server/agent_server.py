@@ -2102,6 +2102,18 @@ You are operating through AgentsDock, backed by AgentsServer.
 if len(CURSOR_PROMPT_PRELUDE) > MAX_PROVIDER_STATIC_INSTRUCTIONS_CHARS:
     raise RuntimeError("AgentsDock static Cursor instructions exceed their safe limit")
 
+# A Cursor turn whose model provider returned RESOURCE_EXHAUSTED waits and is then retried in the same turn
+# (run_cursor_process). One wait per retry in a row without progress; after the last, the turn fails. The CLI
+# (2026.11.22) reports the error only after its own retries, which wait 1 to 4 seconds, so the first wait is
+# well above that, and 300 seconds is the longest single wait the CLI allows itself. The sum is 27.5 minutes:
+# the failure this was built for followed 21 minutes of interrupted responses.
+CURSOR_PROVIDER_RETRY_WAITS_SECONDS = (30, 60, 120, 240, 300, 300, 300, 300)
+# What a retry gives the CLI in place of the prompt when the conversation already holds the prompt. Codex and
+# Claude turns that fail at capacity are resent the same words (schedule_model_capacity_resend): at once, as a
+# user message in a new turn after the failed one. That is not used here: the request was for a wait and for
+# the turn not to end.
+CURSOR_PROVIDER_RETRY_PROMPT = "go on"
+
 MAX_PROVIDER_RUNTIME_CONTEXT_CHARS = 32 * 1024
 MAX_PROVIDER_RUNTIME_CONTEXT_BYTES = 32 * 1024
 MAX_PROVIDER_RUNTIME_ENV_VARS = 64
@@ -70471,7 +70483,11 @@ async def run_cursor_process(
     *,
     standalone_provider_context: bool = False,
 ) -> None:
-    """Run one bounded, resumable Cursor CLI turn in a fresh subprocess."""
+    """Run one bounded, resumable Cursor CLI turn in a fresh subprocess.
+
+    After the model provider returned RESOURCE_EXHAUSTED the turn waits and is retried in another
+    subprocess (CURSOR_PROVIDER_RETRY_WAITS_SECONDS).
+    """
     from cursor_agent_client import (
         CURSOR_ANSI_ESCAPE_RE,
         CursorEventParseError,
@@ -70535,13 +70551,6 @@ async def run_cursor_process(
         sess
     )
     runner_sess["model"] = cursor_chat_model(sess)
-    cmd = build_cursor_cmd(
-        runner_sess,
-        cursor_bin=cursor_bin,
-    )
-    mcp_owner = str(sess.get("_cursor_mcp_owner_token") or "")
-    cmd.extend(sess.get("_cursor_tool_flags") or [])
-    public_cmd = redacted_provider_argv(cmd, BACKEND_CURSOR)
     # A rewind to this turn resumes the chat's conversation from the root recorded here ("" when the chat has
     # none yet). Read before the CLI starts: the CLI moves the root with the first message it stores. Nothing is
     # recorded for a standalone run, whose session is not the chat's and which a rewind passes over, or when
@@ -70556,281 +70565,241 @@ async def run_cursor_process(
             )}
         except Exception as exc:
             logger.warning("Cursor conversation root unreadable session=%s run=%s error_type=%s", session_id, run_id, type(exc).__name__)
-    await append_event(session_id, "process_started", {"run_id": run_id, "backend": BACKEND_CURSOR, "argv": public_cmd, "cwd": cwd, **rewind_record})
-    env = agent_runner_env(session_id)
-    env.update(sess.get("_cursor_tool_env") or {})
-    cursor_dir = os.path.dirname(os.path.abspath(cursor_bin))
-    if cursor_dir and cursor_dir not in env.get("PATH", "").split(os.pathsep):
-        env["PATH"] = cursor_dir + os.pathsep + env.get("PATH", "")
-    guard_cmd = [
-        sys.executable,
-        str(CURSOR_PROCESS_GUARD),
-        "--parent-pid",
-        str(os.getpid()),
-        "--",
-        *cmd,
-    ]
-    try:
-        if HUB_PROVIDER_INSTALL:
-            env = await asyncio.to_thread(cursor_hub_env, env)
-        proc = await asyncio.create_subprocess_exec(
-            *guard_cmd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=cwd,
-            env=env,
-            limit=PROCESS_STREAM_LIMIT,
-            start_new_session=True,
+    text_parts: list[str] = []
+    accumulated_text_chars = 0
+    changed_paths: set[str] = set()
+    seen_artifacts: set[str] = set()
+    # The conversation's root as the last start left it ("": nothing stored yet; None: not known).
+    conversation_root = rewind_record.get("cursor_root_blob_id", None if sess.get("cursor_session_id") else "")
+    # The retries in a row that made no progress, and the seconds waited before them.
+    retries, retry_waited = 0, 0
+    # What the starts before the current one took: how many of text_parts, and how much of the absolute turn
+    # timeout, their waits included.
+    retried_text_parts, retried_seconds = 0, 0.0
+    cli_ran = provider_session_emitted = False
+    # One pass is one start of the CLI; each pass after the first is a retry after the model provider returned
+    # RESOURCE_EXHAUSTED. The turn owns what is set above this loop and what is published below it: the working
+    # directory, the diff baseline, the prompt, the model, the text, the changed paths, the artifacts and the
+    # terminal event. The absolute turn timeout bounds the turn across its starts and waits. A start owns its
+    # process and what it reads from it, with its startup timeout and its tool-call and stream ceilings.
+    while True:
+        cmd = build_cursor_cmd(
+            runner_sess,
+            cursor_bin=cursor_bin,
         )
-    except Exception as e:
-        released = await release_turn_slot(
-            session_id,
-            expected_run_id=run_id,
-        )
+        mcp_owner = str(sess.get("_cursor_mcp_owner_token") or "")
+        cmd.extend(sess.get("_cursor_tool_flags") or [])
+        public_cmd = redacted_provider_argv(cmd, BACKEND_CURSOR)
+        await append_event(session_id, "process_started", {"run_id": run_id, "backend": BACKEND_CURSOR, "argv": public_cmd, "cwd": cwd, **rewind_record})
+        env = agent_runner_env(session_id)
+        env.update(sess.get("_cursor_tool_env") or {})
+        cursor_dir = os.path.dirname(os.path.abspath(cursor_bin))
+        if cursor_dir and cursor_dir not in env.get("PATH", "").split(os.pathsep):
+            env["PATH"] = cursor_dir + os.pathsep + env.get("PATH", "")
+        guard_cmd = [
+            sys.executable,
+            str(CURSOR_PROCESS_GUARD),
+            "--parent-pid",
+            str(os.getpid()),
+            "--",
+            *cmd,
+        ]
         try:
-            if released:
-                record_runtime_failure(BACKEND_CURSOR, e, spawn_failure=True)
-                await append_event(session_id, "error", {"run_id": run_id, "backend": BACKEND_CURSOR, "message": f"failed to start Cursor: {e}", **run_event_metadata(run_id)})
-                await append_turn_finished_event(session_id, {
+            if HUB_PROVIDER_INSTALL:
+                env = await asyncio.to_thread(cursor_hub_env, env)
+            proc = await asyncio.create_subprocess_exec(
+                *guard_cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
+                env=env,
+                limit=PROCESS_STREAM_LIMIT,
+                start_new_session=True,
+            )
+        except Exception as e:
+            if cli_ran:
+                # A retry that cannot start ends the turn below, which publishes what the earlier starts produced,
+                # as stopped when Stop was requested since the wait. The terminal event carries this message and
+                # the exit code of the last CLI that ran.
+                stopped = run_id in STOPPED_RUNS or session_id in STOP_REQUESTS
+                provider_failure = f"failed to start Cursor: {e}"
+                if not stopped:
+                    record_runtime_failure(BACKEND_CURSOR, e, spawn_failure=True)
+                    await append_event(session_id, "error", {"run_id": run_id, "backend": BACKEND_CURSOR, "message": provider_failure, **run_event_metadata(run_id)})
+                break
+            released = await release_turn_slot(
+                session_id,
+                expected_run_id=run_id,
+            )
+            try:
+                if released:
+                    record_runtime_failure(BACKEND_CURSOR, e, spawn_failure=True)
+                    await append_event(session_id, "error", {"run_id": run_id, "backend": BACKEND_CURSOR, "message": f"failed to start Cursor: {e}", **run_event_metadata(run_id)})
+                    await append_turn_finished_event(session_id, {
+                        "run_id": run_id,
+                        "backend": BACKEND_CURSOR,
+                        "exit_code": None,
+                        "result_text": "",
+                        "is_error": True,
+                        **run_event_metadata(run_id),
+                    })
+            finally:
+                RUN_METADATA.pop(run_id, None)
+                STOPPED_RUNS.discard(run_id)
+                if released:
+                    schedule_next_queued_turn(session_id)
+            return
+
+        cli_ran = True
+        stderr_task = asyncio.create_task(
+            drain_bounded_process_stream(
+                proc.stderr,
+                limit_bytes=CURSOR_STDERR_TAIL_BYTES,
+            )
+        )
+        pgid = process_group_for_pid(proc.pid)
+        try:
+            bound, stop_requested = await bind_active_turn(
+                session_id,
+                run_id,
+                {
+                    "proc": proc,
                     "run_id": run_id,
                     "backend": BACKEND_CURSOR,
-                    "exit_code": None,
-                    "result_text": "",
-                    "is_error": True,
-                    **run_event_metadata(run_id),
-                })
-        finally:
-            RUN_METADATA.pop(run_id, None)
-            STOPPED_RUNS.discard(run_id)
-            if released:
-                schedule_next_queued_turn(session_id)
-        return
-
-    stderr_task = asyncio.create_task(
-        drain_bounded_process_stream(
-            proc.stderr,
-            limit_bytes=CURSOR_STDERR_TAIL_BYTES,
-        )
-    )
-    pgid = process_group_for_pid(proc.pid)
-    try:
-        bound, stop_requested = await bind_active_turn(
-            session_id,
-            run_id,
-            {
-                "proc": proc,
-                "run_id": run_id,
-                "backend": BACKEND_CURSOR,
-                "transport": "exec",
-                "cursor_mcp_owner_token": mcp_owner,
-                "provider_tools_ready": asyncio.Event(),
-                "pid": proc.pid,
-                "pgid": pgid,
-                "cwd": cwd,
-                "argv": public_cmd,
-                "started_at": time.time(),
-                "started_at_iso": now_iso(),
-                "provider_turn_ready": False,
-                "stdout_tail": deque(maxlen=LIVE_STDOUT_MAX_LINES),
-                "stdout_total_lines": 0,
-                "stdout_updated_at": None,
-            },
-        )
-    except BaseException:
-        # Binding is the ownership boundary. A cancelled or stale startup must
-        # never receive the prompt, and its guard must not survive the runner.
-        with suppress(BaseException):
+                    "transport": "exec",
+                    "cursor_mcp_owner_token": mcp_owner,
+                    "provider_tools_ready": asyncio.Event(),
+                    "pid": proc.pid,
+                    "pgid": pgid,
+                    "cwd": cwd,
+                    "argv": public_cmd,
+                    "started_at": time.time(),
+                    "started_at_iso": now_iso(),
+                    "provider_turn_ready": False,
+                    "stdout_tail": deque(maxlen=LIVE_STDOUT_MAX_LINES),
+                    "stdout_total_lines": 0,
+                    "stdout_updated_at": None,
+                },
+            )
+        except BaseException:
+            # Binding is the ownership boundary. A cancelled or stale startup must
+            # never receive the prompt, and its guard must not survive the runner.
+            with suppress(BaseException):
+                await close_cursor_process_stdin(proc)
+            with suppress(BaseException):
+                await terminate_process_tree(
+                    proc,
+                    grace=CURSOR_GUARD_TEARDOWN_GRACE_SECONDS,
+                )
+            with suppress(BaseException):
+                await finish_bounded_process_stream(stderr_task)
+            raise
+        if not bound:
             await close_cursor_process_stdin(proc)
-        with suppress(BaseException):
             await terminate_process_tree(
                 proc,
                 grace=CURSOR_GUARD_TEARDOWN_GRACE_SECONDS,
             )
-        with suppress(BaseException):
-            await finish_bounded_process_stream(stderr_task)
-        raise
-    if not bound:
-        await close_cursor_process_stdin(proc)
-        await terminate_process_tree(
-            proc,
-            grace=CURSOR_GUARD_TEARDOWN_GRACE_SECONDS,
-        )
-        with suppress(BaseException):
-            await finish_bounded_process_stream(stderr_task)
-        return
-
-    stdin_task: asyncio.Task[None] | None = None
-    text_parts: list[str] = []
-    accumulated_text_chars = 0
-    stream_event_count = 0
-    stream_bytes = 0
-    provider_id: str | None = sess.get("cursor_session_id")
-    started_monotonic = time.monotonic()
-    last_event_monotonic = started_monotonic
-    deadline_clock_checked_monotonic = started_monotonic
-    deadline_clock_was_paused = False
-    provider_started = False
-    terminal_event_seen = False
-    terminal_exit_forced = False
-    stream_error: str | None = None
-    timeout_error: str | None = None
-    turn_is_error = False
-    result_text = ""
-    cursor_usage: dict[str, int] = {}
-    tool_calls: dict[str, dict[str, Any]] = {}
-    started_tool_ids: set[str] = set()
-    finished_tool_ids: set[str] = set()
-    changed_paths: set[str] = set()
-    seen_artifacts: set[str] = set()
-    stderr_bytes = b""
-    hub_token = env.get("CURSOR_AUTH_TOKEN") if HUB_PROVIDER_INSTALL else None
-    # Cursor streams reasoning as many token-sized `thinking` deltas, while
-    # Codex publishes exactly one reasoning_summary per reasoning item and
-    # the client renders one event as one block. Emitting every delta turned
-    # a single thought into a burst of answer-looking blocks that the
-    # timeline then reconciled away. Buffer deltas and publish one event per
-    # completed thought instead.
-    reasoning_buffer: list[str] = []
-    reasoning_buffer_chars = 0
-    idle_warning_emitted = False
-    manifest_watch_task = asyncio.create_task(watch_manifest_artifacts(session_id, run_id, manifest_path, seen_artifacts))
-
-    async def flush_cursor_reasoning() -> None:
-        nonlocal reasoning_buffer, reasoning_buffer_chars
-        if not reasoning_buffer:
+            with suppress(BaseException):
+                await finish_bounded_process_stream(stderr_task)
             return
-        text = compact_memory_text(
-            "".join(reasoning_buffer).strip(),
-            CODEX_APP_SERVER_TOOL_OUTPUT_MAX_CHARS,
-        )
-        reasoning_buffer = []
+
+        stdin_task: asyncio.Task[None] | None = None
+        stream_event_count = 0
+        stream_bytes = 0
+        provider_id: str | None = sess.get("cursor_session_id")
+        started_monotonic = time.monotonic()
+        last_event_monotonic = started_monotonic
+        deadline_clock_checked_monotonic = started_monotonic
+        deadline_clock_was_paused = False
+        provider_started = False
+        terminal_event_seen = False
+        terminal_exit_forced = False
+        stream_error: str | None = None
+        timeout_error: str | None = None
+        turn_is_error = False
+        result_text = ""
+        cursor_usage: dict[str, int] = {}
+        tool_calls: dict[str, dict[str, Any]] = {}
+        started_tool_ids: set[str] = set()
+        finished_tool_ids: set[str] = set()
+        stderr_bytes = b""
+        hub_token = env.get("CURSOR_AUTH_TOKEN") if HUB_PROVIDER_INSTALL else None
+        # Cursor streams reasoning as many token-sized `thinking` deltas, while
+        # Codex publishes exactly one reasoning_summary per reasoning item and
+        # the client renders one event as one block. Emitting every delta turned
+        # a single thought into a burst of answer-looking blocks that the
+        # timeline then reconciled away. Buffer deltas and publish one event per
+        # completed thought instead.
+        reasoning_buffer: list[str] = []
         reasoning_buffer_chars = 0
-        if text:
-            # No phase, like a Claude thinking block: `commentary` is the
-            # agent's own message to the user, shown as text in the timeline
-            # and in shared transcripts. A thought stays in the trace.
-            await append_event(session_id, "reasoning_summary", {
-                "run_id": run_id,
-                "text": text,
-            })
+        idle_warning_emitted = False
+        manifest_watch_task = asyncio.create_task(watch_manifest_artifacts(session_id, run_id, manifest_path, seen_artifacts))
 
-    async def emit_provider_session(new_provider_id: str) -> None:
-        nonlocal provider_id, provider_started
-        if not new_provider_id:
-            return
-        if provider_started and provider_id == new_provider_id:
-            return
-        provider_id = new_provider_id
-        provider_started = True
+        async def flush_cursor_reasoning() -> None:
+            nonlocal reasoning_buffer, reasoning_buffer_chars
+            if not reasoning_buffer:
+                return
+            text = compact_memory_text(
+                "".join(reasoning_buffer).strip(),
+                CODEX_APP_SERVER_TOOL_OUTPUT_MAX_CHARS,
+            )
+            reasoning_buffer = []
+            reasoning_buffer_chars = 0
+            if text:
+                # No phase, like a Claude thinking block: `commentary` is the
+                # agent's own message to the user, shown as text in the timeline
+                # and in shared transcripts. A thought stays in the trace.
+                await append_event(session_id, "reasoning_summary", {
+                    "run_id": run_id,
+                    "text": text,
+                })
 
-    try:
-        if stop_requested:
-            await close_cursor_process_stdin(proc)
-            await terminate_process_tree(proc)
-        else:
-            stdin_task = asyncio.create_task(
-                write_cursor_process_stdin(proc, provider_prompt)
-            )
-            try:
-                await stdin_task
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                stream_error = concise_error_message(exc)
+        async def emit_provider_session(new_provider_id: str) -> None:
+            nonlocal provider_id, provider_started
+            if not new_provider_id:
+                return
+            if provider_started and provider_id == new_provider_id:
+                return
+            provider_id = new_provider_id
+            provider_started = True
+
+        try:
+            if stop_requested:
+                await close_cursor_process_stdin(proc)
                 await terminate_process_tree(proc)
-        while stream_error is None:
-            now_monotonic = time.monotonic()
-            if deadline_clock_was_paused:
-                started_monotonic += max(
-                    0.0,
-                    now_monotonic - deadline_clock_checked_monotonic,
+            else:
+                stdin_task = asyncio.create_task(
+                    write_cursor_process_stdin(proc, provider_prompt)
                 )
-            pending_live_wait = provider_run_owns_pending_cross_chat_live_wait(
-                session_id,
-                run_id,
-            )
-            deadline_clock_checked_monotonic = now_monotonic
-            deadline_clock_was_paused = pending_live_wait
-            if pending_live_wait:
-                last_event_monotonic = now_monotonic
-                idle_warning_emitted = False
-            elapsed = now_monotonic - started_monotonic
-            if (
-                not pending_live_wait
-                and not provider_started
-                and elapsed >= CURSOR_STARTUP_TIMEOUT_SECONDS
-            ):
-                timeout_error = (
-                    "Cursor did not initialize within "
-                    f"{CURSOR_STARTUP_TIMEOUT_SECONDS:g} seconds."
-                )
-                await terminate_process_tree(proc)
-                break
-            if (
-                not pending_live_wait
-                and elapsed >= CURSOR_TURN_TIMEOUT_SECONDS
-            ):
-                timeout_error = (
-                    "Cursor exceeded the absolute turn timeout of "
-                    f"{CURSOR_TURN_TIMEOUT_SECONDS:g} seconds."
-                )
-                await terminate_process_tree(proc)
-                break
-            startup_remaining = (
-                CURSOR_STARTUP_TIMEOUT_SECONDS - elapsed
-                if not provider_started and not pending_live_wait
-                else CURSOR_TURN_TIMEOUT_SECONDS
-            )
-            turn_remaining = (
-                CURSOR_TURN_TIMEOUT_SECONDS
-                if pending_live_wait
-                else CURSOR_TURN_TIMEOUT_SECONDS - elapsed
-            )
-            idle_elapsed = now_monotonic - last_event_monotonic
-            idle_deadline = (
-                CURSOR_IDLE_TIMEOUT_SECONDS
-                if idle_warning_emitted
-                else CURSOR_IDLE_WARN_SECONDS
-            )
-            idle_remaining = max(0.01, idle_deadline - idle_elapsed)
-            wait_seconds = max(
-                0.01,
-                min(
-                    5.0,
-                    startup_remaining,
-                    turn_remaining,
-                    idle_remaining,
-                ),
-            )
-            try:
-                raw = await asyncio.wait_for(
-                    proc.stdout.readline(),  # type: ignore[union-attr]
-                    timeout=wait_seconds,
-                )
-            except asyncio.TimeoutError:
+                try:
+                    await stdin_task
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    stream_error = concise_error_message(exc)
+                    await terminate_process_tree(proc)
+            while stream_error is None:
                 now_monotonic = time.monotonic()
                 if deadline_clock_was_paused:
                     started_monotonic += max(
                         0.0,
                         now_monotonic - deadline_clock_checked_monotonic,
                     )
-                pending_live_wait = (
-                    provider_run_owns_pending_cross_chat_live_wait(
-                        session_id,
-                        run_id,
-                    )
+                pending_live_wait = provider_run_owns_pending_cross_chat_live_wait(
+                    session_id,
+                    run_id,
                 )
                 deadline_clock_checked_monotonic = now_monotonic
                 deadline_clock_was_paused = pending_live_wait
                 if pending_live_wait:
                     last_event_monotonic = now_monotonic
                     idle_warning_emitted = False
-                    continue
                 elapsed = now_monotonic - started_monotonic
-                idle = now_monotonic - last_event_monotonic
                 if (
-                    not provider_started
+                    not pending_live_wait
+                    and not provider_started
                     and elapsed >= CURSOR_STARTUP_TIMEOUT_SECONDS
                 ):
                     timeout_error = (
@@ -70839,504 +70808,674 @@ async def run_cursor_process(
                     )
                     await terminate_process_tree(proc)
                     break
-                if elapsed >= CURSOR_TURN_TIMEOUT_SECONDS:
+                if (
+                    not pending_live_wait
+                    and retried_seconds + elapsed >= CURSOR_TURN_TIMEOUT_SECONDS
+                ):
                     timeout_error = (
                         "Cursor exceeded the absolute turn timeout of "
                         f"{CURSOR_TURN_TIMEOUT_SECONDS:g} seconds."
                     )
                     await terminate_process_tree(proc)
                     break
-                if idle >= CURSOR_IDLE_WARN_SECONDS and not idle_warning_emitted:
-                    await append_event(session_id, "idle_warning", {"run_id": run_id, "idle_seconds": int(idle)})
-                    idle_warning_emitted = True
-                if idle >= CURSOR_IDLE_TIMEOUT_SECONDS:
-                    timeout_error = (
-                        "Cursor produced no output for "
-                        f"{CURSOR_IDLE_TIMEOUT_SECONDS:g} seconds."
-                    )
-                    await terminate_process_tree(proc)
-                    break
-                continue
-            if not raw:
-                break
-            stream_event_count += 1
-            stream_bytes += len(raw)
-            if (
-                stream_event_count > CURSOR_MAX_STREAM_EVENTS
-                or stream_bytes > CURSOR_MAX_STREAM_BYTES
-            ):
-                stream_error = (
-                    "Cursor exceeded the bounded per-turn stream ceiling "
-                    f"({CURSOR_MAX_STREAM_EVENTS} events / "
-                    f"{CURSOR_MAX_STREAM_BYTES} bytes)."
+                startup_remaining = (
+                    CURSOR_STARTUP_TIMEOUT_SECONDS - elapsed
+                    if not provider_started and not pending_live_wait
+                    else CURSOR_TURN_TIMEOUT_SECONDS
                 )
-                await terminate_process_tree(proc)
-                break
-            last_event_monotonic = time.monotonic()
-            idle_warning_emitted = False
-            decoded = raw.decode("utf-8", "replace").rstrip("\r\n")
-            if hub_token:
-                decoded = decoded.replace(hub_token, "[REDACTED]")
-            line = decoded.strip()
-            if not line.startswith("{"):
-                if cursor_approval_request_text(line):
-                    stream_error = (
-                        "Cursor requested interactive approval, which is not "
-                        "supported by the headless backend."
-                    )
-                    await terminate_process_tree(proc)
-                    break
-                continue
-            try:
-                normalized = normalize_cursor_stream_event(line)
-            except CursorEventParseError as exc:
-                await append_event(session_id, "raw_event", {
-                    "run_id": run_id,
-                    "backend": BACKEND_CURSOR,
-                    "diagnostic": cursor_stream_event_diagnostic(line),
-                })
-                logger.warning("unrecognized Cursor stream-json event session=%s run=%s error=%s", session_id, run_id, exc)
-                stream_error = (
-                    "Cursor requested interactive approval, which is not "
-                    "supported by the headless backend."
-                    if cursor_approval_request_text(line)
-                    else (
-                        "Cursor emitted an unsupported stream-json event; "
-                        "update AgentsServer or use a compatible Cursor CLI. "
-                        f"({exc})"
-                    )
+                turn_remaining = (
+                    CURSOR_TURN_TIMEOUT_SECONDS
+                    if pending_live_wait
+                    else CURSOR_TURN_TIMEOUT_SECONDS - retried_seconds - elapsed
                 )
-                await terminate_process_tree(proc)
-                break
-            if normalized is None:
-                continue
-            await append_active_stdout(
-                session_id,
-                cursor_live_event_summary(normalized),
-            )
-            kind = normalized["kind"]
-            event_provider_id = str(
-                normalized.get("session_id") or ""
-            ).strip()
-            if (
-                provider_started
-                and event_provider_id != provider_id
-            ):
-                stream_error = (
-                    "Cursor changed session_id within one provider turn."
+                idle_elapsed = now_monotonic - last_event_monotonic
+                idle_deadline = (
+                    CURSOR_IDLE_TIMEOUT_SECONDS
+                    if idle_warning_emitted
+                    else CURSOR_IDLE_WARN_SECONDS
                 )
-                await terminate_process_tree(proc)
-                break
-            if kind == "session_started":
-                if provider_id and event_provider_id != provider_id:
-                    stream_error = (
-                        "Cursor resume initialized a different session_id "
-                        "than the admitted provider session."
-                    )
-                    await terminate_process_tree(proc)
-                    break
-                await emit_provider_session(event_provider_id)
-                await mark_provider_turn_ready(session_id, run_id, provider_id)
-                async with ACTIVE_LOCK:
-                    owned = ACTIVE.get(session_id) or {}
-                    if owned.get("run_id") == run_id and mcp_owner:
-                        owned["provider_tools_ready"].set()
-            elif not provider_started:
-                stream_error = (
-                    "Cursor emitted provider activity before session "
-                    "initialization."
-                )
-                await terminate_process_tree(proc)
-                break
-            elif kind == "assistant_text":
-                # Publish the thought that led here before the answer itself,
-                # so the timeline keeps provider order even when Cursor never
-                # sends the matching `thinking/completed`.
-                await flush_cursor_reasoning()
-                text = compact_memory_text(
-                    clean_assistant_text(str(normalized.get("text") or "")),
-                    CURSOR_TEXT_EVENT_MAX_CHARS,
-                )
-                if text:
-                    remaining_text_chars = max(
-                        0,
-                        CURSOR_ACCUMULATED_TEXT_MAX_CHARS
-                        - accumulated_text_chars,
-                    )
-                    retained_text = text[:remaining_text_chars]
-                    if retained_text:
-                        text_parts.append(retained_text)
-                        accumulated_text_chars += len(retained_text)
-                    await append_event(session_id, "assistant_text", {"run_id": run_id, "text": text, **run_event_metadata(run_id)})
-            elif kind == "reasoning_delta":
-                delta = str(normalized.get("text") or "")
-                if delta and reasoning_buffer_chars < CODEX_APP_SERVER_TOOL_OUTPUT_MAX_CHARS:
-                    reasoning_buffer.append(delta)
-                    reasoning_buffer_chars += len(delta)
-            elif kind == "reasoning_completed":
-                await flush_cursor_reasoning()
-            elif kind == "tool_started":
-                await flush_cursor_reasoning()
-                call_id = str(normalized["call_id"])
-                if (
-                    call_id not in started_tool_ids
-                    and len(started_tool_ids) >= CURSOR_MAX_TOOL_CALLS
-                ):
-                    stream_error = (
-                        "Cursor exceeded the bounded per-turn tool-call "
-                        f"ceiling ({CURSOR_MAX_TOOL_CALLS})."
-                    )
-                    await terminate_process_tree(proc)
-                    break
-                bounded_args = bounded_codex_interaction_value(
-                    normalized.get("args") or {},
-                    remaining=CODEX_APP_SERVER_TOOL_OUTPUT_MAX_CHARS,
-                )
-                tool = {
-                    "id": call_id,
-                    "name": str(normalized.get("tool") or "Tool")[:240],
-                    "input": (
-                        bounded_args
-                        if isinstance(bounded_args, dict)
-                        else {"value": bounded_args}
+                idle_remaining = max(0.01, idle_deadline - idle_elapsed)
+                wait_seconds = max(
+                    0.01,
+                    min(
+                        5.0,
+                        startup_remaining,
+                        turn_remaining,
+                        idle_remaining,
                     ),
-                }
-                tool_calls[call_id] = tool
-                changed_paths.update(tool_changed_paths(tool))
-                if call_id not in started_tool_ids:
-                    started_tool_ids.add(call_id)
-                    await append_event(session_id, "tool_started", {"run_id": run_id, "tool": tool})
-            elif kind in (
-                "tool_finished",
-                "tool_rejected",
-                "tool_status",
-                "tool_confirmation_required",
-            ):
-                call_id = str(normalized["call_id"])
-                if (
-                    call_id
-                    and call_id not in finished_tool_ids
-                    and len(finished_tool_ids) >= CURSOR_MAX_TOOL_CALLS
-                ):
-                    stream_error = (
-                        "Cursor exceeded the bounded per-turn completed "
-                        f"tool-call ceiling ({CURSOR_MAX_TOOL_CALLS})."
+                )
+                try:
+                    raw = await asyncio.wait_for(
+                        proc.stdout.readline(),  # type: ignore[union-attr]
+                        timeout=wait_seconds,
                     )
-                    await terminate_process_tree(proc)
-                    break
-                if call_id and call_id not in finished_tool_ids:
-                    finished_tool_ids.add(call_id)
-                    tool = tool_calls.get(call_id)
-                    if tool is None:
-                        bounded_args = bounded_codex_interaction_value(
-                            normalized.get("args") or {},
-                            remaining=CODEX_APP_SERVER_TOOL_OUTPUT_MAX_CHARS,
+                except asyncio.TimeoutError:
+                    now_monotonic = time.monotonic()
+                    if deadline_clock_was_paused:
+                        started_monotonic += max(
+                            0.0,
+                            now_monotonic - deadline_clock_checked_monotonic,
                         )
-                        tool = {
-                            "id": call_id,
-                            "name": str(
-                                normalized.get("tool") or "Tool"
-                            )[:240],
-                            "input": (
-                                bounded_args
-                                if isinstance(bounded_args, dict)
-                                else {"value": bounded_args}
-                            ),
-                        }
-                        changed_paths.update(tool_changed_paths(tool))
-                    if kind in {
-                        "tool_rejected",
-                        "tool_confirmation_required",
-                    }:
-                        output: Any = bounded_codex_output_text(
-                            normalized.get("reason")
-                            or normalized.get("message")
-                            or "Rejected by permission policy."
+                    pending_live_wait = (
+                        provider_run_owns_pending_cross_chat_live_wait(
+                            session_id,
+                            run_id,
                         )
-                        exit_code = 1
-                    elif kind == "tool_status":
-                        output = bounded_codex_output_text(
-                            normalized.get("message")
-                            or "Cursor reported an intermediate tool status."
-                        )
-                        exit_code = None
-                    else:
-                        output = bounded_codex_output_text(
-                            normalized.get("result")
-                        )
-                        normalized_exit = normalized.get("exit_code")
-                        exit_code = (
-                            normalized_exit
-                            if isinstance(normalized_exit, int)
-                            and not isinstance(normalized_exit, bool)
-                            else None
-                        )
-                    await append_event(session_id, "tool_finished", {
-                        "run_id": run_id,
-                        "tool_id": call_id,
-                        "tool": tool,
-                        "output": output,
-                        "exit_code": exit_code,
-                    })
-                    tool_calls.pop(call_id, None)
-                    if kind == "tool_confirmation_required":
-                        stream_error = (
-                            "Cursor requested confirmation for a tool action, "
-                            "which is not supported by the headless backend."
+                    )
+                    deadline_clock_checked_monotonic = now_monotonic
+                    deadline_clock_was_paused = pending_live_wait
+                    if pending_live_wait:
+                        last_event_monotonic = now_monotonic
+                        idle_warning_emitted = False
+                        continue
+                    elapsed = now_monotonic - started_monotonic
+                    idle = now_monotonic - last_event_monotonic
+                    if (
+                        not provider_started
+                        and elapsed >= CURSOR_STARTUP_TIMEOUT_SECONDS
+                    ):
+                        timeout_error = (
+                            "Cursor did not initialize within "
+                            f"{CURSOR_STARTUP_TIMEOUT_SECONDS:g} seconds."
                         )
                         await terminate_process_tree(proc)
                         break
-            elif kind == "turn_finished":
-                terminal_event_seen = True
-                turn_is_error = bool(normalized.get("is_error"))
-                normalized_usage = normalized.get("usage")
-                cursor_usage = (
-                    dict(normalized_usage)
-                    if isinstance(normalized_usage, dict)
-                    else {}
-                )
-                result_text = compact_memory_text(
-                    str(normalized.get("result_text") or ""),
-                    CURSOR_TEXT_EVENT_MAX_CHARS,
-                )
+                    if retried_seconds + elapsed >= CURSOR_TURN_TIMEOUT_SECONDS:
+                        timeout_error = (
+                            "Cursor exceeded the absolute turn timeout of "
+                            f"{CURSOR_TURN_TIMEOUT_SECONDS:g} seconds."
+                        )
+                        await terminate_process_tree(proc)
+                        break
+                    if idle >= CURSOR_IDLE_WARN_SECONDS and not idle_warning_emitted:
+                        await append_event(session_id, "idle_warning", {"run_id": run_id, "idle_seconds": int(idle)})
+                        idle_warning_emitted = True
+                    if idle >= CURSOR_IDLE_TIMEOUT_SECONDS:
+                        timeout_error = (
+                            "Cursor produced no output for "
+                            f"{CURSOR_IDLE_TIMEOUT_SECONDS:g} seconds."
+                        )
+                        await terminate_process_tree(proc)
+                        break
+                    continue
+                if not raw:
+                    break
+                stream_event_count += 1
+                stream_bytes += len(raw)
+                if (
+                    stream_event_count > CURSOR_MAX_STREAM_EVENTS
+                    or stream_bytes > CURSOR_MAX_STREAM_BYTES
+                ):
+                    stream_error = (
+                        "Cursor exceeded the bounded per-turn stream ceiling "
+                        f"({CURSOR_MAX_STREAM_EVENTS} events / "
+                        f"{CURSOR_MAX_STREAM_BYTES} bytes)."
+                    )
+                    await terminate_process_tree(proc)
+                    break
+                last_event_monotonic = time.monotonic()
+                idle_warning_emitted = False
+                decoded = raw.decode("utf-8", "replace").rstrip("\r\n")
+                if hub_token:
+                    decoded = decoded.replace(hub_token, "[REDACTED]")
+                line = decoded.strip()
+                if not line.startswith("{"):
+                    if cursor_approval_request_text(line):
+                        stream_error = (
+                            "Cursor requested interactive approval, which is not "
+                            "supported by the headless backend."
+                        )
+                        await terminate_process_tree(proc)
+                        break
+                    continue
                 try:
-                    await asyncio.wait_for(
-                        proc.wait(),
-                        timeout=CURSOR_POST_TERMINAL_EXIT_SECONDS,
+                    normalized = normalize_cursor_stream_event(line)
+                except CursorEventParseError as exc:
+                    await append_event(session_id, "raw_event", {
+                        "run_id": run_id,
+                        "backend": BACKEND_CURSOR,
+                        "diagnostic": cursor_stream_event_diagnostic(line),
+                    })
+                    logger.warning("unrecognized Cursor stream-json event session=%s run=%s error=%s", session_id, run_id, exc)
+                    stream_error = (
+                        "Cursor requested interactive approval, which is not "
+                        "supported by the headless backend."
+                        if cursor_approval_request_text(line)
+                        else (
+                            "Cursor emitted an unsupported stream-json event; "
+                            "update AgentsServer or use a compatible Cursor CLI. "
+                            f"({exc})"
+                        )
                     )
-                except asyncio.TimeoutError:
-                    terminal_exit_forced = True
-                    await terminate_process_tree(
-                        proc,
-                        grace=CURSOR_GUARD_TEARDOWN_GRACE_SECONDS,
+                    await terminate_process_tree(proc)
+                    break
+                if normalized is None:
+                    continue
+                await append_active_stdout(
+                    session_id,
+                    cursor_live_event_summary(normalized),
+                )
+                kind = normalized["kind"]
+                event_provider_id = str(
+                    normalized.get("session_id") or ""
+                ).strip()
+                if (
+                    provider_started
+                    and event_provider_id != provider_id
+                ):
+                    stream_error = (
+                        "Cursor changed session_id within one provider turn."
                     )
-                break
-    except Exception as e:
-        stream_error = (
-            f"{type(e).__name__} while processing the Cursor stream"
-        )
-        logger.error(
-            "Cursor run failed session=%s run=%s error_type=%s",
-            session_id,
-            run_id,
-            type(e).__name__,
-        )
-    finally:
-        # A turn can end (completed, stopped, or failed) while a thought is
-        # still buffered; publish it rather than dropping it.
-        with suppress(Exception):
-            await flush_cursor_reasoning()
-        manifest_watch_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await manifest_watch_task
-        await terminate_process_tree(
-            proc,
-            grace=CURSOR_GUARD_TEARDOWN_GRACE_SECONDS,
-        )
-        await clear_active_process(session_id, expected_run_id=run_id)
-        try:
-            stderr_bytes = await finish_bounded_process_stream(stderr_task)
-        except asyncio.CancelledError:
-            stderr_task.cancel()
-            with suppress(BaseException):
-                await stderr_task
-            raise
-        except Exception as exc:
-            logger.warning(
-                "Cursor stderr drain failed session=%s run=%s error=%s",
+                    await terminate_process_tree(proc)
+                    break
+                if kind == "session_started":
+                    if provider_id and event_provider_id != provider_id:
+                        stream_error = (
+                            "Cursor resume initialized a different session_id "
+                            "than the admitted provider session."
+                        )
+                        await terminate_process_tree(proc)
+                        break
+                    await emit_provider_session(event_provider_id)
+                    await mark_provider_turn_ready(session_id, run_id, provider_id)
+                    async with ACTIVE_LOCK:
+                        owned = ACTIVE.get(session_id) or {}
+                        if owned.get("run_id") == run_id and mcp_owner:
+                            owned["provider_tools_ready"].set()
+                elif not provider_started:
+                    stream_error = (
+                        "Cursor emitted provider activity before session "
+                        "initialization."
+                    )
+                    await terminate_process_tree(proc)
+                    break
+                elif kind == "assistant_text":
+                    # Publish the thought that led here before the answer itself,
+                    # so the timeline keeps provider order even when Cursor never
+                    # sends the matching `thinking/completed`.
+                    await flush_cursor_reasoning()
+                    text = compact_memory_text(
+                        clean_assistant_text(str(normalized.get("text") or "")),
+                        CURSOR_TEXT_EVENT_MAX_CHARS,
+                    )
+                    if text:
+                        remaining_text_chars = max(
+                            0,
+                            CURSOR_ACCUMULATED_TEXT_MAX_CHARS
+                            - accumulated_text_chars,
+                        )
+                        retained_text = text[:remaining_text_chars]
+                        if retained_text:
+                            text_parts.append(retained_text)
+                            accumulated_text_chars += len(retained_text)
+                        await append_event(session_id, "assistant_text", {"run_id": run_id, "text": text, **run_event_metadata(run_id)})
+                elif kind == "reasoning_delta":
+                    delta = str(normalized.get("text") or "")
+                    if delta and reasoning_buffer_chars < CODEX_APP_SERVER_TOOL_OUTPUT_MAX_CHARS:
+                        reasoning_buffer.append(delta)
+                        reasoning_buffer_chars += len(delta)
+                elif kind == "reasoning_completed":
+                    await flush_cursor_reasoning()
+                elif kind == "tool_started":
+                    await flush_cursor_reasoning()
+                    call_id = str(normalized["call_id"])
+                    if (
+                        call_id not in started_tool_ids
+                        and len(started_tool_ids) >= CURSOR_MAX_TOOL_CALLS
+                    ):
+                        stream_error = (
+                            "Cursor exceeded the bounded per-turn tool-call "
+                            f"ceiling ({CURSOR_MAX_TOOL_CALLS})."
+                        )
+                        await terminate_process_tree(proc)
+                        break
+                    bounded_args = bounded_codex_interaction_value(
+                        normalized.get("args") or {},
+                        remaining=CODEX_APP_SERVER_TOOL_OUTPUT_MAX_CHARS,
+                    )
+                    tool = {
+                        "id": call_id,
+                        "name": str(normalized.get("tool") or "Tool")[:240],
+                        "input": (
+                            bounded_args
+                            if isinstance(bounded_args, dict)
+                            else {"value": bounded_args}
+                        ),
+                    }
+                    tool_calls[call_id] = tool
+                    changed_paths.update(tool_changed_paths(tool))
+                    if call_id not in started_tool_ids:
+                        started_tool_ids.add(call_id)
+                        await append_event(session_id, "tool_started", {"run_id": run_id, "tool": tool})
+                elif kind in (
+                    "tool_finished",
+                    "tool_rejected",
+                    "tool_status",
+                    "tool_confirmation_required",
+                ):
+                    call_id = str(normalized["call_id"])
+                    if (
+                        call_id
+                        and call_id not in finished_tool_ids
+                        and len(finished_tool_ids) >= CURSOR_MAX_TOOL_CALLS
+                    ):
+                        stream_error = (
+                            "Cursor exceeded the bounded per-turn completed "
+                            f"tool-call ceiling ({CURSOR_MAX_TOOL_CALLS})."
+                        )
+                        await terminate_process_tree(proc)
+                        break
+                    if call_id and call_id not in finished_tool_ids:
+                        finished_tool_ids.add(call_id)
+                        tool = tool_calls.get(call_id)
+                        if tool is None:
+                            bounded_args = bounded_codex_interaction_value(
+                                normalized.get("args") or {},
+                                remaining=CODEX_APP_SERVER_TOOL_OUTPUT_MAX_CHARS,
+                            )
+                            tool = {
+                                "id": call_id,
+                                "name": str(
+                                    normalized.get("tool") or "Tool"
+                                )[:240],
+                                "input": (
+                                    bounded_args
+                                    if isinstance(bounded_args, dict)
+                                    else {"value": bounded_args}
+                                ),
+                            }
+                            changed_paths.update(tool_changed_paths(tool))
+                        if kind in {
+                            "tool_rejected",
+                            "tool_confirmation_required",
+                        }:
+                            output: Any = bounded_codex_output_text(
+                                normalized.get("reason")
+                                or normalized.get("message")
+                                or "Rejected by permission policy."
+                            )
+                            exit_code = 1
+                        elif kind == "tool_status":
+                            output = bounded_codex_output_text(
+                                normalized.get("message")
+                                or "Cursor reported an intermediate tool status."
+                            )
+                            exit_code = None
+                        else:
+                            output = bounded_codex_output_text(
+                                normalized.get("result")
+                            )
+                            normalized_exit = normalized.get("exit_code")
+                            exit_code = (
+                                normalized_exit
+                                if isinstance(normalized_exit, int)
+                                and not isinstance(normalized_exit, bool)
+                                else None
+                            )
+                        await append_event(session_id, "tool_finished", {
+                            "run_id": run_id,
+                            "tool_id": call_id,
+                            "tool": tool,
+                            "output": output,
+                            "exit_code": exit_code,
+                        })
+                        tool_calls.pop(call_id, None)
+                        if kind == "tool_confirmation_required":
+                            stream_error = (
+                                "Cursor requested confirmation for a tool action, "
+                                "which is not supported by the headless backend."
+                            )
+                            await terminate_process_tree(proc)
+                            break
+                elif kind == "turn_finished":
+                    terminal_event_seen = True
+                    turn_is_error = bool(normalized.get("is_error"))
+                    normalized_usage = normalized.get("usage")
+                    cursor_usage = (
+                        dict(normalized_usage)
+                        if isinstance(normalized_usage, dict)
+                        else {}
+                    )
+                    result_text = compact_memory_text(
+                        str(normalized.get("result_text") or ""),
+                        CURSOR_TEXT_EVENT_MAX_CHARS,
+                    )
+                    try:
+                        await asyncio.wait_for(
+                            proc.wait(),
+                            timeout=CURSOR_POST_TERMINAL_EXIT_SECONDS,
+                        )
+                    except asyncio.TimeoutError:
+                        terminal_exit_forced = True
+                        await terminate_process_tree(
+                            proc,
+                            grace=CURSOR_GUARD_TEARDOWN_GRACE_SECONDS,
+                        )
+                    break
+        except Exception as e:
+            stream_error = (
+                f"{type(e).__name__} while processing the Cursor stream"
+            )
+            logger.error(
+                "Cursor run failed session=%s run=%s error_type=%s",
                 session_id,
                 run_id,
-                concise_error_message(exc),
+                type(e).__name__,
             )
-
-    stderr_diagnostic = cursor_stderr_diagnostic(stderr_bytes)
-    stopped = run_id in STOPPED_RUNS
-    outstanding_tools = list(tool_calls.items())
-    if outstanding_tools:
-        unfinished_reason = (
-            "Cursor tool stopped before completion."
-            if stopped
-            else "Cursor tool did not emit a completion event."
-        )
-        for call_id, tool in outstanding_tools:
-            await append_event(session_id, "tool_finished", {
-                "run_id": run_id,
-                "tool_id": call_id,
-                "tool": tool,
-                "output": unfinished_reason,
-                "exit_code": 1,
-            })
-            tool_calls.pop(call_id, None)
-    protocol_error: str | None = None
-    if not stopped and not timeout_error and not stream_error and not turn_is_error:
-        if terminal_exit_forced:
-            protocol_error = (
-                "Cursor emitted a terminal result but did not exit cleanly; "
-                "its resumable state may not have finished persisting."
+        finally:
+            # A turn can end (completed, stopped, or failed) while a thought is
+            # still buffered; publish it rather than dropping it.
+            with suppress(Exception):
+                await flush_cursor_reasoning()
+            manifest_watch_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await manifest_watch_task
+            await terminate_process_tree(
+                proc,
+                grace=CURSOR_GUARD_TEARDOWN_GRACE_SECONDS,
             )
-        elif outstanding_tools:
-            protocol_error = (
-                "Cursor completed with unfinished tool calls."
+            await clear_active_process(session_id, expected_run_id=run_id)
+            try:
+                stderr_bytes = await finish_bounded_process_stream(stderr_task)
+            except asyncio.CancelledError:
+                stderr_task.cancel()
+                with suppress(BaseException):
+                    await stderr_task
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "Cursor stderr drain failed session=%s run=%s error=%s",
+                    session_id,
+                    run_id,
+                    concise_error_message(exc),
+                )
+
+        stderr_diagnostic = cursor_stderr_diagnostic(stderr_bytes)
+        stopped = run_id in STOPPED_RUNS
+        outstanding_tools = list(tool_calls.items())
+        if outstanding_tools:
+            unfinished_reason = (
+                "Cursor tool stopped before completion."
+                if stopped
+                else "Cursor tool did not emit a completion event."
             )
-        elif proc.returncode in (0, None) and not terminal_event_seen:
-            protocol_error = (
-                "Cursor exited successfully without a terminal result event."
+            for call_id, tool in outstanding_tools:
+                await append_event(session_id, "tool_finished", {
+                    "run_id": run_id,
+                    "tool_id": call_id,
+                    "tool": tool,
+                    "output": unfinished_reason,
+                    "exit_code": 1,
+                })
+                tool_calls.pop(call_id, None)
+        protocol_error: str | None = None
+        if not stopped and not timeout_error and not stream_error and not turn_is_error:
+            if terminal_exit_forced:
+                protocol_error = (
+                    "Cursor emitted a terminal result but did not exit cleanly; "
+                    "its resumable state may not have finished persisting."
+                )
+            elif outstanding_tools:
+                protocol_error = (
+                    "Cursor completed with unfinished tool calls."
+                )
+            elif proc.returncode in (0, None) and not terminal_event_seen:
+                protocol_error = (
+                    "Cursor exited successfully without a terminal result event."
+                )
+            elif proc.returncode in (0, None) and not provider_started:
+                protocol_error = (
+                    "Cursor completed without initializing a resumable session."
+                )
+
+        stderr_text = stderr_bytes.decode("utf-8", "replace")
+        if hub_token:
+            stderr_text = stderr_text.replace(hub_token, "[REDACTED]")
+        # Accept only the native error envelope. Provider stderr and result details
+        # can quote the prompt, tool output or credentials and must stay private.
+        failure_envelope = CURSOR_ANSI_ESCAPE_RE.sub("", (result_text if turn_is_error else "") or stderr_text).strip()
+        resource_exhausted = (
+            not (stopped or timeout_error or stream_error or terminal_exit_forced)
+            and (turn_is_error or proc.returncode not in (0, None))
+            and re.match(
+                r"^(?:(?:RetriableError|NonRetriableError|ConnectError|Error):[ \t]*)?\[resource_exhausted\](?:\s|$)",
+                failure_envelope,
+                re.IGNORECASE,
+            ) is not None
+        )
+        # A provider error that left a tool call open is the provider error, not a tool call that never completed.
+        if resource_exhausted:
+            protocol_error = None
+        # The envelope's own words stay private, like the rest of it. A usage limit among them is named: the turn
+        # waits for it as for a busy provider, and the user can act on it.
+        usage_limit_hint = (
+            " Its message names a usage or rate limit: check the Cursor account."
+            if resource_exhausted
+            and any(marker in failure_envelope.partition("\n")[0].lower() for marker in ("rate limit", "quota", "usage limit"))
+            else ""
+        )
+        # A start that added a tool call or text made progress: the count of retries in a row begins again.
+        if started_tool_ids or finished_tool_ids or len(text_parts) > retried_text_parts:
+            retries, retry_waited = 0, 0
+        # The conversation's root before and after this start tells what the start stored. A conversation that had
+        # nothing stored may still have nothing (new_session_root_blob_id); any other store that cannot be read
+        # leaves it unknown. It is read whenever the start had a conversation, also when the CLI ended before it
+        # named one.
+        root_before = conversation_root
+        if resource_exhausted and provider_id:
+            try:
+                conversation_root = await asyncio.to_thread(
+                    cursor_history.latest_root_blob_id if root_before else cursor_history.new_session_root_blob_id,
+                    provider_id, cwd,
+                )
+            except Exception:
+                conversation_root = None
+        # The wait before a retry; None when this start is the turn's last. Not retried: an error the CLI names
+        # NonRetriableError, its name for one that Cursor's service marked as not retryable, and a start whose
+        # conversation could not be read, so that what it stored is not known.
+        retry_wait = (
+            CURSOR_PROVIDER_RETRY_WAITS_SECONDS[retries]
+            if resource_exhausted and not failure_envelope.lower().startswith("nonretriableerror:")
+            and None not in (root_before, conversation_root) and retries < len(CURSOR_PROVIDER_RETRY_WAITS_SECONDS)
+            else None
+        )
+        cursor_auth_signal = bool(
+            not stopped
+            and not resource_exhausted
+            and (
+                turn_is_error
+                or proc.returncode not in (0, None)
             )
-        elif proc.returncode in (0, None) and not provider_started:
-            protocol_error = (
-                "Cursor completed without initializing a resumable session."
+            and (
+                (turn_is_error and auth_failure_text(result_text))
+                or auth_failure_text(stderr_text)
             )
+        )
+        cursor_auth_state = (
+            await asyncio.to_thread(cursor_auth_probe_state, cursor_bin)
+            if cursor_auth_signal
+            else None
+        )
+        cursor_auth_failed = cursor_auth_state == "unauthenticated"
+        cursor_auth_validation_error = cursor_auth_state == "error"
+        auth_message = None
+        if cursor_auth_failed:
+            auth_message = (
+                "Cursor authentication failed. Sign in as the server user or configure "
+                "CURSOR_API_KEY, then click Recheck CLIs."
+            )
+        elif cursor_auth_validation_error:
+            auth_message = (
+                "Cursor could not validate the failed provider request. Check the "
+                "server network and Cursor credentials, then click Recheck CLIs."
+            )
+        provider_failure = auth_message
+        if resource_exhausted:
+            provider_failure = (
+                "Cursor's model provider returned RESOURCE_EXHAUSTED. Wait briefly and try again. "
+                "If it recurs, select another available model in this chat."
+            )
+            if retries == len(CURSOR_PROVIDER_RETRY_WAITS_SECONDS):
+                provider_failure = (
+                    f"Cursor's model provider kept returning RESOURCE_EXHAUSTED: {retries} retries in a row made no "
+                    f"progress, after {retry_waited:g} seconds of waiting.{usage_limit_hint} Try again later, or select "
+                    "another available model in this chat."
+                )
+        elif turn_is_error and not provider_failure:
+            provider_failure = cursor_logical_failure_message(result_text)
 
-    stderr_text = stderr_bytes.decode("utf-8", "replace")
-    if hub_token:
-        stderr_text = stderr_text.replace(hub_token, "[REDACTED]")
-    # Accept only the native error envelope. Provider stderr and result details
-    # can quote the prompt, tool output or credentials and must stay private.
-    resource_exhausted = (
-        not (stopped or timeout_error or stream_error or protocol_error or terminal_exit_forced)
-        and (turn_is_error or proc.returncode not in (0, None))
-        and re.match(
-            r"^(?:(?:RetriableError|NonRetriableError|ConnectError|Error):[ \t]*)?\[resource_exhausted\](?:\s|$)",
-            CURSOR_ANSI_ESCAPE_RE.sub("", (result_text if turn_is_error else "") or stderr_text).strip(),
-            re.IGNORECASE,
-        ) is not None
-    )
-    cursor_auth_signal = bool(
-        not stopped
-        and not resource_exhausted
-        and (
-            turn_is_error
-            or proc.returncode not in (0, None)
-        )
-        and (
-            (turn_is_error and auth_failure_text(result_text))
-            or auth_failure_text(stderr_text)
-        )
-    )
-    cursor_auth_state = (
-        await asyncio.to_thread(cursor_auth_probe_state, cursor_bin)
-        if cursor_auth_signal
-        else None
-    )
-    cursor_auth_failed = cursor_auth_state == "unauthenticated"
-    cursor_auth_validation_error = cursor_auth_state == "error"
-    auth_message = None
-    if cursor_auth_failed:
-        auth_message = (
-            "Cursor authentication failed. Sign in as the server user or configure "
-            "CURSOR_API_KEY, then click Recheck CLIs."
-        )
-    elif cursor_auth_validation_error:
-        auth_message = (
-            "Cursor could not validate the failed provider request. Check the "
-            "server network and Cursor credentials, then click Recheck CLIs."
-        )
-    provider_failure = auth_message
-    if resource_exhausted:
-        provider_failure = (
-            "Cursor's model provider returned RESOURCE_EXHAUSTED. Wait briefly and try again. "
-            "If it recurs, select another available model in this chat."
-        )
-    elif turn_is_error and not provider_failure:
-        provider_failure = cursor_logical_failure_message(result_text)
-
-    if timeout_error and not stopped:
-        await append_event(session_id, "error", {
-            "run_id": run_id,
-            "backend": BACKEND_CURSOR,
-            "message": timeout_error,
-            "exit_code": proc.returncode,
-            **run_event_metadata(run_id),
-        })
-    elif stream_error and not stopped:
-        await append_event(session_id, "error", {"run_id": run_id, "message": f"Cursor stream failed: {stream_error}", **run_event_metadata(run_id)})
-    elif protocol_error and not stopped:
-        await append_event(session_id, "error", {
-            "run_id": run_id,
-            "backend": BACKEND_CURSOR,
-            "message": protocol_error,
-            "exit_code": proc.returncode,
-            **run_event_metadata(run_id),
-        })
-    elif not stopped and (turn_is_error or (proc.returncode not in (0, None) and not terminal_exit_forced)):
-        await append_event(session_id, "error", {
-            "run_id": run_id,
-            "message": provider_failure or f"Cursor exited {proc.returncode}. {stderr_diagnostic}",
-            "exit_code": proc.returncode,
-            **run_event_metadata(run_id),
-        })
-
-    runtime_failure_reason = (
-        auth_message or timeout_error or stream_error or protocol_error or provider_failure
-        or (f"Cursor exited {proc.returncode}. {stderr_diagnostic}" if proc.returncode not in (0, None) else None)
-    )
-    if not stopped and (
-        timeout_error
-        or stream_error
-        or protocol_error
-        or turn_is_error
-        or (
-            proc.returncode not in (0, None)
-            and not terminal_exit_forced
-        )
-    ):
-        record_runtime_failure(
-            BACKEND_CURSOR,
-            runtime_failure_reason
-            or "The latest Cursor run failed.",
-            executable=cursor_bin,
-            auth_failure=cursor_auth_failed,
-            runtime_error=cursor_auth_validation_error,
-        )
-    elif not stopped:
-        record_runtime_success(BACKEND_CURSOR)
-
-    successful_terminal = bool(
-        not stopped
-        and not timeout_error
-        and not stream_error
-        and not protocol_error
-        and not turn_is_error
-        and proc.returncode == 0
-        and not terminal_exit_forced
-        and terminal_event_seen
-        and provider_started
-    )
-    # A provider limit can end the first turn after tools have already run.
-    # Bind that ID only if Cursor saved a conversation for this exact workspace.
-    resumable_failure = False
-    if (resource_exhausted and provider_started and provider_id and not sess.get("cursor_session_id")
-            and not standalone_provider_context):
-        with suppress(OSError):
-            resumable_failure = await asyncio.to_thread(cursor_history.find_session, provider_id, cwd) is not None
-    if provider_id and (successful_terminal or resumable_failure):
-        persisted = await persist_run_provider_session(
-            session_id,
-            run_id,
-            BACKEND_CURSOR,
-            provider_id,
-            cursor_instruction_hash=instruction_hash if successful_terminal else None,
-            standalone_provider_context=standalone_provider_context,
-            emit_event=True,
-        )
-        if persisted and successful_terminal and memory_injected:
-            async with STORE._lock:
-                current = STORE.sessions.get(session_id)
-                if (
-                    current is not None
-                    and str(session_provider_id(current) or "") == provider_id
-                ):
-                    current["memory_seed_used"] = True
-                    current["updated_at"] = now_iso()
-                    await STORE.save()
-            await append_event(session_id, "history_imported", {
+        if timeout_error and not stopped:
+            await append_event(session_id, "error", {
                 "run_id": run_id,
                 "backend": BACKEND_CURSOR,
-                "message": (
-                    "Applied bounded fork memory to this successful Cursor "
-                    "turn."
-                ),
+                "message": timeout_error,
+                "exit_code": proc.returncode,
+                **run_event_metadata(run_id),
             })
+        elif stream_error and not stopped:
+            await append_event(session_id, "error", {"run_id": run_id, "message": f"Cursor stream failed: {stream_error}", **run_event_metadata(run_id)})
+        elif protocol_error and not stopped:
+            await append_event(session_id, "error", {
+                "run_id": run_id,
+                "backend": BACKEND_CURSOR,
+                "message": protocol_error,
+                "exit_code": proc.returncode,
+                **run_event_metadata(run_id),
+            })
+        elif not stopped and retry_wait is None and (turn_is_error or (proc.returncode not in (0, None) and not terminal_exit_forced)):
+            await append_event(session_id, "error", {
+                "run_id": run_id,
+                "message": provider_failure or f"Cursor exited {proc.returncode}. {stderr_diagnostic}",
+                "exit_code": proc.returncode,
+                **run_event_metadata(run_id),
+            })
+
+        runtime_failure_reason = (
+            auth_message or timeout_error or stream_error or protocol_error or provider_failure
+            or (f"Cursor exited {proc.returncode}. {stderr_diagnostic}" if proc.returncode not in (0, None) else None)
+        )
+        if not stopped and retry_wait is None and (
+            timeout_error
+            or stream_error
+            or protocol_error
+            or turn_is_error
+            or (
+                proc.returncode not in (0, None)
+                and not terminal_exit_forced
+            )
+        ):
+            record_runtime_failure(
+                BACKEND_CURSOR,
+                runtime_failure_reason
+                or "The latest Cursor run failed.",
+                executable=cursor_bin,
+                auth_failure=cursor_auth_failed,
+                runtime_error=cursor_auth_validation_error,
+            )
+        elif not stopped and retry_wait is None:
+            record_runtime_success(BACKEND_CURSOR)
+
+        successful_terminal = bool(
+            not stopped
+            and not timeout_error
+            and not stream_error
+            and not protocol_error
+            and not turn_is_error
+            and proc.returncode == 0
+            and not terminal_exit_forced
+            and terminal_event_seen
+            and provider_started
+        )
+        # A provider limit can end the first turn after tools have already run.
+        # Bind that ID only if Cursor saved a conversation for this exact workspace.
+        resumable_failure = False
+        if (resource_exhausted and provider_started and provider_id and not sess.get("cursor_session_id")
+                and not standalone_provider_context
+                # load-bearing: a retry that starts another conversation must not leave the chat bound to this one.
+                and (retry_wait is None or conversation_root != root_before)):
+            with suppress(OSError):
+                resumable_failure = await asyncio.to_thread(cursor_history.find_session, provider_id, cwd) is not None
+        if provider_id and (successful_terminal or resumable_failure):
+            persisted = await persist_run_provider_session(
+                session_id,
+                run_id,
+                BACKEND_CURSOR,
+                provider_id,
+                cursor_instruction_hash=instruction_hash if successful_terminal else None,
+                standalone_provider_context=standalone_provider_context,
+                emit_event=not provider_session_emitted,
+            )
+            provider_session_emitted = provider_session_emitted or persisted
+            if persisted and successful_terminal and memory_injected:
+                async with STORE._lock:
+                    current = STORE.sessions.get(session_id)
+                    if (
+                        current is not None
+                        and str(session_provider_id(current) or "") == provider_id
+                    ):
+                        current["memory_seed_used"] = True
+                        current["updated_at"] = now_iso()
+                        await STORE.save()
+                await append_event(session_id, "history_imported", {
+                    "run_id": run_id,
+                    "backend": BACKEND_CURSOR,
+                    "message": (
+                        "Applied bounded fork memory to this successful Cursor "
+                        "turn."
+                    ),
+                })
+        if retry_wait is None:
+            break
+        # The notice of the wait, as public commentary in the middle of the turn. The Claude API error notice is
+        # shown the same way; there the CLI wrote the text, here the server did.
+        await append_event(session_id, "reasoning_summary", {
+            "run_id": run_id,
+            "phase": "commentary",
+            "text": (
+                f"Cursor's model provider returned RESOURCE_EXHAUSTED.{usage_limit_hint} The turn is retried in "
+                f"{retry_wait:g} seconds, at {time.strftime('%H:%M:%S %z', time.localtime(time.time() + retry_wait))}. "
+                f"This is retry {retries + 1} of at most {len(CURSOR_PROVIDER_RETRY_WAITS_SECONDS)} in a row without progress."
+            ),
+            **run_event_metadata(run_id),
+        })
+        # The waiting turn has no process. This record lets Stop and Send now treat it as a running turn: both mark
+        # the run in STOPPED_RUNS, which ends the wait, and return once the record is cleared, before the turn's
+        # manifests and diff are published.
+        bound, stopped = await bind_active_turn(session_id, run_id, {
+            "run_id": run_id,
+            "backend": BACKEND_CURSOR,
+            "transport": "exec",
+            "cwd": cwd,
+            "started_at": time.time(),
+            "started_at_iso": now_iso(),
+            "provider_turn_ready": True,
+        })
+        if not bound:
+            return
+        # The wait also ends at shutdown, and when the absolute turn timeout is reached.
+        wait_until = min(time.monotonic() + retry_wait, started_monotonic + CURSOR_TURN_TIMEOUT_SECONDS - retried_seconds)
+        while not stopped and not SERVER_SHUTTING_DOWN and (wait_left := wait_until - time.monotonic()) > 0:
+            await asyncio.sleep(min(0.25, wait_left))
+            stopped = run_id in STOPPED_RUNS
+        await clear_active_process(session_id, expected_run_id=run_id)
+        retried_seconds += time.monotonic() - started_monotonic
+        if stopped or SERVER_SHUTTING_DOWN:
+            break
+        if retried_seconds >= CURSOR_TURN_TIMEOUT_SECONDS:
+            provider_failure = f"Cursor exceeded the absolute turn timeout of {CURSOR_TURN_TIMEOUT_SECONDS:g} seconds."
+            record_runtime_failure(BACKEND_CURSOR, provider_failure, executable=cursor_bin)
+            await append_event(session_id, "error", {"run_id": run_id, "backend": BACKEND_CURSOR, "message": provider_failure, "exit_code": proc.returncode, **run_event_metadata(run_id)})
+            break
+        # The CLI stores a turn's prompt before anything else of the turn, so a root that moved means the
+        # conversation holds what this start was given: the retry resumes it and is told to go on. With the root
+        # unmoved nothing was stored, and the retry is given the same again.
+        if conversation_root != root_before:
+            sess = {**sess, "cursor_session_id": provider_id}
+            runner_sess["cursor_session_id"] = provider_id
+            provider_prompt = CURSOR_PROVIDER_RETRY_PROMPT
+        if not standalone_provider_context:
+            rewind_record = {"cursor_root_blob_id": conversation_root}
+        retries, retry_waited, retried_text_parts = retries + 1, retry_waited + retry_wait, len(text_parts)
     await collect_manifest(session_id, run_id, manifest_path, seen_artifacts=seen_artifacts, final=True)
     await collect_recent_leftover_manifests(session_id, run_id, manifest_path, seen_artifacts=seen_artifacts)
     await publish_turn_code_diff(session_id, run_id, BACKEND_CURSOR, cwd, diff_baseline, changed_paths)
@@ -71347,7 +71486,9 @@ async def run_cursor_process(
         "exit_code": 0 if successful_terminal else proc.returncode,
         "result_text": (
             clean_assistant_text(
-                result_text or "\n\n".join(text_parts).strip()
+                # The CLI's result text is the text of its own start, joined without a separator.
+                "".join(text_parts[:retried_text_parts]) + result_text if result_text
+                else "\n\n".join(text_parts).strip()
             )[:CURSOR_ACCUMULATED_TEXT_MAX_CHARS].rstrip()
             if successful_terminal
             else ""
@@ -71355,7 +71496,7 @@ async def run_cursor_process(
         "stopped": stopped,
         "is_error": bool(not successful_terminal and not stopped),
         # The clients' latest-run banner reads the terminal event first.
-        **({"message": provider_failure} if resource_exhausted else {}),
+        **({"message": provider_failure} if resource_exhausted and not stopped else {}),
         **({
             "input_tokens": cursor_usage.get("input_tokens"),
             "cached_input_tokens": cursor_usage.get("cache_read_tokens"),
@@ -96579,6 +96720,9 @@ async def cursor_rewind_root(
             await asyncio.to_thread(cursor_history.prompt_roots, provider_id, cwd)
             if prompt and same_prompt_turns == 1 else []
         )
+        # What a retry gave the CLI after the model provider returned RESOURCE_EXHAUSTED is a stored prompt of
+        # the retried turn, not a turn of its own (a turn's own prompt carries the envelope matched below).
+        stored = [entry for entry in stored if entry[0] != CURSOR_PROVIDER_RETRY_PROMPT]
     except Exception as exc:
         logger.warning("session rewind: cursor store unusable session=%s error_type=%s", session_id, type(exc).__name__)
         raise HTTPException(status_code=409, detail={
