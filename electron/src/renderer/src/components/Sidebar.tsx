@@ -19,6 +19,7 @@ import { localSessionImportSupported } from '@shared/local-session-import'
 import { geminiBackendSupported, readyChatBackends, runtimeSelectionError } from '@shared/runtime-catalog'
 import { trackEvent } from '../lib/analytics'
 import { activeEmergencyAlert } from '../lib/emergency-alert'
+import { cleanIPCError } from '../lib/file-actions'
 import { backendLabel, shortRelativeTime, workingDirectoryTail } from '../lib/format'
 import { openSessionHistoryResult } from '../lib/session-history-search'
 import { TEAM_NETWORK_UI_ENABLED } from '../lib/team-network-ui'
@@ -555,14 +556,21 @@ function SessionContextMenu({ session, unread, folders }: { session: Session; un
         {!session.archived && <MenuItem icon={Columns2} label={t("ui.Sidebar.SessionContextMenu.open_in_split_view_fd78f06")} onSelect={() => void useAppStore.getState().openSessionInSplit(session.id)} />}
         <MenuItem icon={Pencil} label={t("ui.Sidebar.SessionContextMenu.rename_chat_a257dec")} onSelect={() => window.dispatchEvent(new CustomEvent('agentsdock:rename-chat', { detail: session }))} />
         <MenuItem icon={Copy} label={t('sessionIdCopy.menu')} onSelect={() => void (async () => {
+          // The ID and a failure of the read belong to the server the menu was opened on. Once the user has
+          // chosen another server there is nothing to copy and nothing to report.
+          const sameServer = () => {
+            const state = useAppStore.getState()
+            return !state.switchingProfileId && state.activeProfileId === shareProfileId && state.profileGeneration === shareGeneration
+          }
           try {
             // The chat list carries no provider IDs, and an ID the app stored earlier can predate a rewind
             // that changed it, so the current one is read from the server.
             const current = (await window.agentsDock.sessions.listWithProviderIds()).find(candidate => candidate.id === session.id)
+            if (!sameServer()) return
             const id = current && providerSessionId(current)
             if (id) await window.agentsDock.native.writeClipboard(id)
             else useAppStore.getState().setError(t('sessionIdCopy.none'))
-          } catch (error) { useAppStore.getState().setError(error instanceof Error ? error.message : String(error)) }
+          } catch (error) { if (sameServer()) useAppStore.getState().setError(cleanIPCError(error instanceof Error ? error.message : String(error))) }
         })()} />
         <MenuItem icon={Share2} label={t('chatShare.menu')} onSelect={() => window.dispatchEvent(new CustomEvent('agentsdock:share-chat', {
           detail: { session, scope: { profileId: shareProfileId, profileGeneration: shareGeneration, serverIdentity: shareIdentity } }
