@@ -181,6 +181,11 @@ most twenty exchanges. Providers differ in how they come to know it, and
 Canvas comment sends. The requirement, not the mechanism, is part of the
 interface:
 
+- A question can read the workspace's files and run commands that change
+  nothing, and gives their output in its answer: a side chat is for looking
+  things up beside the chat, so a carrier for a new backend provides both.
+  Claude's `/btw` has no tools and answers from the conversation alone; that
+  is its native limit, not the rule.
 - A question never changes the chat's provider conversation. It does not
   change files on its own account. Whether an explicit request for a change in
   the composer's Side chat is carried out is the backend's native rule: Codex
