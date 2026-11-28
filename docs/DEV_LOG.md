@@ -1,5 +1,12 @@
 # Public development log
 
+## 2026-11-28 — A Cursor chat no longer lists Anthropic, OpenAI and Grok models
+
+- The model list of a Cursor chat came from the Cursor CLI as it is, which includes Anthropic, OpenAI and xAI models beside Cursor's own and other vendors'. AgentsDock runs Anthropic and OpenAI models through its Claude and Codex backends, and the project's owner chose to leave Grok models out as well. The server now drops the three from the Cursor list: entries whose id begins with `claude-`, `gpt-` or `cursor-grok-`, which is how Cursor's list names them today. Every picker that shows Cursor models gets the shorter list from the server; the apps did not change.
+- The default entry and the free-plan lock are decided on the remaining models as before. The "server default" entry is not filtered: it follows the model selected in the Cursor CLI itself, whatever that is.
+- A chat that already has one of the removed models selected: the apps refuse to send from it until another model is chosen. Turns the server starts by itself in such a chat, such as a scheduled job or a delivered message, still run the saved model; the server does not check a Cursor model.
+- Checked with a unit test on a captured list shape, and against the list of a real account: 161 entries before, 35 after (the server default entry, Auto, and Composer, Gemini, Kimi, GLM and DeepSeek entries remain).
+
 ## 2026-11-28 — Edit an earlier turn in a Cursor chat
 
 - A Cursor chat now offers "Edit this turn" on the user's messages while the chat is idle, as Claude and Codex chats do. The message returns to the composer, and sending it removes that turn and every later one from the chat and from the Cursor conversation. This is a server change: the desktop and mobile apps show the control for every backend the server lists for rewind, so they need no update, only a server with this version.

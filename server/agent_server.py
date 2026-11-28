@@ -62567,7 +62567,10 @@ def discover_cursor_catalog(*, executable: str | None = None) -> dict[str, Any]:
             raise RuntimeError("no compatible Cursor executable is available")
         model_source = f"{Path(executable).name} --list-models"
         output = cursor_catalog_command([executable, "--list-models"])
-        parsed = parse_cursor_models_list(output)
+        # Left out of a Cursor chat's list: Anthropic and OpenAI models, which run through the Claude and Codex
+        # backends, and Grok models, by the project owner's choice. Cursor's list names them by these id prefixes.
+        parsed = [model for model in parse_cursor_models_list(output)
+                  if not model["id"].startswith(("claude-", "gpt-", "cursor-grok-"))]
     except Exception as exc:
         logger.warning(
             "cursor model discovery failed error_type=%s",
