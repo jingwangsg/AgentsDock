@@ -1701,6 +1701,11 @@ time.sleep(5)
             "The user wants a logo, so I will draft one.",
         )
         self.assertEqual(reasoning[1]["text"], "Second thought.")
+        # A thought is the model's reasoning, not a message to the user. Like
+        # a Claude thinking block it carries no public `commentary` phase, so
+        # the clients keep it inside the collapsed trace.
+        for event in reasoning:
+            self.assertNotIn("phase", event)
 
     async def test_buffered_reasoning_is_published_before_the_answer(
         self,
@@ -1736,6 +1741,7 @@ time.sleep(5)
             event for event in events if event["type"] == "reasoning_summary"
         )
         self.assertEqual(reasoning["text"], "Working it out.")
+        self.assertNotIn("phase", reasoning)
 
     async def test_accumulated_assistant_fallback_is_bounded(self) -> None:
         agent_server.CURSOR_ACCUMULATED_TEXT_MAX_CHARS = 10

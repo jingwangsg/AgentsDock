@@ -501,7 +501,8 @@ function TraceDisclosure({
     ?? state.sessions.find(session => session.id === sessionId)?.backend)
   const backend = sessionBackend ?? events.find(event => event.backend)?.backend
   const nativeCodex = backend === 'codex'
-  const nativeClaude = backend === 'claude'
+  // Cursor's own CLI shows no thought text while it works, so its chats get Claude's disclosure too.
+  const thinkingDisclosure = backend === 'claude' || backend === 'cursor'
   const reasoningDisplay = useReasoningDisplay()
   const activityLive = Boolean(runActivity) && runActivity?.active !== false && !runActivity?.stoppedAt
   // The preference reveals traces only during the active turn. Completed and
@@ -510,9 +511,9 @@ function TraceDisclosure({
   const [open, setOpen] = useState(() => activityLive)
   const [reasoningHistoryOpen, setReasoningHistoryOpen] = useState(false)
   useEffect(() => {
-    if ((nativeCodex || nativeClaude) && expandedReasoning) setOpen(true)
+    if ((nativeCodex || thinkingDisclosure) && expandedReasoning) setOpen(true)
     setReasoningHistoryOpen(false)
-  }, [expandedReasoning, nativeCodex, nativeClaude])
+  }, [expandedReasoning, nativeCodex, thinkingDisclosure])
   const previousActivity = useRef({
     key: runActivity?.key,
     live: activityLive
@@ -582,11 +583,11 @@ function TraceDisclosure({
       setExpandedDiffScope(diffScope)
       setOpen(true)
     }
-    else if ((nativeCodex || nativeClaude) && previous.live && !activityLive) {
+    else if ((nativeCodex || thinkingDisclosure) && previous.live && !activityLive) {
       setOpen(false)
       setReasoningHistoryOpen(false)
     }
-  }, [activityLive, diffScope, nativeCodex, nativeClaude, runActivityMode, runActivity?.key])
+  }, [activityLive, diffScope, nativeCodex, thinkingDisclosure, runActivityMode, runActivity?.key])
   const displayEvents = useMemo(() => {
     const promotedIds = new Set(promotedCommentaryIds)
     const merged = loadedEvents ? mergeTraceEvents(runActivity?.sourceEvents ?? events, loadedEvents) : events
@@ -729,7 +730,7 @@ function TraceDisclosure({
     ? <RunActivityHeader item={runActivity} events={events} open={open} detailsId={detailsId} onToggle={toggleDetails} subagents={runSubagents} />
     : null
   return (
-    <div className={`trace${runActivity ? ' run-activity' : ''}${nativeCodex ? ' codex-native-activity' : ''}${nativeClaude ? ' claude-native-activity' : ''} ${open ? 'open' : ''}`}>
+    <div className={`trace${runActivity ? ' run-activity' : ''}${nativeCodex ? ' codex-native-activity' : ''}${thinkingDisclosure ? ' thinking-disclosure-activity' : ''} ${open ? 'open' : ''}`}>
       {activityHeader ?? <button
         type="button"
         className="trace-summary"
@@ -753,7 +754,7 @@ function TraceDisclosure({
                   ? segment.kind === 'reasoning'
                     ? nativeCodex
                       ? (expandedReasoning || reasoningHistoryOpen) && <CodexReasoningEvent key={segment.key} entry={{ ...segment.entry, events: segment.entry.events.filter(event => expandedReasoning || !activityLive || (event !== latestReasoning && event.phase !== 'reasoning')) }} sessionId={sessionId} expanded activeKey={expandedReasoning ? activeReasoningKey : null} labeled />
-                      : <TraceReasoningEvent key={segment.key} entry={segment.entry} sessionId={sessionId} expanded={nativeClaude ? expandedReasoning : true} />
+                      : <TraceReasoningEvent key={segment.key} entry={segment.entry} sessionId={sessionId} expanded={thinkingDisclosure ? expandedReasoning : true} />
                     : <RunActivitySupportGroup key={segment.key} parts={segment.parts} sessionId={sessionId} profileScope={profileScope} nativeCodex={nativeCodex} activeToolKey={activeToolKey} runLive={activityLive} />
                   : null)
             : activityParts.map(part => <TracePartView key={tracePartKey(part)} part={part} sessionId={sessionId} profileScope={profileScope} nativeCodex={nativeCodex} showPlaintext />)}

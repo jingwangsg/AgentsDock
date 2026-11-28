@@ -135,7 +135,7 @@
 :root[data-skin="zed"] .run-activity .tool-event-body,
 :root[data-skin="zed"] .run-activity .trace-reasoning-body,
 :root[data-skin="zed"] .codex-native-activity .trace-reasoning-body.codex-reasoning-detail,
-:root[data-skin="zed"] .claude-native-activity .trace-reasoning > .trace-reasoning-body,
+:root[data-skin="zed"] .thinking-disclosure-activity .trace-reasoning > .trace-reasoning-body,
 :root[data-skin="zed"] .run-activity-support-details {
   margin: 2px 0 6px 10px; padding: 0 0 0 14px;
   color: var(--muted); background: transparent;
