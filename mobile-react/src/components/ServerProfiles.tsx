@@ -52,7 +52,7 @@ export type {
 
 type Awaitable<T> = T | Promise<T>
 type ActionResult = boolean | void
-type CreatedProfile = string | Pick<ServerProfileListItem, 'id'>
+type CreatedProfile = string | (Pick<ServerProfileListItem, 'id'> & { cliFailures?: string[] })
 const cliNames: Record<Backend, string> = { claude: 'Claude Code', codex: 'Codex', cursor: 'Cursor', gemini: 'Gemini CLI' }
 
 interface CommonServerProfileProps {
@@ -81,9 +81,9 @@ export interface ServerProfilesManagerProps extends CommonServerProfileProps {
     onProgress: (entry: RemoteDeployProgressEntry) => void,
   ) => Awaitable<CreatedProfile>
   onCancelDeploy?: () => Awaitable<void>
-  onRedeployRemote: (profileId: string, force: boolean, onProgress: (entry: RemoteDeployProgressEntry) => void) => Promise<{ redeployed: boolean; running: number | null }>
+  onRedeployRemote: (profileId: string, force: boolean, onProgress: (entry: RemoteDeployProgressEntry) => void) => Promise<{ redeployed: boolean; running: number | null; cliFailures?: string[] }>
   /** Edit with a new SSH host or install dir: the hub moves the remote there under the same id, as on the desktop. */
-  onMoveRemote: (profileId: string, input: { sshHost?: string; installDir?: string }, onProgress: (entry: RemoteDeployProgressEntry) => void) => Promise<void>
+  onMoveRemote: (profileId: string, input: { sshHost?: string; installDir?: string }, onProgress: (entry: RemoteDeployProgressEntry) => void) => Promise<string[] | void>
   /** The eye toggle: the hub keeps the flag, so every device leaves a hidden remote out of its server picker. */
   onSetRemoteHidden: (profileId: string, hidden: boolean) => Promise<void>
   /** Edit with a new name: the hub keeps it, so every device shows the same name for the remote. */
@@ -305,6 +305,8 @@ export function ServerProfilesManager({
       if (lease !== deployLease.current) return
       const profileId = typeof created === 'string' ? created : created?.id
       if (!profileId) throw new Error('The remote server was added without a profile identifier.')
+      // The form closes over the deploy's log, so the new row keeps what its CLI step could not do.
+      if (typeof created !== 'string' && created.cliFailures?.length) noteRow(profileId, { kind: 'redeploy', failed: true, text: `Deployed. ${created.cliFailures.join('; ')}` })
       const switched = await onSwitchProfile(profileId)
       if (switched === false) throw new Error('The remote server was saved, but it could not be activated.')
       setDeployDraft(null)
@@ -390,7 +392,11 @@ export function ServerProfilesManager({
         // 'deploy' makes Cancel stop the hub's job, as in the add form.
         setBusy('deploy')
         setDeployProgress([])
-        await onMoveRemote(editedProfile.id, { sshHost: hostChanged ? sshHost : undefined, installDir }, entry => setDeployProgress(current => [...current.slice(-49), entry]))
+        // The row's note is about the install this move leaves.
+        noteRow(editedProfile.id, null)
+        const cliFailures = await onMoveRemote(editedProfile.id, { sshHost: hostChanged ? sshHost : undefined, installDir }, entry => setDeployProgress(current => [...current.slice(-49), entry]))
+        // The form closes over the deploy's log, so the moved server's row keeps what its CLI step could not do.
+        if (cliFailures?.length) noteRow(editedProfile.id, { kind: 'redeploy', failed: true, text: `Deployed. ${cliFailures.join('; ')}` })
       }
       testLease.current += 1
       setTested(null)
@@ -460,9 +466,11 @@ export function ServerProfilesManager({
   const redeploy = async (profile: ServerProfileListItem, force: boolean) => {
     noteRow(profile.id, { kind: 'redeploy', working: true, text: 'Redeploying…' })
     try {
-      const { redeployed, running } = await onRedeployRemote(profile.id, force, entry => noteRow(profile.id, { kind: 'redeploy', working: true, text: entry.message }))
+      const { redeployed, running, cliFailures } = await onRedeployRemote(profile.id, force, entry => noteRow(profile.id, { kind: 'redeploy', working: true, text: entry.message }))
       if (redeployed) {
-        noteRow(profile.id, { kind: 'redeploy', text: 'Redeployed.' })
+        noteRow(profile.id, cliFailures?.length
+          ? { kind: 'redeploy', failed: true, text: `Redeployed. ${cliFailures.join('; ')}` }
+          : { kind: 'redeploy', text: 'Redeployed.' })
         return
       }
       noteRow(profile.id, null)
@@ -921,7 +929,8 @@ function ServerManagementRow({ profile, active, switching, disabled, removable, 
       {address ? <Text style={[styles.profileUrl, { color: colors.muted }]} numberOfLines={1}>{address}</Text> : null}
       {profile.secondServerUrl ? <Text style={[styles.profileUrl, { color: profile.secondAddressInUse ? colors.green : colors.muted }]} numberOfLines={1}>{`Second: ${profile.secondServerUrl}${profile.secondAddressInUse ? ' · in use' : ''}`}</Text> : null}
       {profile.lastConnectionError ? <Text style={[styles.profileDetail, { color: profile.connectionState === 'degraded' ? colors.orange : colors.red }]} numberOfLines={2}>{profile.lastConnectionError}</Text> : details ? <Text style={[styles.profileDetail, { color: colors.muted }]} numberOfLines={1}>{details}</Text> : null}
-      {work ? <Text accessibilityRole={work.failed ? 'alert' : undefined} style={[styles.profileDetail, { color: work.failed ? colors.red : colors.muted }]} numberOfLines={2}>{work.text}</Text> : null}
+      {/* A failure in full: each CLI's reason ends with what to do about it. */}
+      {work ? <Text accessibilityRole={work.failed ? 'alert' : undefined} style={[styles.profileDetail, { color: work.failed ? colors.red : colors.muted }]} numberOfLines={work.failed ? undefined : 2}>{work.text}</Text> : null}
       {/* Under the name, not beside Use/Edit/More: a 375 pt row has no room for two more buttons. */}
       <View style={styles.rowTools}>
         <RowTool icon={Download} label="Update CLI" accessibilityLabel={`Update a CLI on ${profile.name}`} busy={work?.kind === 'cli' && Boolean(work.working)} disabled={disabled || Boolean(work?.working)} onPress={onUpdateCli} />

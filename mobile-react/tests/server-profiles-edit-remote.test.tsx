@@ -167,3 +167,64 @@ test('a remote whose hub is not saved here keeps the address form', async () => 
   assert.equal(field(tree.root, 'server-profile-ssh-host').length, 0)
   await act(async () => { tree.unmount() })
 })
+
+test("a hub remote's row keeps what its deploy's CLI step could not do", async () => {
+  const failures = ['Codex: The codex installer exited with 22.', 'Cursor: The cursor installer exited with 22.']
+  let cliFailures: string[] | undefined = failures
+  const props: Partial<ServerProfilesManagerProps> = {
+    hubAvailable: true,
+    onRedeployRemote: async () => ({ redeployed: true, running: 0, cliFailures }),
+    onDeployRemote: async () => ({ id: 'r2', cliFailures: failures.slice(1) }),
+    // A cancel that arrived during the step: the server is deployed at the new place.
+    onMoveRemote: async () => [failures[0], 'CLI update cancelled at Cursor.'],
+  }
+  const tree = await render(props)
+  const root = tree.root
+  const notes = () => root.findAll(node => (node.type as unknown) === 'Text' && node.props.accessibilityRole === 'alert')
+  const alerts = () => notes().map(node => node.props.children)
+
+  await press(root, 'Redeploy gpu box')
+  assert.deepEqual(alerts(), [`Redeployed. ${failures.join('; ')}`])
+  // In full: each reason ends with what to do about it.
+  assert.equal(notes()[0].props.numberOfLines, undefined)
+
+  // Edit with a new install directory deploys there; its form closes over the deploy's log.
+  await press(root, 'Edit gpu box')
+  await type(root, 'server-profile-install-dir', '/data/agentsdock')
+  await press(root, 'Save')
+  assert.deepEqual(alerts(), [`Deployed. ${failures[0]}; CLI update cancelled at Cursor.`])
+  // Every CLI updated, or a hub without the CLI step.
+  cliFailures = undefined
+  await press(root, 'Redeploy gpu box')
+  assert.deepEqual(alerts(), [])
+  assert.ok(texts(root).includes('Redeployed.'))
+
+  // The add form closes on success; the new server's row then says it.
+  await press(root, 'Add server')
+  await type(root, 'remote-deploy-ssh-host', 'new-host')
+  await press(root, 'Deploy & switch')
+  assert.equal(root.findAll(node => node.props.testID === 'remote-deploy-editor').length, 0)
+  await act(async () => { tree.update(manager({ ...props, profiles: [hub, remote, profile('r2', 'http://hub.test:7850/api/remote/r2')] })) })
+  assert.deepEqual(alerts(), [`Deployed. ${failures[1]}`])
+  await act(async () => { tree.unmount() })
+})
+
+test('a move whose deploy updates every CLI leaves no earlier failed note on the row', async () => {
+  const failure = 'Cursor: The cursor installer exited with 22.'
+  const tree = await render({
+    onRedeployRemote: async () => ({ redeployed: true, running: 0, cliFailures: [failure] }),
+    onMoveRemote: async () => [],
+  })
+  const root = tree.root
+  const alerts = () => root.findAll(node => (node.type as unknown) === 'Text' && node.props.accessibilityRole === 'alert').map(node => node.props.children)
+
+  await press(root, 'Redeploy gpu box')
+  assert.deepEqual(alerts(), [`Redeployed. ${failure}`])
+  // That note is about the install the move leaves.
+  await press(root, 'Edit gpu box')
+  await type(root, 'server-profile-install-dir', '/data/agentsdock')
+  await press(root, 'Save')
+  assert.equal(root.findAll(node => node.props.testID === 'server-profile-install-dir').length, 0)
+  assert.deepEqual(alerts(), [])
+  await act(async () => { tree.unmount() })
+})

@@ -93,6 +93,11 @@ DEPLOY_HEALTH_WAIT_SECONDS = 120.0
 # HTTP timeout for a remote's /api/admin/runtimes/{backend}/update: the remote itself stops the CLI
 # after 10 minutes (RUNTIME_CLI_UPDATE_TIMEOUT_SECONDS), so its answer arrives before this fires.
 CLI_UPDATE_REQUEST_TIMEOUT = 11 * 60.0
+# The same wait in a deploy's CLI step: a deploy holds the hub's one job slot, and a Redeploy has no cancel.
+# Measured 2026-11-28: an install took 7-38 s, the update of a current CLI 1-5 s.
+DEPLOY_CLI_UPDATE_TIMEOUT = 3 * 60.0
+# A server's answer (409) to a CLI update while it runs another: it runs one at a time.
+CLI_UPDATE_RUNNING = "A CLI update is already running on this server."
 CLI_PRODUCT_NAMES = {"claude": "Claude Code", "codex": "Codex", "cursor": "Cursor"}
 SSH_FORWARD_PROBE_TIMEOUT = 30.0
 SSH_FORWARD_PROBE_FAILURES = 3
@@ -1479,6 +1484,9 @@ class DeployJob:
     # Clients read new log entries by count, so a log that reaches its cap stops showing progress;
     # update-all collects every remote's lines and gets a larger one.
     log_limit: int = 500
+    # What the CLI step could not do on a server that is up, as sentences for the user. It does not fail a
+    # deploy: clients show it beside "deployed", and update-all adds it to its error.
+    cli_failures: list[str] = field(default_factory=list)
 
     def progress(self, phase: str, message: str) -> None:
         self.phase = phase
@@ -1494,12 +1502,13 @@ class DeployJob:
             "log": list(self.log),
             "server": public_view(self.server, tunnel) if self.server else None,
             "restarting": self.restarting,
+            "cli_failures": list(self.cli_failures),
         }
 
 
 @dataclass(kw_only=True)
 class ChildDeployJob(DeployJob):
-    """One remote's job inside a parent job (update-all): its progress also lands in the parent's log, labelled."""
+    """One server's part of a parent job (update-all): its progress also lands in the parent's log, labelled."""
 
     parent: DeployJob
     label: str
@@ -2050,12 +2059,16 @@ class RemoteServerManager:
         job.task = asyncio.create_task(self._update_all(job, hub_update_cli, hub_restart), name=f"remote-update-all:{job.job_id}")
         return job
 
-    async def update_cli(self, server: RemoteServer, backend: str) -> tuple[str, bool]:
+    async def update_cli(self, server: RemoteServer, backend: str, timeout: float = CLI_UPDATE_REQUEST_TIMEOUT) -> tuple[str, bool]:
         """Run the CLI update on a remote through its tunnel (the remote installs a missing CLI); returns the version it reports ("" if none) and whether it installed."""
-        response = await self.http.post(
-            f"http://127.0.0.1:{server.local_port}/api/admin/runtimes/{backend}/update",
-            headers={"X-AgentsDock-Token": server.token}, timeout=CLI_UPDATE_REQUEST_TIMEOUT,
-        )
+        try:
+            response = await self.http.post(
+                f"http://127.0.0.1:{server.local_port}/api/admin/runtimes/{backend}/update",
+                headers={"X-AgentsDock-Token": server.token}, timeout=timeout,
+            )
+        except httpx.ReadTimeout:
+            # httpx's own message is empty. The remote does not stop with the request: only its own limit ends the CLI.
+            raise httpx.ReadTimeout(f"no answer within {timeout / 60:g} minutes; the update still runs on the server") from None
         if response.status_code != 200:
             detail = ""
             with suppress(ValueError):
@@ -2065,33 +2078,45 @@ class RemoteServerManager:
         # load-bearing: .get - a not-yet-redeployed remote runs a server that sends no "action".
         return str((result.get("diagnostic") or {}).get("version") or ""), result.get("action") == "install"
 
+    async def _update_clis(self, job: DeployJob, run: Callable[[str], Awaitable[tuple[str, bool]]], *, gemini: bool) -> None:
+        """Update each agent CLI of one server through `run`, which installs a missing one: a log line per CLI and per result.
+
+        A CLI that fails goes into `job.cli_failures` and the next one still runs, unless it would fail the same way."""
+        products = {**CLI_PRODUCT_NAMES, "gemini": "Gemini CLI"} if gemini else CLI_PRODUCT_NAMES
+        for backend, product in products.items():
+            # The hub learns that a CLI was missing only from the server's answer, so this line says "Updating"
+            # and the result line says "Installed".
+            job.progress("cli", f"Updating {product}…")
+            try:
+                version, installed = await run(backend)
+                if installed:
+                    job.progress("cli", f"Installed {product} {version}".rstrip())
+                else:
+                    job.progress("cli", f"{product} {version or 'updated'}")
+            except asyncio.CancelledError:
+                # For a deploy, which stays deployed and reports this; update-all ends as cancelled.
+                job.cli_failures.append(f"CLI update cancelled at {product}.")
+                raise
+            except Exception as exc:  # noqa: BLE001 - the job view carries the message
+                detail = str(getattr(exc, "detail", None) or exc or exc.__class__.__name__)
+                # The next CLI would fail the same way: the server cannot be reached, or it still runs an update.
+                stopped = isinstance(exc, httpx.TransportError) or detail == CLI_UPDATE_RUNNING
+                failure = f"CLI update stopped at {product}: {detail}" if stopped else f"{product}: {detail}"
+                job.cli_failures.append(failure)
+                job.progress("cli", failure)
+                if stopped:
+                    return
+
     async def _update_all(self, job: DeployJob, hub_update_cli: Callable[[str], Awaitable[tuple[str, bool]]],
                           hub_restart: Callable[[], Awaitable[str | None]]) -> None:
         failures: list[str] = []
-
-        async def update_clis(label: str, run: Callable[[str], Awaitable[tuple[str, bool]]], *, gemini: bool) -> None:
-            products = {**CLI_PRODUCT_NAMES, "gemini": "Gemini CLI"} if gemini else CLI_PRODUCT_NAMES
-            for backend, product in products.items():
-                # The hub learns that a CLI was missing only from the server's answer, so this line says "updating"
-                # and the result line says "installed".
-                job.progress("cli", f"{label}: updating {product}…")
-                try:
-                    version, installed = await run(backend)
-                    if installed:
-                        job.progress("cli", f"{label}: installed {product} {version}".rstrip())
-                    else:
-                        job.progress("cli", f"{label}: {product} {version or 'updated'}")
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:  # noqa: BLE001 - the job view carries the message
-                    detail = str(getattr(exc, "detail", None) or exc or exc.__class__.__name__)
-                    failures.append(f"{label}: {product}: {detail}")
-                    job.progress("cli", f"{label}: {product}: {detail}")
-
         try:
             for server in list(self.servers.values()):
                 child = ChildDeployJob(job_id=f"{job.job_id}:{server.id}", parent=job, label=server.name)
-                await self._deploy(child, None, server.id)
+                # cli_step=False: this job runs each server's CLI step itself, below. It asks a server whose deploy
+                # failed too (it may still run), waits CLI_UPDATE_REQUEST_TIMEOUT for a CLI, and a cancel during the
+                # step ends this job as cancelled, where a deploy of its own stays deployed.
+                await self._deploy(child, None, server.id, cli_step=False)
                 # _deploy swallows its own cancellation; a cancelled update-all must not go on to the next server.
                 task = asyncio.current_task()
                 if task is not None and task.cancelling():
@@ -2102,9 +2127,12 @@ class RemoteServerManager:
                 server = self.servers.get(server.id, server)
                 health = await self.probe_health(server) or {}
                 gemini = (health.get("capabilities") or {}).get("gemini_backend") or {}
-                await update_clis(server.name, lambda backend, server=server: self.update_cli(server, backend),
-                                  gemini=gemini.get("available") is True and gemini.get("version") == 1)
-            await update_clis("hub", hub_update_cli, gemini=True)
+                await self._update_clis(child, lambda backend, server=server: self.update_cli(server, backend),
+                                        gemini=gemini.get("available") is True and gemini.get("version") == 1)
+                failures += [f"{server.name}: {failure}" for failure in child.cli_failures]
+            hub = ChildDeployJob(job_id=f"{job.job_id}:hub", parent=job, label="hub")
+            await self._update_clis(hub, hub_update_cli, gemini=True)
+            failures += [f"hub: {failure}" for failure in hub.cli_failures]
             job.progress("restart", "Restarting the hub…")
             restart_error = await hub_restart()
             if restart_error:
@@ -2114,6 +2142,8 @@ class RemoteServerManager:
                 job.restarting = True
             if failures:
                 job.error = "; ".join(failures)
+                # The job is in memory, and the hub restart that follows ends it: the log keeps what failed.
+                logger.warning("update-all %s ended with failures: %s", job.job_id, job.error)
         except asyncio.CancelledError:
             job.error = "Update cancelled."
             job.progress(job.phase, job.error)
@@ -2131,7 +2161,8 @@ class RemoteServerManager:
         job.task.cancel()
         return True
 
-    async def _deploy(self, job: DeployJob, request: RemoteDeployRequest | None, redeploy_id: str | None) -> None:
+    async def _deploy(self, job: DeployJob, request: RemoteDeployRequest | None, redeploy_id: str | None, *,
+                      cli_step: bool = True) -> None:
         ssh_host = ""  # the except reads it; the lookups below can raise first, and "" names no Sky host
         try:
             existing = self.servers[redeploy_id] if redeploy_id else None
@@ -2271,7 +2302,16 @@ class RemoteServerManager:
             job.progress("health", "Waiting for the server behind the tunnel…")
             health = await self._wait_health(server)
             job.server = server
-            job.progress("complete", f"AgentsServer {health.get('version') or ''} is reachable through the hub.".replace("  ", " "))
+            if cli_step:
+                # The server is up: from here a CLI that fails, or a cancel, leaves the deploy successful. The last
+                # line and the job's view state it, as a client keeps only the latest line.
+                with suppress(asyncio.CancelledError):
+                    await self._update_clis(job, lambda backend: self.update_cli(server, backend, DEPLOY_CLI_UPDATE_TIMEOUT), gemini=False)
+            reachable = f"AgentsServer {health.get('version') or ''} is reachable through the hub.".replace("  ", " ")
+            job.progress("complete", f"{reachable} {'; '.join(job.cli_failures)}".rstrip())
+            if job.cli_failures:
+                # The job is in memory and the app's row note lasts while its list is open: the log keeps them.
+                logger.warning("remote deployment %s left CLI failures on %s (%s): %s", job.job_id, server.id, server.ssh_host, "; ".join(job.cli_failures))
         except asyncio.CancelledError:
             job.error = "Deployment cancelled."
             job.progress(job.phase, job.error)

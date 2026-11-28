@@ -88,8 +88,8 @@ log "Preparing the Python runtime (uv sync)"
 ( cd server && uv sync --frozen --quiet --python '>=3.11,<3.15' )
 
 # Agent CLIs. Claude Code has a dependency-free installer; install it under the
-# server's HOME so the binary lands on a persistent path. Codex is left to the
-# user (its login lives in $HOME_DIR/.codex and the CLI is usually already there).
+# server's HOME so the binary lands on a persistent path. The hub ends the deploy with
+# the started server's CLI update, which installs Codex and Cursor if missing.
 if ! PATH="$HOME_DIR/.local/bin:$PATH" command -v claude >/dev/null 2>&1; then
   log "Installing Claude Code into $HOME_DIR/.local/bin"
   if ! HOME="$HOME_DIR" bash -c 'curl -fsSL https://claude.ai/install.sh | bash' >/dev/null 2>&1; then

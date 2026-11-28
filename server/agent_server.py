@@ -87139,7 +87139,7 @@ def runtime_cli_installer_owns(backend: str, env: dict[str, str], executable: st
 
 @app.post("/api/admin/runtimes/{backend}/update")
 async def update_runtime_cli(backend: Literal["claude", "codex", "cursor", "gemini"], request: Request):
-    """Update CLI on this server, installing it when it is missing or `update` cannot manage it: the per-row button, and the update-all job's remote step."""
+    """Update CLI on this server, installing it when it is missing or `update` cannot manage it: the per-row button, and the hub's CLI step (a deploy, or update-all after a failed redeploy)."""
 
     require_native_admin_control(request)
     result = await run_runtime_cli_update(backend)
@@ -87180,7 +87180,7 @@ async def run_runtime_cli_update(backend: str) -> dict[str, Any]:
     the CLI is missing or is an install that `update` cannot manage."""
 
     if RUNTIME_CLI_UPDATE_LOCK.locked():
-        raise HTTPException(409, "A CLI update is already running on this server.")
+        raise HTTPException(409, remote_servers.CLI_UPDATE_RUNNING)
     async with RUNTIME_CLI_UPDATE_LOCK:
         env = codex_app_server_env() if backend == BACKEND_CODEX else runner_env()
         if backend == BACKEND_CURSOR:

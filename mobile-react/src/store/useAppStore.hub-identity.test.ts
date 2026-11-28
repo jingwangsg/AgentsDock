@@ -11,6 +11,8 @@ const identities: Record<string, string> = { hub: 'server-hub', r1: 'remote-old'
 let catalogAvailable = true
 const running: Record<string, string[]> = {}
 const redeployRequests: string[] = []
+// What the hub's deploy job reports of its CLI step; a hub without that step sends no such field.
+let redeployCliFailures: string[] | undefined
 const updateAllRequests: boolean[] = []
 const instances: Record<string, string> = { hub: 'hub-instance-1', r1: 'r1-instance-1', direct: 'direct-instance-1' }
 // Health answers the hub's old instance id this many more times: the stopping process still answers.
@@ -29,7 +31,7 @@ let listings = 0
 // the move's job ends: with `hold` it runs until cancelled.
 const sshHosts: Record<string, string> = {}
 const moveRequests: unknown[] = []
-let moveJob: { error: string | null; hold: boolean } = { error: null, hold: false }
+let moveJob: { error: string | null; hold: boolean; cliFailures?: string[] } = { error: null, hold: false }
 let moveJobPolls = 0
 const cancelRequests: string[] = []
 // The remotes the hub lists as hidden, and the bodies of the hide/show requests it received.
@@ -108,7 +110,7 @@ function mockServer(route: (path: string) => { key: string; path: string } | nul
     if (target.path === '/api/admin/remote-servers/deploy/job-move') {
       moveJobPolls += 1
       const done = !moveJob.hold
-      return reply(200, { job_id: 'job-move', phase: done ? 'complete' : 'upload', done, error: done ? moveJob.error : null, server: null, log: [{ phase: 'upload', message: 'Uploading to the new host' }] })
+      return reply(200, { job_id: 'job-move', phase: done ? 'complete' : 'upload', done, error: done ? moveJob.error : null, server: null, cli_failures: moveJob.cliFailures, log: [{ phase: 'upload', message: 'Uploading to the new host' }] })
     }
     if (request.method === 'POST' && target.path === '/api/admin/remote-servers/deploy/job-move/cancel') {
       cancelRequests.push('job-move')
@@ -138,7 +140,7 @@ function mockServer(route: (path: string) => { key: string; path: string } | nul
       return reply(200, { job_id: 'job-all', phase: 'restart', done: true, error: null, server: null, restarting: true, log: [{ phase: 'redeploy', message: 'r1: Uploading' }, { phase: 'restart', message: 'Restarting the hub…' }] })
     }
     if (target.path === '/api/admin/remote-servers/deploy/job-1') {
-      return reply(200, { job_id: 'job-1', phase: 'complete', done: true, error: null, server: null, log: [{ phase: 'upload', message: 'Uploading' }, { phase: 'complete', message: 'Reachable' }] })
+      return reply(200, { job_id: 'job-1', phase: 'complete', done: true, error: null, server: null, cli_failures: redeployCliFailures, log: [{ phase: 'upload', message: 'Uploading' }, { phase: 'complete', message: 'Reachable' }] })
     }
     if (request.method === 'POST' && target.path === '/api/admin/runtimes/codex/update') {
       return reply(200, { output: 'npm install\ncodex-cli 9.9.9', diagnostic: { available: true, version: '9.9.9' } })
@@ -279,9 +281,12 @@ try {
   healthDown.delete('r1')
   assert.deepEqual(redeployRequests, [])
   const progress: string[] = []
-  assert.deepEqual(await useAppStore.getState().redeployHubRemote('remote', true, entry => progress.push(entry.message)), { redeployed: true, running: 0 })
+  assert.deepEqual(await useAppStore.getState().redeployHubRemote('remote', true, entry => progress.push(entry.message)), { redeployed: true, running: 0, cliFailures: undefined })
   assert.deepEqual(redeployRequests, ['r1'])
   assert.deepEqual(progress, ['Uploading', 'Reachable'])
+  // The redeploy succeeded: the server is up. What its CLI step could not do comes back with it.
+  redeployCliFailures = ['Cursor: The cursor installer exited with 22.']
+  assert.deepEqual(await useAppStore.getState().redeployHubRemote('remote', true, () => undefined), { redeployed: true, running: 0, cliFailures: redeployCliFailures })
   await assert.rejects(useAppStore.getState().redeployHubRemote('direct', true, () => undefined), /Only servers the hub deployed/)
   // Update & redeploy all is one hub job. Without force it reports the servers with running chats, the hub by
   // its own name; with force it follows the job and resolves only once the hub answers as a new instance.
@@ -358,6 +363,9 @@ try {
   await cancelled
   assert.deepEqual(cancelRequests, ['job-move'])
   assert.deepEqual(moveRequests.at(-1), { install_dir: '/data/agentsdock' })
+  // The move's deploy succeeded: what its CLI step could not do comes back, a cancel during the step included.
+  moveJob = { error: null, hold: false, cliFailures: ['Cursor: The cursor installer exited with 22.', 'CLI update cancelled at Codex.'] }
+  assert.deepEqual(await useAppStore.getState().moveHubRemote('remote', { installDir: '/data/agentsdock-2' }, () => undefined), moveJob.cliFailures)
   moveJob = { error: null, hold: false }
   await assert.rejects(useAppStore.getState().moveHubRemote('direct', { sshHost: 'elsewhere' }, () => undefined), /Only servers the hub manages/)
   // Hidden on another device: the hub's ids stay the same and only its hidden ids change, so the inactive hub's

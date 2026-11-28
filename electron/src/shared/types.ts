@@ -2310,6 +2310,8 @@ export interface RemoteServerDeployJob {
   error: string | null
   log: RemoteServerDeployLogEntry[]
   server: RemoteServer | null
+  /** What a deploy's CLI step could not do although the server is deployed, one sentence each. Absent from a hub without that step. */
+  cli_failures?: string[]
 }
 
 export interface RemoteServersCapability {

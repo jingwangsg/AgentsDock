@@ -5,7 +5,7 @@ import type { AgentsDockAPI } from '@shared/ipc'
 import type { PublicServerProfile, ServerUpdateAllProgress } from '@shared/types'
 import { useAppStore } from '../store/app-store'
 import { trackEvent } from '../lib/analytics'
-import { ServerManagement, serverOrderAfterDrag } from './ServerManagement'
+import { ServerManagement, serverOrderAfterDrag, useMovedCliFailures } from './ServerManagement'
 
 vi.mock('../lib/analytics', () => ({ trackEvent: vi.fn() }))
 
@@ -96,14 +96,15 @@ describe('ServerManagement', () => {
 
   beforeEach(() => {
     vi.mocked(trackEvent).mockClear()
+    useMovedCliFailures.setState({}, true)
     list.mockReset().mockResolvedValue([alpha, beta])
     update.mockReset().mockResolvedValue(alpha)
     remove.mockReset().mockResolvedValue(true)
     reorder.mockReset().mockResolvedValue([beta, alpha])
-    remoteDeploy.mockReset().mockResolvedValue(gb300)
+    remoteDeploy.mockReset().mockResolvedValue({ profile: gb300 })
     remoteCancel.mockReset().mockResolvedValue(undefined)
     remoteRemove.mockReset().mockResolvedValue(undefined)
-    remoteMove.mockReset().mockResolvedValue(undefined)
+    remoteMove.mockReset().mockResolvedValue([])
     remoteRedeploy.mockReset()
     remoteUpdateAll.mockReset()
     remoteSetHidden.mockReset().mockResolvedValue(undefined)
@@ -276,6 +277,26 @@ describe('ServerManagement', () => {
 
     await waitFor(() => expect(remoteRedeploy).toHaveBeenLastCalledWith('osmo', true))
     expect(await screen.findByText('Redeployed.')).toBeInTheDocument()
+  })
+
+  it("keeps what a deploy's CLI step could not do on the server's row", async () => {
+    const failures = ['Codex: The codex installer exited with 22.', 'Cursor: The cursor installer exited with 22.']
+    remoteRedeploy.mockResolvedValue({ redeployed: true, running: 0, cliFailures: failures })
+    remoteDeploy.mockResolvedValue({ profile: gb300, cliFailures: failures.slice(1) })
+    list.mockResolvedValue([hub, osmo, gb300])
+    useAppStore.setState({ profiles: [hub, osmo], activeProfileId: hub.id })
+    const user = userEvent.setup()
+    render(<ServerManagement addRequest={1} />)
+
+    await user.click(screen.getByRole('button', { name: 'Redeploy OSMO' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(`Redeployed. ${failures.join('; ')}`)
+
+    // Add server: the form stays open with it instead of switching, which would remount this list. The new server is listed.
+    await user.type(screen.getByLabelText('SSH host'), 'nv_gb300')
+    await user.click(screen.getByRole('button', { name: 'Add & switch' }))
+    await waitFor(() => expect(screen.getAllByRole('alert').map(note => note.textContent)).toContain(`Deployed, and not switched to yet. ${failures[1]}`))
+    expect(switchServer).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Use GB300' })).toBeInTheDocument()
   })
 
   it('restarts the local server from its row, asking first when its chats are running', async () => {
@@ -664,6 +685,53 @@ describe('ServerManagement', () => {
     await waitFor(() => expect(remoteMove).toHaveBeenCalledExactlyOnceWith('gb300', { sshHost: 'oci@new-cluster', installDir: undefined }))
     await waitFor(() => expect(screen.queryByLabelText('SSH host')).toBeNull())
     expect(update).not.toHaveBeenCalled()
+  })
+
+  it("keeps what the CLI step of a move's deploy could not do on the moved server's row", async () => {
+    // A failed CLI, and a cancel that arrived during the step: the server is deployed at the new place either way.
+    const failures = ['Cursor: The cursor installer exited with 22.', 'CLI update cancelled at Codex.']
+    remoteMove.mockResolvedValue(failures)
+    list.mockResolvedValue([hub, { ...gb300, sshHost: 'oci@new-cluster' }])
+    useAppStore.setState({ profiles: [hub, gb300], activeProfileId: hub.id })
+    const user = userEvent.setup()
+    render(<ServerManagement />)
+
+    await user.click(screen.getByRole('button', { name: 'Edit GB300' }))
+    await user.clear(screen.getByLabelText('SSH host'))
+    await user.type(screen.getByLabelText('SSH host'), 'oci@new-cluster')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    // The form closes over the deploy's log.
+    await waitFor(() => expect(screen.queryByLabelText('SSH host')).toBeNull())
+    expect(screen.getByRole('alert')).toHaveTextContent(`Deployed. ${failures.join('; ')}`)
+    // A move of the server in use: the app adopts the new install's identity and remounts this list, after the deploy ends...
+    cleanup()
+    render(<ServerManagement />)
+    expect(await screen.findByRole('alert')).toHaveTextContent(`Deployed. ${failures.join('; ')}`)
+
+    // ...or before it does, and the list may be open again by then. The note of the earlier move goes when this one starts.
+    let finishMove: (value: string[]) => void = () => {}
+    remoteMove.mockImplementation(() => new Promise<string[]>(resolve => { finishMove = resolve }))
+    await user.click(screen.getByRole('button', { name: 'Edit GB300' }))
+    await user.clear(screen.getByLabelText('SSH host'))
+    await user.type(screen.getByLabelText('SSH host'), 'oci@other-cluster')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(remoteMove).toHaveBeenCalledTimes(2))
+    cleanup()
+    render(<ServerManagement />)
+    await screen.findByRole('button', { name: 'Redeploy GB300' })
+    expect(screen.queryByRole('alert')).toBeNull()
+    await act(async () => { finishMove(['Codex: The codex installer exited with 1.']) })
+    expect(await screen.findByRole('alert')).toHaveTextContent('Deployed. Codex: The codex installer exited with 1.')
+
+    // The row's next note replaces it, for a later list too.
+    remoteRedeploy.mockResolvedValue({ redeployed: true, running: 0 })
+    await user.click(screen.getByRole('button', { name: 'Redeploy GB300' }))
+    expect(await screen.findByText('Redeployed.')).toBeInTheDocument()
+    cleanup()
+    render(<ServerManagement />)
+    await screen.findByRole('button', { name: 'Redeploy GB300' })
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 
   it('renames a hub remote through the hub instead of this Mac\'s profile, and keeps the editor open when the hub fails', async () => {

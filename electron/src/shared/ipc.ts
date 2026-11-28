@@ -385,15 +385,17 @@ export interface AgentsDockAPI {
     openLog(): Promise<boolean>
   }
   remoteServers: {
-    deploy(input: RemoteServerDeployInput): Promise<PublicServerProfile>
+    /** `cliFailures`: what the deploy's CLI step could not do on the server it added. */
+    deploy(input: RemoteServerDeployInput): Promise<{ profile: PublicServerProfile; cliFailures?: string[] }>
     cancel(): Promise<void>
     remove(profileId: string): Promise<void>
     /** The hub records it; the server switcher and pickers on every client leave a hidden remote out. */
     setHidden(profileId: string, hidden: boolean): Promise<void>
     /** The hub keeps a remote's name, so every client shows the one saved here. */
     rename(profileId: string, name: string): Promise<void>
-    move(profileId: string, input: RemoteServerMoveInput): Promise<void>
-    redeploy(profileId: string, force: boolean): Promise<{ redeployed: boolean; running: number | null }>
+    /** Resolves to what the CLI step of the move's deploy could not do; empty when nothing moved. */
+    move(profileId: string, input: RemoteServerMoveInput): Promise<string[]>
+    redeploy(profileId: string, force: boolean): Promise<{ redeployed: boolean; running: number | null; cliFailures?: string[] }>
     /** Restarts the hub, redeploys its remotes and updates both CLIs everywhere; without `force` it stops at the servers with running chats and returns them. */
     updateAll(force: boolean): Promise<ServerRunningChats[]>
   }
