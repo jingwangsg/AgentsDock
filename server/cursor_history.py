@@ -197,7 +197,7 @@ def session_directory(provider_id: str, cwd: str) -> tuple[Path, dict]:
     root = config_root(cwd)
     source = next((root / "chats").glob(f"*/{provider_id}"), None) if IDENTIFIER.fullmatch(provider_id) else None
     sidecar = read_json(source / "meta.json", root) if source is not None else None
-    if not sidecar or not isinstance(sidecar.get("cwd"), str):
+    if not sidecar or not isinstance(sidecar.get("cwd"), str) or not safe_path(source / "store.db", root):
         raise FileNotFoundError("Cursor session store")
     return source, sidecar
 
@@ -237,15 +237,28 @@ def copy_session(provider_id: str, copy_id: str, cwd: str, root_blob_id: str | N
 
 
 def open_store(provider_id: str, cwd: str) -> sqlite3.Connection:
-    """A session's store, read-only."""
+    """A session's store, read-only, opened as ``store_metadata`` opens one, without its step limit:
+    ``prompt_roots`` reads every root of the store."""
     source, _sidecar = session_directory(provider_id, cwd)
-    return sqlite3.connect((source / "store.db").resolve().as_uri() + "?mode=ro", uri=True)
+    store = sqlite3.connect((source / "store.db").resolve().as_uri() + "?mode=ro", uri=True, timeout=0.05)
+    store.execute("PRAGMA query_only = ON")
+    store.execute("PRAGMA trusted_schema = OFF")
+    return store
+
+
+def stored_root_blob_id(store: sqlite3.Connection) -> str:
+    """The id of the root blob the store's metadata names."""
+    root_blob_id = json.loads(bytes.fromhex(store.execute("SELECT value FROM meta WHERE key = '0'").fetchone()[0]))["latestRootBlobId"]
+    # load-bearing: a run records what this returns, and "" in that record means the chat had no conversation.
+    if not isinstance(root_blob_id, str) or not root_blob_id:
+        raise ValueError("Cursor conversation root")
+    return root_blob_id
 
 
 def latest_root_blob_id(provider_id: str, cwd: str) -> str:
     """The id of the root blob a resume of the session continues from."""
     with closing(open_store(provider_id, cwd)) as store:
-        return json.loads(bytes.fromhex(store.execute("SELECT value FROM meta WHERE key = '0'").fetchone()[0]))["latestRootBlobId"]
+        return stored_root_blob_id(store)
 
 
 def has_blob(provider_id: str, cwd: str, blob_id: str) -> bool:
@@ -262,7 +275,7 @@ def prompt_roots(provider_id: str, cwd: str) -> list[tuple[str, str | None]]:
     one. The prompt a conversation begins with has "": no turn is before it.
     """
     with closing(open_store(provider_id, cwd)) as store:
-        latest = store.execute("SELECT data FROM blobs WHERE id = ?", (latest_root_blob_id(provider_id, cwd),)).fetchone()[0]
+        latest = store.execute("SELECT data FROM blobs WHERE id = ?", (stored_root_blob_id(store),)).fetchone()[0]
         before: dict[int, list[str]] = {}
         for blob_id, data in store.execute("SELECT id, data FROM blobs WHERE substr(data, 1, 2) = x'0a20'"):
             size = ROOT_ENTRIES.match(data).end()

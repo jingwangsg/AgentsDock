@@ -165,6 +165,25 @@ class CursorDiscoveryTests(CursorFixture, unittest.TestCase):
                 read("native-cursor", str(self.cwd))
         with self.assertRaises(FileNotFoundError):
             cursor_history.has_blob("native-cursor", str(self.cwd), roots[4])
+        # Nor is a store behind a symlink read or copied.
+        linked, _transcript = self.fixture("linked")
+        store_conversation(linked, ["first prompt"])
+        (linked / "store.db").rename(self.root / "elsewhere.db")
+        (linked / "store.db").symlink_to(self.root / "elsewhere.db")
+        for use in (cursor_history.latest_root_blob_id, lambda provider_id, cwd: cursor_history.copy_session(provider_id, "copy-1", cwd)):
+            with self.assertRaises(FileNotFoundError):
+                use("linked", str(self.cwd))
+
+    def test_metadata_that_names_no_root_is_an_unreadable_store_not_a_chat_without_a_conversation(self):
+        # A run records what latest_root_blob_id returns, and "" in that record means the chat had no conversation.
+        for number, value in enumerate(("", None, 7)):
+            directory, _transcript = self.fixture(f"rootless-{number}")
+            store_conversation(directory, ["first prompt"])
+            with sqlite3.connect(directory / "store.db") as db:
+                db.execute("UPDATE meta SET value = ? WHERE key = '0'", (json.dumps({"latestRootBlobId": value}).encode().hex(),))
+            for read in (cursor_history.latest_root_blob_id, cursor_history.prompt_roots):
+                with self.subTest(value=value, read=read.__name__), self.assertRaises(ValueError):
+                    read(f"rootless-{number}", str(self.cwd))
 
     def test_each_prompt_is_paired_with_the_one_root_that_lists_the_messages_before_it(self):
         directory, _transcript = self.fixture()

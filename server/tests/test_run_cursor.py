@@ -1133,6 +1133,12 @@ sys.exit(7)
                 run_id="run-cursor-3", standalone=True,
                 session_patch=agent_server.standalone_provider_session({**self.session, **bound}),
             )))
+            # Metadata that names no root is a store that cannot be read: "" would say the chat had no conversation.
+            with sqlite3.connect(store / "store.db") as db:
+                db.execute("UPDATE meta SET value = ? WHERE key = '0'", (json.dumps({
+                    "agentId": "existing-cursor-id", "latestRootBlobId": "",
+                }).encode().hex(),))
+            self.assertIsNone(recorded(await self._run_script(resumed, run_id="run-cursor-5", session_patch=bound)))
             # Nothing is recorded for a store that cannot be read, and the turn still runs.
             (store / "store.db").unlink()
             events = await self._run_script(resumed, run_id="run-cursor-4", session_patch=bound)
