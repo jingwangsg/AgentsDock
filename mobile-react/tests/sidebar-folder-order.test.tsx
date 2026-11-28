@@ -18,7 +18,7 @@ const sharedOrder: Health = { ok: true, capabilities: { folder_order_v1: { avail
 let tree: ReturnType<typeof create> | null = null
 
 type Shown = { sessions?: Session[]; surfaces?: Surface[]; folderOrder?: string[]; collapsedFolders?: string[] }
-async function renderSidebar(health: Health, { answer = async () => true, moved = () => true, shown = {} }: { answer?: () => Promise<boolean>; moved?: (id: string) => boolean; shown?: Shown } = {}) {
+async function renderSidebar(health: Health, { answer = async () => true, moved = () => true, shown = {}, onNewChatIn = () => {} }: { answer?: () => Promise<boolean>; moved?: (id: string) => boolean; shown?: Shown; onNewChatIn?: (folder: string, backend: string) => void } = {}) {
   const calls: unknown[][] = []
   resetComponentStore({
     switchingProfileId: null,
@@ -42,7 +42,7 @@ async function renderSidebar(health: Health, { answer = async () => true, moved 
   await act(async () => {
     tree = create(<Sidebar
       profiles={[]} activeProfileId="profile-a" onSwitchServer={async () => true} onSetupServer={() => {}} onManageServers={() => {}}
-      onSettings={() => {}} onTeamNetwork={() => {}} onNewChat={() => {}} onResumeChat={() => {}} onNewChatIn={() => {}} onNewSurfaceIn={() => {}}
+      onSettings={() => {}} onTeamNetwork={() => {}} onNewChat={() => {}} onResumeChat={() => {}} onNewChatIn={onNewChatIn} onNewSurfaceIn={() => {}}
     />)
   })
   return calls
@@ -82,6 +82,22 @@ test('a supported Gemini CLI stays visible and explains a blocked runtime', asyn
   Alert.__reset()
   await folderAction('Work', gemini[0].id)
   assert.equal(Alert.__calls[0]?.message, message)
+})
+
+test('before the catalog arrives, the folder menu lists New Cursor chat unless the server health reports Cursor as not ready', async () => {
+  const health = (status: 'ready' | 'unknown' | 'missing'): Health => ({ ok: true, capabilities: { cursor_backend: { available: true, version: 2 } },
+    runtimes: { cursor: { backend: 'cursor', status, available: status === 'ready', message: '' } } })
+  const newChats = () => (menu('folder-actions-Work').props.actions as Array<{ id: string; title: string }>).filter(action => action.id.startsWith('new:')).map(action => action.title)
+  const created: unknown[][] = []
+  await renderSidebar(health('ready'), { onNewChatIn: (...call) => created.push(call) })
+  assert.deepEqual(newChats(), ['New Claude chat', 'New Codex chat', 'New Cursor chat'])
+  await folderAction('Work', 'new:cursor')
+  assert.deepEqual(created, [['Work', 'cursor']])
+  // A server that has not probed Cursor yet.
+  await act(async () => { useAppStore.setState({ health: health('unknown') }) })
+  assert.deepEqual(newChats(), ['New Claude chat', 'New Codex chat', 'New Cursor chat'])
+  await act(async () => { useAppStore.setState({ health: health('missing') }) })
+  assert.deepEqual(newChats(), ['New Claude chat', 'New Codex chat'])
 })
 
 test('with a shared folder order, a rename sends the renamed order before moving the chats', async () => {

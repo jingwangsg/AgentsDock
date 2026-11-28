@@ -1620,7 +1620,7 @@ describe('Composer', () => {
     expect(screen.getByRole('menuitemcheckbox', { name: /Cursor$/ })).toBeInTheDocument()
   })
 
-  it('keeps supported Cursor discoverable with setup guidance while its catalog loads', async () => {
+  it('keeps supported Cursor discoverable with setup guidance while a catalog lacks its entry', async () => {
     useAppStore.setState({
       health: {
         ok: true,
@@ -1644,7 +1644,7 @@ describe('Composer', () => {
           }
         }
       },
-      runtimeCatalog: null
+      runtimeCatalog: { backends: {} }
     })
     const user = userEvent.setup()
     const { unmount } = render(<Composer />)
@@ -1664,6 +1664,23 @@ describe('Composer', () => {
     await user.keyboard('{End}{ArrowUp}')
     expect(unavailableByKeyboard).toHaveFocus()
     expect(await screen.findByRole('tooltip')).toHaveTextContent(/model choices are still loading/i)
+  })
+
+  it('offers Cursor in the backend picker before the catalog arrives when the server health reports it ready', async () => {
+    useAppStore.setState({
+      health: {
+        ok: true,
+        capabilities: { cursor_backend: { available: true, required: false, message: 'Cursor is supported.', action: null, version: 2 } },
+        runtimes: { cursor: { backend: 'cursor', status: 'ready', available: true, message: 'Cursor is installed and authenticated.' } }
+      },
+      runtimeCatalog: null
+    })
+    render(<Composer />)
+
+    await userEvent.setup().click(screen.getByTitle('Change backend'))
+
+    expect(screen.getByRole('menuitemcheckbox', { name: 'Cursor' })).not.toHaveAttribute('aria-disabled')
+    expect(screen.queryByRole('menuitem', { name: /Cursor.*Unavailable/ })).not.toBeInTheDocument()
   })
 
   it('selects reasoning for the default Gemini Argon model and clears it when switching to an unsupported model', async () => {

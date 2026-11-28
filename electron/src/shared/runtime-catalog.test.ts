@@ -210,7 +210,8 @@ describe('optional Cursor backend admission', () => {
     // Menus that cannot explain a disabled entry list only backends whose CLI is ready.
     expect(readyChatBackends(cursorHealth, cursorCatalog)).toEqual(['claude', 'codex', 'cursor'])
     expect(readyChatBackends(cursorHealth, validCatalog)).toEqual(['claude', 'codex'])
-    expect(readyChatBackends(cursorHealth, null)).toEqual(['claude', 'codex'])
+    // Before the catalog arrives, a Cursor that the health does not report as not ready is listed.
+    expect(readyChatBackends(cursorHealth, null)).toEqual(['claude', 'codex', 'cursor'])
     expect(cursorBackendSupported({
       ...cursorHealth,
       capabilities: {
@@ -275,7 +276,7 @@ describe('optional Cursor backend admission', () => {
     expect(runtimeSelectionError(newerReadyHealth, staleMissingCatalog, 'cursor', 'auto')).toBeNull()
   })
 
-  it('reports loading instead of setup failure before a ready Cursor catalog arrives', () => {
+  it('reports loading instead of setup failure while a catalog lacks the entry of a ready Cursor', () => {
     const readyHealth: Health = {
       ...cursorHealth,
       runtimes: {
@@ -285,8 +286,41 @@ describe('optional Cursor backend admission', () => {
         }
       }
     }
-    expect(runtimeSelectionError(readyHealth, null, 'cursor', 'auto')).toMatch(/model choices are still loading/i)
-    expect(runtimeSelectionError(readyHealth, null, 'cursor', 'auto')).not.toMatch(/install|sign in/i)
+    expect(runtimeSelectionError(readyHealth, validCatalog, 'cursor', 'auto')).toMatch(/model choices are still loading/i)
+    expect(runtimeSelectionError(readyHealth, validCatalog, 'cursor', 'auto')).not.toMatch(/install|sign in/i)
+  })
+
+  const reporting = (status: RuntimeDiagnostic['status'], checked_at = '2026-08-30T10:01:00Z'): Health => ({
+    ...cursorHealth,
+    runtimes: { cursor: { backend: 'cursor', status, available: status === 'ready', message: 'Cursor CLI is missing.', checked_at } }
+  })
+
+  it('follows the health status until the catalog arrives', () => {
+    // Ready, not probed yet, or no status at all: Cursor can be used, with a model saved earlier.
+    for (const health of [reporting('ready'), reporting('unknown'), cursorHealth]) {
+      expect(cursorBackendAvailable(health, null)).toBe(true)
+      expect(runtimeSelectionError(health, null, 'cursor', 'named-model')).toBeNull()
+    }
+    // The server reported it not ready: unavailable, with the server's reason.
+    for (const status of ['missing', 'unauthenticated', 'error'] as const) {
+      expect(cursorBackendAvailable(reporting(status), null)).toBe(false)
+      expect(runtimeSelectionError(reporting(status), null, 'cursor')).toBe('Cursor is unavailable. Cursor CLI is missing.')
+    }
+    expect(cursorBackendAvailable({ ok: true }, null)).toBe(false)
+  })
+
+  it('leaves the decision to the catalog while the health status is unknown after a server restart', () => {
+    const held = (status: 'ready' | 'missing'): RuntimeCatalog => ({ backends: { ...cursorCatalog.backends, cursor: {
+      ...cursorCatalog.backends.cursor, available: status === 'ready',
+      diagnostic: { backend: 'cursor', status, available: status === 'ready', message: 'From the catalog.', checked_at: '2026-08-30T10:00:00Z' }
+    } } })
+    // The restarted server has not probed Cursor yet; its health is newer than the catalog the app still holds.
+    const restarted = reporting('unknown', '2026-08-30T10:05:00Z')
+    expect(cursorBackendAvailable(restarted, held('ready'))).toBe(true)
+    expect(runtimeSelectionError(restarted, held('ready'), 'cursor', 'auto')).toBeNull()
+    expect(cursorBackendAvailable(restarted, held('missing'))).toBe(false)
+    // A newer status that is a verdict still wins over the catalog.
+    expect(cursorBackendAvailable(reporting('missing', '2026-08-30T10:05:00Z'), held('ready'))).toBe(false)
   })
 
   it('keeps missing and superseded v1 capability responses on the legacy backend set', () => {

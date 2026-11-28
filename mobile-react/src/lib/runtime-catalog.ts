@@ -31,9 +31,13 @@ export function cursorBackendSupported(health: Health | null | undefined): boole
 
 export function cursorBackendAvailable(health: Health | null | undefined, catalog: RuntimeCatalog | null | undefined): boolean {
   const backend = catalog?.backends?.cursor
-  if (!cursorBackendSupported(health) || !backend) return false
-  const diagnostic = runtimeDiagnosticFor(health, catalog, 'cursor')
-  return diagnostic ? diagnostic.status === 'ready' && diagnostic.available === true : backend.available === true
+  if (!cursorBackendSupported(health) || (catalog && !backend)) return false
+  // A health status of "unknown" decides nothing: the server reports it for a backend it has not probed yet, in the
+  // first seconds after it starts. The catalog's own entry then decides, and Cursor is offered while no catalog has
+  // arrived: the server takes seconds to build one, and the health answer comes first. Change the desktop copy
+  // (electron/src/shared/runtime-catalog.ts) too.
+  const diagnostic = runtimeDiagnosticFor(health?.runtimes?.cursor?.status === 'unknown' ? null : health, catalog, 'cursor')
+  return diagnostic ? diagnostic.status === 'ready' && diagnostic.available === true : !catalog || backend?.available === true
 }
 
 export function selectableChatBackends(health: Health | null | undefined): Backend[] {
@@ -77,7 +81,8 @@ export function runtimeSelectionError(health: Health | null | undefined, catalog
   }
   if (backend === 'cursor' && !cursorBackendAvailable(health, catalog)) return cursorBackendUnavailableReason(health, catalog)
   const selected = model?.trim()
-  if (backend === 'cursor' && selected) {
+  // Before the catalog has arrived there is no model list: a model the account cannot use fails when the turn runs.
+  if (backend === 'cursor' && selected && catalog) {
     const cursor = catalog?.backends.cursor
     // Older servers identify a partial list only by its discovery source.
     const source = cursor?.model_source ?? ''
