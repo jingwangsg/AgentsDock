@@ -35,6 +35,8 @@ class RuntimeDiagnosticTests(unittest.TestCase):
         with agent_server.RUNTIME_DIAGNOSTICS_LOCK:
             agent_server.RUNTIME_DIAGNOSTICS.clear()
             agent_server.RUNTIME_DIAGNOSTIC_GENERATIONS.clear()
+        # discover_cursor_catalog records what the list said; later tests in this process must not inherit it.
+        self.enterContext(patch.object(agent_server, "CURSOR_DEFAULT_MODEL_OFFERED", agent_server.CURSOR_DEFAULT_MODEL_OFFERED))
 
     def test_codex_login_hint_expires_cached_denial_without_claiming_authentication(self):
         agent_server.record_runtime_failure("codex", "Not logged in")
@@ -1103,7 +1105,9 @@ class RuntimeDiagnosticTests(unittest.TestCase):
             with self.subTest(tier=tier), patch.object(agent_server, "run_catalog_command", side_effect=[
                 subprocess.TimeoutExpired("cursor-agent", 6), f"Model    Gemini 4 Argon 300K High\nSubscription Tier    {tier}",
             ]):
+                agent_server.CURSOR_DEFAULT_MODEL_OFFERED = True
                 result = agent_server.discover_cursor_catalog(executable="/fake/cursor-agent")
+                self.assertEqual(agent_server.CURSOR_DEFAULT_MODEL_OFFERED, not exhaustive)
                 self.assertEqual(result["model_list_complete"], exhaustive)
                 self.assertEqual(result["models"][0], {"value": "", "label": "Gemini 4 Argon 300K High"})
 
@@ -1145,6 +1149,32 @@ class RuntimeDiagnosticTests(unittest.TestCase):
             catalog = agent_server.discover_cursor_catalog(executable="/fake/cursor-agent")
         self.assertEqual(catalog["models"][0], {"value": "", "label": "Claude Opus 5 1M Thinking"})
         self.assertIsNone(catalog["default_model"])
+
+    def test_cursor_server_default_is_the_default_model_where_the_account_offers_it(self) -> None:
+        output = (
+            "auto - Auto (default)\n"
+            "composer-2.5 - Composer 2.5\n"
+            "gemini-4-neon-xhigh - Gemini 4 Neon  Extra High\n"
+        )
+        about = "Model    Composer 2.5\nSubscription Tier    {tier}"
+        unread = RuntimeError("agent about exited 1")
+        for listed, plan, before, label, model, offered in [
+            (output, about.format(tier="Pro"), False, "Gemini 4 Neon  Extra High", "gemini-4-neon-xhigh", True),
+            # A free plan lists the model and cannot run it; a list without it has nothing to default to.
+            (output, about.format(tier="Free"), True, "Composer 2.5", "composer-2.5", False),
+            ("auto - Auto (default)\ncomposer-2.5 - Composer 2.5\n", about.format(tier="Pro"), True, "Composer 2.5", "composer-2.5", False),
+            ("auto - Auto (default)\ncomposer-2.5 - Composer 2.5\n", unread, True, "Auto", "auto", False),
+            # A read that did not learn the plan keeps what the last one said about a listed model.
+            (output, unread, True, "Gemini 4 Neon  Extra High", "gemini-4-neon-xhigh", True),
+            (output, unread, False, "Auto", "auto", False),
+        ]:
+            with self.subTest(listed=listed, plan=plan, before=before), patch.object(
+                agent_server, "run_catalog_command", side_effect=[listed, plan],
+            ), patch.object(agent_server, "CURSOR_DEFAULT_MODEL_OFFERED", before):
+                catalog = agent_server.discover_cursor_catalog(executable="/fake/cursor-agent")
+                self.assertEqual(catalog["models"][0], {"value": "", "label": label})
+                self.assertEqual(catalog["default_model"], model)
+                self.assertEqual(agent_server.CURSOR_DEFAULT_MODEL_OFFERED, offered)
 
     def test_cursor_catalog_locks_named_models_on_free_plan(self) -> None:
         list_models_output = (
