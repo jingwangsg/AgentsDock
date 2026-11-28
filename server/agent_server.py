@@ -70511,7 +70511,20 @@ async def run_cursor_process(
     mcp_owner = str(sess.get("_cursor_mcp_owner_token") or "")
     cmd.extend(sess.get("_cursor_tool_flags") or [])
     public_cmd = redacted_provider_argv(cmd, BACKEND_CURSOR)
-    await append_event(session_id, "process_started", {"run_id": run_id, "backend": BACKEND_CURSOR, "argv": public_cmd, "cwd": cwd})
+    # A rewind to this turn resumes the chat's conversation from the root recorded here ("" when the chat has
+    # none yet). Read before the CLI starts: the CLI moves the root with the first message it stores. Nothing is
+    # recorded for a standalone run, whose session is not the chat's, or when the store cannot be read: a rewind
+    # then looks for the turn's message in the store and is refused when it cannot place it (cursor_rewind_root).
+    rewind_record: dict[str, str] = {}
+    if not standalone_provider_context:
+        try:
+            rewind_record = {"cursor_root_blob_id": (
+                await asyncio.to_thread(cursor_history.latest_root_blob_id, str(sess["cursor_session_id"]), cwd)
+                if sess.get("cursor_session_id") else ""
+            )}
+        except Exception as exc:
+            logger.warning("Cursor conversation root unreadable session=%s run=%s error_type=%s", session_id, run_id, type(exc).__name__)
+    await append_event(session_id, "process_started", {"run_id": run_id, "backend": BACKEND_CURSOR, "argv": public_cmd, "cwd": cwd, **rewind_record})
     env = agent_runner_env(session_id)
     env.update(sess.get("_cursor_tool_env") or {})
     cursor_dir = os.path.dirname(os.path.abspath(cursor_bin))
@@ -85728,7 +85741,7 @@ async def health() -> dict[str, Any]:
             "session_rewind_v1": {
                 "available": True,
                 "version": 1,
-                "supported_backends": [BACKEND_CLAUDE, BACKEND_CODEX],
+                "supported_backends": [BACKEND_CLAUDE, BACKEND_CODEX, BACKEND_CURSOR],
                 "checkpoint_restore": True,
                 # Backends whose rewind also accepts a steer (a message sent while the agent worked).
                 "steer_backends": [BACKEND_CLAUDE],
@@ -96307,6 +96320,81 @@ def set_session_latest_from_log(sess: dict[str, Any], summary: dict[str, Any], s
     sess.pop("active_run", None)
 
 
+async def cursor_rewind_root(
+    session_id: str, sess: dict[str, Any], events: list[dict[str, Any]], target_index: int,
+) -> str | None:
+    """Where a rewind to ``events[target_index]`` leaves a chat's Cursor conversation.
+
+    None: as it is. "": the next turn starts a new conversation. Otherwise the id of a root blob the
+    store holds, for a copy of the store to resume from. Raises the 409 the rewind answers when the
+    turn cannot be placed in the conversation or the store cannot be read.
+    """
+    # The first removed row of a turn that reached the conversation: the start of a run, which carries the
+    # conversation's root from before that run, or a turn imported from Cursor's own history. The removed
+    # turns before it are not in the conversation: their CLI never started, or a fork copied them from its
+    # parent, whose history a fork holds as memory text (see where the rewind rebuilds memory_seed).
+    reached = next((
+        event for event in events[target_index:]
+        if (event.get("type") == "process_started" and event.get("backend") == BACKEND_CURSOR)
+        or (event.get("type") == "turn_started" and is_imported_history_event(event))
+    ), None)
+    if reached is None:
+        return None
+    recorded = reached.get("cursor_root_blob_id")
+    if recorded == "":
+        return ""
+    provider_id = str(sess.get("cursor_session_id") or "")
+    if recorded is None and not provider_id:
+        # No record and no conversation bound to the chat (a run of an earlier server version that was
+        # stopped or failed before its session was kept): there is nothing to rewind on Cursor's side.
+        return None
+    cwd = existing_cwd(str(sess.get("cwd") or DEFAULT_CWD))
+    try:
+        if recorded is not None:
+            if not await asyncio.to_thread(cursor_history.has_blob, provider_id, cwd, recorded):
+                # The chat moved to another conversation after that run.
+                raise FileNotFoundError("Cursor conversation root")
+            return recorded
+        stored = await asyncio.to_thread(cursor_history.prompt_roots, provider_id, cwd)
+    except Exception as exc:
+        logger.warning("session rewind: cursor store unusable session=%s error_type=%s", session_id, type(exc).__name__)
+        raise HTTPException(status_code=409, detail={
+            "code": "rewind_provider_unavailable",
+            "message": "The Cursor conversation from before that turn is no longer available. The chat was left unchanged.",
+        }) from exc
+    # No record: the run is from before roots were recorded, ran standalone, or could not read the store when
+    # it started. Its place is taken from the store only when nothing else can be meant: the chat has one turn
+    # with this prompt, and the conversation has one message that ends with this server's envelope of it, with
+    # one root before it. An imported turn has no run of this server, so no prompt to look for: it fails here.
+    turn_rows = [index for index, event in enumerate(events) if event.get("type") == "turn_started"]
+    turn = next((
+        position for position, index in enumerate(turn_rows)
+        if events[index].get("run_id") == reached.get("run_id") and not is_imported_history_event(events[index])
+    ), None)
+    prompt = str(events[turn_rows[turn]].get("prompt") or "") if turn is not None else ""
+    envelope = f"[Current user prompt]\n{prompt}"
+    matches = [position for position, (text, _root) in enumerate(stored) if text == envelope or text.endswith("\n\n" + envelope)]
+    same_prompt_turns = sum(1 for index in turn_rows if str(events[index].get("prompt") or "") == prompt)
+    if (
+        not prompt or same_prompt_turns != 1 or len(matches) != 1 or stored[matches[0]][1] is None
+        # Each stored prompt came from one turn, in the same order: more prompts than turns on either side of
+        # the match means the message is another turn's (one shown under a different text than it was sent as).
+        or matches[0] > turn or len(stored) - matches[0] > len(turn_rows) - turn
+    ):
+        logger.warning(
+            "session rewind: cursor root unproven session=%s turns=%d messages=%d stored=%d",
+            session_id, same_prompt_turns, len(matches), len(stored),
+        )
+        raise HTTPException(status_code=409, detail={
+            "code": "rewind_boundary_ambiguous",
+            "message": (
+                "That turn's place in the Cursor conversation was not recorded, and it could not be "
+                "matched to exactly one message there. The chat was left unchanged."
+            ),
+        })
+    return stored[matches[0]][1]
+
+
 @app.post("/api/sessions/{session_id}/rewind")
 async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str, Any]:
     """Truncate this chat to the rows before one turn and rewind its provider.
@@ -96331,7 +96419,7 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
         if not sess:
             raise HTTPException(status_code=404, detail="session not found")
         backend = str(sess.get("backend") or DEFAULT_BACKEND).lower()
-        if backend not in {BACKEND_CLAUDE, BACKEND_CODEX}:
+        if backend not in {BACKEND_CLAUDE, BACKEND_CODEX, BACKEND_CURSOR}:
             raise HTTPException(status_code=409, detail={
                 "code": "rewind_unsupported_backend",
                 "message": "This backend cannot rewind its provider conversation; the chat was left unchanged.",
@@ -96425,6 +96513,7 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
         claude_cutoff: str | None = None
         codex_thread_id = ""
         forked_thread_id = ""
+        cursor_copy_id: str | None = None
         usage_signal: dict[str, Any] | None = None
         if backend == BACKEND_CLAUDE:
             terminal_index = next((
@@ -96512,6 +96601,13 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
                 provider_rewind = "claude_reset"
             else:
                 provider_rewind = "claude_fork"
+        elif backend == BACKEND_CURSOR:
+            cursor_root = await cursor_rewind_root(session_id, sess, events, target_index)
+            if cursor_root == "":
+                provider_rewind = "cursor_reset"
+            elif cursor_root is not None:
+                cursor_copy_id = str(uuid.uuid4())
+                provider_rewind = "cursor_fork"
         else:
             codex_thread_id = str(sess.get("codex_thread_id") or sess.get("session_id") or "")
             lineage = codex_thread_lineage(sess)
@@ -96669,12 +96765,33 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
         async with event_delivery_lock(session_id):
             async def perform_rewind() -> dict[str, Any]:
                 nonlocal usage_signal
-                await persist_event_log_floor(session_id, sess)
-                summary = await asyncio.to_thread(
-                    truncate_session_events_sync,
-                    session_id,
-                    before_seq=before_seq,
-                )
+                cursor_copy: list[Path] = []
+                if provider_rewind == "cursor_fork":
+                    # First, and inside this task, which runs to its end: a failed copy leaves the chat
+                    # unchanged, and a finished copy is adopted below even when the request is cancelled.
+                    try:
+                        cursor_copy = await asyncio.to_thread(
+                            cursor_history.copy_session, str(sess["cursor_session_id"]), cursor_copy_id,
+                            existing_cwd(str(sess.get("cwd") or DEFAULT_CWD)), cursor_root,
+                        )
+                    except Exception as exc:
+                        logger.warning("session rewind: cursor copy failed session=%s error_type=%s", session_id, type(exc).__name__)
+                        raise HTTPException(status_code=409, detail={
+                            "code": "rewind_provider_unavailable",
+                            "message": "The Cursor conversation from before that turn is no longer available. The chat was left unchanged.",
+                        }) from exc
+                try:
+                    await persist_event_log_floor(session_id, sess)
+                    summary = await asyncio.to_thread(
+                        truncate_session_events_sync,
+                        session_id,
+                        before_seq=before_seq,
+                    )
+                except BaseException:
+                    # The timeline was not cut, so the chat keeps its conversation: the copy belongs to nothing.
+                    if cursor_copy:
+                        shutil.rmtree(cursor_copy[0], ignore_errors=True)
+                    raise
                 seq_high_water = max(int(summary["max_seq_before"]), int(sess["latest_event_seq"]))
                 summary["through_seq"] = seq_high_water
                 # Connected clients already observed the removed tail. Keep
@@ -96740,6 +96857,22 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
                     sess["codex_thread_lineage"] = [*lineage, codex_thread_id][-CODEX_THREAD_LINEAGE_LIMIT:]
                     async with STORE._lock:
                         usage_signal = reset_codex_thread_scoped_state_locked(sess, forked_thread_id)
+                elif provider_rewind in {"cursor_reset", "cursor_fork"}:
+                    # The copy for a fork, no conversation for a reset.
+                    sess["cursor_session_id"] = cursor_copy_id
+                    sess["session_id"] = cursor_copy_id
+                    # The copy can predate the instructions this hash stands for: the next turn sends them again.
+                    sess.pop("cursor_instruction_hash", None)
+                    sess.pop("cursor_instruction_version", None)
+                if backend == BACKEND_CURSOR and sess.get("memory_seed") and events[target_index].get("forked") is True:
+                    # A fork of a Cursor chat gives its parent's history to a conversation's first turn as memory
+                    # text. The target is a row copied from the parent, so every run of this chat is removed
+                    # with it: the text is built again from the rows that stay, as the fork built it from the
+                    # parent's rows, and is due again.
+                    sess["memory_seed"] = await asyncio.to_thread(
+                        build_fork_memory, dict(sess), session_id, reason=sess.get("memory_fork_reason"),
+                    )
+                    sess["memory_seed_used"] = False
                 await STORE.save(durable=True)
                 if backend == BACKEND_CLAUDE and CLAUDE_SDK_MANAGER is not None:
                     # A connected Claude process keeps the options it started with, so
@@ -96940,7 +97073,7 @@ async def session_checkpoint_restore(session_id: str, run_id: str) -> AsyncItera
     """Resolve one turn checkpoint for an idle chat, then record its restore."""
     async with session_lifecycle_lock(session_id):
         ensure_session_not_deleting(session_id)
-        session_workspace_root(session_id, for_write=True)
+        sess, _root = session_workspace_root(session_id, for_write=True)
         await ensure_session_idle_for_rewind(session_id)
         commit = ""
         if re.fullmatch(r"[A-Za-z0-9._-]+", run_id):
@@ -96948,6 +97081,17 @@ async def session_checkpoint_restore(session_id: str, run_id: str) -> AsyncItera
                 commit = (checkpoints_dir(session_id) / safe_name(run_id)).read_text(encoding="utf-8").strip()
         if not re.fullmatch(r"[0-9a-f]{40,64}", commit):
             raise workspace_http_error(404, "checkpoint_not_found", "This turn has no restorable workspace checkpoint.")
+        if str(sess.get("backend") or DEFAULT_BACKEND).lower() == BACKEND_CURSOR:
+            # The app rewinds the chat to this run once the files are restored, and a Cursor rewind can be
+            # refused by design. Answer that refusal here, before a file changes; the rewind decides again
+            # under its own lock, since the store can change between the two requests.
+            events = await asyncio.to_thread(lambda: list(iter_session_events(session_id)))
+            target_index = next((
+                index for index, event in enumerate(events)
+                if event.get("type") == "turn_started" and str(event.get("run_id") or "") == run_id
+            ), None)
+            if target_index is not None:
+                await cursor_rewind_root(session_id, sess, events, target_index)
         yield commit, checkpoint_objects_dir(session_id)
         await append_event(session_id, "workspace_checkpoint_restored", {
             "run_id": run_id,

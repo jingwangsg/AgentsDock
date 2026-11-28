@@ -7,8 +7,10 @@ from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
 import agent_server as server
+import cursor_history
 from claude_sdk_client import ClaudeSDKSupervisorManager
 from tests.test_claude_sdk_client import FakeFactory
+from tests.test_cursor_local_import import CursorFixture, cursor_provider_envelope, store_conversation
 
 
 # A Claude auto-compaction row: it has no parent, so the resumed chain stops here.
@@ -484,7 +486,7 @@ class SessionRewindTests(RewindFixture):
         server.QUEUED_TURNS["chat"] = [{"id": "queued"}]
         await self.assertRewindRejected(rewind_request(), 409, "turn_queue_not_empty")
         server.QUEUED_TURNS.clear()
-        for backend in ("cursor", "opencode"):
+        for backend in ("gemini", "opencode"):
             self.chat(backend=backend)
             await self.assertRewindRejected(rewind_request(), 409, "rewind_unsupported_backend")
         self.chat()
@@ -591,6 +593,265 @@ class SessionRewindTests(RewindFixture):
         reset_fork.assert_not_awaited()
         self.assertEqual(reset["provider_rewind"], "codex_reset")
         self.assertNotIn("codex_thread_lineage", sess)
+
+
+class CursorRewindTests(CursorFixture, RewindFixture):
+    """A Cursor conversation is a store that keeps every earlier root; a rewind resumes a copy from one."""
+
+    # What a fork's memory names before a rewind: every turn of the parent.
+    SEED = "[AgentsDock memory fork]\nUser:\nEarlier question\nUser:\nSecond question\nUser:\nThird question"
+
+    def setUp(self) -> None:
+        RewindFixture.setUp(self)
+        CursorFixture.setUp(self)
+        # Per run id: fields of its process_started row (no entry: the CLI never started), and of its turn_started row.
+        self.started: dict[str, dict] = {}
+        self.turns: dict[str, dict] = {}
+
+    def events(self):
+        rows = []
+        for event in super().events():
+            if event["type"] == "turn_started":
+                rows.append({**event, **self.turns.get(event["run_id"], {})})
+                if event["run_id"] in self.started:
+                    rows.append({"type": "process_started", "run_id": event["run_id"], "backend": "cursor", "ts": event["ts"],
+                                 **self.started[event["run_id"]]})
+            else:
+                rows.append(event)
+        return [{**event, "seq": seq, "id": f"e{seq}"} for seq, event in enumerate(rows, 1)]
+
+    def conversation(self, *prompts: str, provider_id: str = "native-cursor", memory: str | None = None) -> dict[int, str]:
+        """A store holding these prompts as the server's own builder sends them; the first opens the conversation."""
+        directory, _transcript = self.fixture(provider_id)
+        return store_conversation(directory, [
+            cursor_provider_envelope(prompt, memory=memory, resumed=bool(number)) for number, prompt in enumerate(prompts)
+        ])
+
+    def cursor_chat(self, provider_id: str | None = "native-cursor", **overrides) -> dict:
+        return self.chat(backend="cursor", cwd=str(self.cwd), cursor_session_id=provider_id, session_id=provider_id,
+                         cursor_instruction_hash="policy-hash", cursor_instruction_version=3, **overrides)
+
+    def request(self, run_id: str):
+        return rewind_request(to_run_id=run_id, expected_latest_seq=self.stored_events()[-1]["seq"])
+
+    def stores(self) -> set[str]:
+        return {path.name for path in self.config.glob("chats/*/*")}
+
+    def next_prompt(self, sess: dict) -> str:
+        """What the chat's next turn sends to Cursor."""
+        return server.build_cursor_provider_prompt("chat", sess, "Next question", self.state / "manifest.json")[0]
+
+    async def assertChatUnchanged(self, run_id: str, code: str, provider_id: str = "native-cursor") -> None:
+        sess = self.cursor_chat(provider_id)
+        before, stores = self.stored_events(), self.stores()
+        await self.assertRewindRejected(self.request(run_id), 409, code)
+        self.assertEqual((sess["cursor_session_id"], sess["session_id"], sess["cursor_instruction_hash"]),
+                         (provider_id, provider_id, "policy-hash"))
+        self.assertEqual((self.stored_events(), self.stores()), (before, stores))
+
+    async def test_cursor_rewind_resumes_a_copy_from_the_root_the_run_recorded(self) -> None:
+        roots = self.conversation("Earlier question", "Second question", "Third question")
+        self.started = {"first": {"cursor_root_blob_id": ""}, "second": {"cursor_root_blob_id": roots[4]},
+                        "third": {"cursor_root_blob_id": roots[6]}}
+        sess = self.cursor_chat()
+
+        result = await server.rewind_session("chat", self.request("third"))
+
+        self.assertEqual({key: result[key] for key in ("from_seq", "removed_events", "provider_rewind")},
+                         {"from_seq": 10, "removed_events": 4, "provider_rewind": "cursor_fork"})
+        copy_id = sess["cursor_session_id"]
+        self.assertEqual((sess["session_id"], self.stores()), (copy_id, {"native-cursor", copy_id}))
+        self.assertEqual(cursor_history.latest_root_blob_id(copy_id, str(self.cwd)), roots[6])
+        # The conversation the chat left is intact and still resumable outside it.
+        self.assertEqual(cursor_history.latest_root_blob_id("native-cursor", str(self.cwd)), roots[8])
+        self.assertNotIn("cursor_instruction_hash", sess)
+        self.assertNotIn("cursor_instruction_version", sess)
+        self.assertEqual((self.stored_events()[-1]["type"], self.stored_events()[-1]["provider_rewind"]), ("history_rewound", "cursor_fork"))
+
+        # The adopted copy holds every root, so an earlier turn's record still resolves in it.
+        await server.rewind_session("chat", self.request("second"))
+        self.assertNotIn(sess["cursor_session_id"], {"native-cursor", copy_id})
+        self.assertEqual(cursor_history.latest_root_blob_id(sess["cursor_session_id"], str(self.cwd)), roots[4])
+
+    async def test_cursor_rewind_to_the_run_that_began_the_conversation_starts_a_new_one(self) -> None:
+        roots = self.conversation("Earlier question", "Second question", "Third question")
+        self.started = {"first": {"cursor_root_blob_id": ""}, "second": {"cursor_root_blob_id": roots[4]},
+                        "third": {"cursor_root_blob_id": roots[6]}}
+        sess = self.cursor_chat()
+        result = await server.rewind_session("chat", self.request("first"))
+        self.assertEqual(result["provider_rewind"], "cursor_reset")
+        self.assertEqual((sess["cursor_session_id"], sess["session_id"]), (None, None))
+        self.assertNotIn("cursor_instruction_hash", sess)
+        self.assertEqual(self.stores(), {"native-cursor"})
+
+    async def test_removed_turns_whose_cli_never_started_do_not_decide_the_cursor_conversation(self) -> None:
+        roots = self.conversation("Earlier question", "Second question")
+        # Only such turns are removed: the conversation already matches what stays.
+        self.started = {"first": {"cursor_root_blob_id": ""}, "second": {"cursor_root_blob_id": roots[4]}}
+        sess = self.cursor_chat()
+        result = await server.rewind_session("chat", self.request("third"))
+        self.assertEqual((result["provider_rewind"], sess["cursor_session_id"], sess["cursor_instruction_hash"]),
+                         (None, "native-cursor", "policy-hash"))
+        self.assertEqual(self.stores(), {"native-cursor"})
+
+        # A later removed run did start: the root it recorded is the conversation before both.
+        self.started = {"first": {"cursor_root_blob_id": ""}, "third": {"cursor_root_blob_id": roots[4]}}
+        sess = self.cursor_chat()
+        result = await server.rewind_session("chat", self.request("second"))
+        self.assertEqual(result["provider_rewind"], "cursor_fork")
+        self.assertEqual(cursor_history.latest_root_blob_id(sess["cursor_session_id"], str(self.cwd)), roots[4])
+
+    async def test_a_run_without_a_recorded_root_is_found_by_its_prompt_in_the_store(self) -> None:
+        roots = self.conversation("Earlier question", "Second question", "Third question")
+        self.started = {"first": {}, "second": {}, "third": {}}
+        sess = self.cursor_chat()
+        result = await server.rewind_session("chat", self.request("third"))
+        self.assertEqual(result["provider_rewind"], "cursor_fork")
+        self.assertEqual(cursor_history.latest_root_blob_id(sess["cursor_session_id"], str(self.cwd)), roots[6])
+        # The first prompt follows the instructions in its message, and no turn is before it.
+        result = await server.rewind_session("chat", self.request("first"))
+        self.assertEqual((result["provider_rewind"], sess["cursor_session_id"], sess["session_id"]), ("cursor_reset", None, None))
+
+    async def test_an_unrecorded_run_that_cannot_be_matched_to_one_message_is_refused(self) -> None:
+        self.started = {"first": {}, "second": {}, "third": {}}
+        # The store never got the prompt (the turn was stopped first), or holds it twice.
+        self.conversation("Earlier question", "Second question", provider_id="stopped-early")
+        await self.assertChatUnchanged("third", "rewind_boundary_ambiguous", "stopped-early")
+        self.conversation("Earlier question", "Third question", "Third question", provider_id="sent-twice")
+        await self.assertChatUnchanged("third", "rewind_boundary_ambiguous", "sent-twice")
+        # Two turns of the chat share the prompt: the one message could be either's.
+        self.conversation("Earlier question", "Second question", "Third question")
+        self.turns = {"second": {"prompt": "Third question"}}
+        await self.assertChatUnchanged("third", "rewind_boundary_ambiguous")
+        # A turn imported from Cursor's own history was not sent by this server.
+        self.turns = {"third": {"imported": True}}
+        self.started = {"first": {}, "second": {}}
+        await self.assertChatUnchanged("third", "rewind_boundary_ambiguous")
+
+    async def test_a_message_of_another_turn_that_carries_the_prompt_is_not_taken_for_the_turns_own(self) -> None:
+        # One turn is shown under a label and was sent as "Third question"; the turn shown as "Third question"
+        # was sent with its attachments, so its own message does not end with the prompt.
+        attached = "Third question\n\n[Attached files]\n- notes.txt\nUse these local paths directly when needed.\n"
+        self.started = {"first": {}, "second": {}, "third": {}}
+        # The labelled turn is the first: two stored prompts follow its message, and no turn follows the third.
+        self.turns = {"first": {"prompt": "Comment on a heading"}}
+        self.conversation("Third question", "Second question", attached, provider_id="label-first")
+        await self.assertChatUnchanged("third", "rewind_boundary_ambiguous", "label-first")
+        # The labelled turn is the last: two stored prompts precede its message, and no turn precedes the first.
+        self.turns = {"first": {"prompt": "Third question"}, "third": {"prompt": "Comment on a heading"}}
+        self.conversation(attached, "Second question", "Third question", provider_id="label-last")
+        await self.assertChatUnchanged("first", "rewind_boundary_ambiguous", "label-last")
+
+    async def test_cursor_provider_failures_leave_the_chat_unchanged(self) -> None:
+        self.conversation("Earlier question", "Second question", "Third question")
+        # The recorded root is not in the chat's store (the chat moved to another conversation since).
+        self.started = {"first": {"cursor_root_blob_id": ""}, "second": {"cursor_root_blob_id": "ab" * 32},
+                        "third": {"cursor_root_blob_id": "cd" * 32}}
+        await self.assertChatUnchanged("third", "rewind_provider_unavailable")
+        # The store itself is gone, for a recorded and for an unrecorded run.
+        await self.assertChatUnchanged("third", "rewind_provider_unavailable", "removed-store")
+        self.started = {"first": {}, "second": {}, "third": {}}
+        await self.assertChatUnchanged("third", "rewind_provider_unavailable", "removed-store")
+
+    async def test_the_copy_is_removed_when_the_timeline_cannot_be_cut(self) -> None:
+        roots = self.conversation("Earlier question", "Second question", "Third question")
+        self.started = {"first": {"cursor_root_blob_id": ""}, "second": {"cursor_root_blob_id": roots[4]},
+                        "third": {"cursor_root_blob_id": roots[6]}}
+        sess = self.cursor_chat()
+        before = self.stored_events()
+        with patch.object(server, "truncate_session_events_sync", side_effect=OSError("disk full")), self.assertRaises(OSError):
+            await server.rewind_session("chat", self.request("third"))
+        self.assertEqual((sess["cursor_session_id"], sess["session_id"], self.stores()), ("native-cursor", "native-cursor", {"native-cursor"}))
+        self.assertEqual(self.stored_events(), before)
+
+    async def test_a_fork_with_no_turn_of_its_own_gets_its_memory_from_the_rows_that_stay(self) -> None:
+        # Every turn was copied from the parent; the fork's memory text names all three.
+        self.turns = {run_id: {"forked": True} for run_id in ("first", "second", "third")}
+        sess = self.cursor_chat(None, memory_seed=self.SEED, memory_seed_used=False, memory_fork_reason="no native fork")
+        self.assertIn("Third question", self.next_prompt(sess))
+
+        result = await server.rewind_session("chat", self.request("second"))
+
+        self.assertEqual((result["provider_rewind"], sess["cursor_session_id"]), (None, None))
+        sent = self.next_prompt(sess)
+        self.assertIn("[Fork memory context", sent)
+        self.assertIn("Earlier question", sent)
+        self.assertIn("Completed answer", sent)
+        for removed in ("Second question", "Second answer", "Third question"):
+            self.assertNotIn(removed, sent)
+
+    async def test_a_fork_rewound_onto_a_parent_row_starts_a_conversation_with_the_rows_that_stay(self) -> None:
+        # The fork ran one turn of its own, which began its conversation and used the memory.
+        self.conversation("Third question", memory=self.SEED)
+        self.turns = {"first": {"forked": True}, "second": {"forked": True}}
+        self.started = {"third": {"cursor_root_blob_id": ""}}
+        sess = self.cursor_chat(memory_seed=self.SEED, memory_seed_used=True, memory_fork_reason="no native fork")
+
+        result = await server.rewind_session("chat", self.request("second"))
+
+        self.assertEqual((result["provider_rewind"], sess["cursor_session_id"], sess["session_id"]), ("cursor_reset", None, None))
+        sent = self.next_prompt(sess)
+        self.assertIn("[Fork memory context", sent)
+        self.assertIn("Earlier question", sent)
+        for removed in ("Second question", "Second answer", "Third question"):
+            self.assertNotIn(removed, sent)
+
+    async def test_a_fork_rewound_to_its_first_own_turn_gets_the_parents_history_again(self) -> None:
+        # That turn ran before roots were recorded; its message opens the conversation and carries the memory.
+        self.conversation("Third question", memory=self.SEED)
+        self.turns = {"first": {"forked": True}, "second": {"forked": True}}
+        self.started = {"third": {}}
+        sess = self.cursor_chat(memory_seed=self.SEED, memory_seed_used=True, memory_fork_reason="no native fork")
+
+        result = await server.rewind_session("chat", self.request("third"))
+
+        # A copy resumed from before that message would hold no memory and be sent none.
+        self.assertEqual((result["provider_rewind"], sess["cursor_session_id"], sess["session_id"]), ("cursor_reset", None, None))
+        self.assertEqual(sess["memory_seed"], self.SEED)
+        self.assertIn(self.SEED, self.next_prompt(sess))
+
+    async def test_restore_checkpoint_is_refused_before_a_file_changes_when_the_rewind_would_be(self) -> None:
+        # The third turn's prompt never reached the store, and no root was recorded for it.
+        self.conversation("Earlier question", "Second question")
+        self.started = {"first": {}, "second": {}, "third": {}}
+        self.cursor_chat()
+        server.checkpoints_dir("chat").mkdir(parents=True)
+        for run_id in ("second", "third"):
+            (server.checkpoints_dir("chat") / run_id).write_text("c" * 40)
+        before = self.stored_events()
+
+        with self.assertRaises(server.HTTPException) as refused:
+            async with server.session_checkpoint_restore("chat", "third"):
+                self.fail("the restore started")
+        # The answer the rewind itself gives.
+        self.assertEqual((refused.exception.status_code, refused.exception.detail["code"]), (409, "rewind_boundary_ambiguous"))
+        self.assertEqual(self.stored_events(), before)
+
+        async with server.session_checkpoint_restore("chat", "second") as (commit, _objects_dir):
+            self.assertEqual(commit, "c" * 40)
+        self.assertEqual(self.stored_events()[-1]["type"], "workspace_checkpoint_restored")
+
+    async def test_an_unrecorded_run_of_a_chat_without_a_conversation_leaves_nothing_to_rewind(self) -> None:
+        # Every turn started the CLI on an earlier server version and none kept a session: no id was bound.
+        self.started = {"first": {}, "second": {}, "third": {}}
+        sess = self.cursor_chat(None)
+        server.checkpoints_dir("chat").mkdir(parents=True)
+        (server.checkpoints_dir("chat") / "second").write_text("c" * 40)
+        async with server.session_checkpoint_restore("chat", "second") as (commit, _objects_dir):
+            self.assertEqual(commit, "c" * 40)
+
+        result = await server.rewind_session("chat", self.request("second"))
+
+        self.assertEqual((result["provider_rewind"], sess["cursor_session_id"], sess["session_id"]), (None, None, None))
+        self.assertEqual([event["run_id"] for event in self.stored_events() if event["type"] == "turn_started"], ["first"])
+
+    async def test_the_capability_lists_cursor_for_rewind_only(self) -> None:
+        with patch.object(server, "tmux_capability", return_value={"available": False}), patch.object(
+            server, "runtime_diagnostics_snapshot", return_value={},
+        ):
+            capability = (await server.health())["capabilities"]["session_rewind_v1"]
+        self.assertEqual((capability["supported_backends"], capability["steer_backends"]),
+                         (["claude", "codex", "cursor"], ["claude"]))
 
 
 class CheckpointRestoreGuardTests(RewindFixture):

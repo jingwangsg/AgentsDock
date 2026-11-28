@@ -18,11 +18,14 @@ def text_event(role, text):
     return {"role": role, "message": {"content": [{"type": "text", "text": text}]}}
 
 
-def cursor_provider_envelope(prompt, *, memory=None):
+def cursor_provider_envelope(prompt, *, memory=None, resumed=False):
     session = {"backend": "cursor", "cwd": "/tmp", "memory_seed": memory or ""}
-    return server.build_cursor_provider_prompt(
-        "sess_preview_fixture", session, prompt, Path("/tmp/preview-fixture-manifest.json"),
-    )[0]
+    manifest = Path("/tmp/preview-fixture-manifest.json")
+    if resumed:
+        # A conversation that already holds the instructions and the memory: only the prompt is sent.
+        session.update(cursor_session_id="resumed", memory_seed_used=True, cursor_instruction_version=server.CURSOR_PROMPT_POLICY_VERSION)
+        session["cursor_instruction_hash"] = server.cursor_instruction_hash("sess_preview_fixture", session, manifest)
+    return server.build_cursor_provider_prompt("sess_preview_fixture", session, prompt, manifest)[0]
 
 
 def native_tool_binding():
@@ -35,6 +38,37 @@ def native_tool_binding():
         "No shell fallback, credential lookup, or full-access permission is needed. "
         "Only this top-level agent may call it.\n[End AgentsDock tool binding]"
     )
+
+
+def store_conversation(directory, prompts):
+    """Give a fixture store a conversation in the CLI's layout: content-addressed blobs, a system and a
+    context message, then each prompt with its answer, and one root per added message. Returns the id of
+    each root by the number of messages it lists."""
+    messages = [{"role": "system", "content": "system"}, {"role": "user", "content": "<user_info>context</user_info>"}]
+    for number, prompt in enumerate(prompts):
+        # The request id and the answer's id keep messages with equal text distinct blobs, as in the CLI's store.
+        messages += [
+            {"role": "user", "providerOptions": {"cursor": {"requestId": number}}, "content": [
+                {"type": "text", "text": f"<timestamp>Saturday, Nov 28, 2026, 2:23 PM (UTC+8)</timestamp>\n<user_query>\n{prompt}\n</user_query>"},
+            ]},
+            {"role": "assistant", "id": str(number), "content": [{"type": "text", "text": "answer"}]},
+        ]
+    roots = {}
+    with sqlite3.connect(directory / "store.db") as db:
+        db.execute("CREATE TABLE blobs(id TEXT PRIMARY KEY, data BLOB)")
+
+        def put(data):
+            blob_id = hashlib.sha256(data).hexdigest()
+            db.execute("INSERT INTO blobs VALUES (?, ?)", (blob_id, data))
+            return blob_id
+
+        entries = [b"\x0a\x20" + bytes.fromhex(put(json.dumps(message).encode())) for message in messages]
+        for count in range(2, len(entries) + 1):
+            roots[count] = put(b"".join(entries[:count]) + b"\x50\x01")
+        metadata = json.loads(bytes.fromhex(db.execute("SELECT value FROM meta WHERE key = '0'").fetchone()[0]))
+        db.execute("UPDATE meta SET value = ? WHERE key = '0'",
+                   (json.dumps({**metadata, "latestRootBlobId": roots[len(entries)]}).encode().hex(),))
+    return roots
 
 
 class CursorFixture:
@@ -104,6 +138,67 @@ class CursorDiscoveryTests(CursorFixture, unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             cursor_history.copy_session("missing", "copy-2", str(self.cwd))
         self.assertFalse(directory.with_name("copy-2").exists())
+
+    def test_a_copy_with_a_root_resumes_from_that_root_and_the_source_keeps_its_own(self):
+        directory, _transcript = self.fixture()
+        roots = store_conversation(directory, ["first prompt", "second prompt"])
+        before = (directory / "store.db").read_bytes()
+        copy, _copy_transcript = cursor_history.copy_session("native-cursor", "copy-1", str(self.cwd), roots[4])
+        self.assertEqual(cursor_history.latest_root_blob_id("copy-1", str(self.cwd)), roots[4])
+        self.assertEqual(cursor_history.latest_root_blob_id("native-cursor", str(self.cwd)), roots[6])
+        self.assertEqual((directory / "store.db").read_bytes(), before)
+        # Every blob is in the copy, so a root recorded for an earlier turn stays usable there.
+        self.assertEqual(cursor_history.copy_session("copy-1", "copy-2", str(self.cwd), roots[6])[0], copy.with_name("copy-2"))
+        with self.assertRaises(FileNotFoundError):
+            cursor_history.copy_session("native-cursor", "copy-3", str(self.cwd), "ab" * 32)
+        self.assertFalse(directory.with_name("copy-3").exists())
+
+    def test_a_store_is_read_for_a_rewind_only_while_its_session_can_be_copied(self):
+        directory, _transcript = self.fixture()
+        roots = store_conversation(directory, ["first prompt"])
+        self.assertTrue(cursor_history.has_blob("native-cursor", str(self.cwd), roots[4]))
+        self.assertFalse(cursor_history.has_blob("native-cursor", str(self.cwd), "ab" * 32))
+        # A copy needs the session's sidecar: without it a rewind could not adopt anything it finds here.
+        (directory / "meta.json").unlink()
+        for read in (cursor_history.latest_root_blob_id, cursor_history.prompt_roots):
+            with self.assertRaises(FileNotFoundError):
+                read("native-cursor", str(self.cwd))
+        with self.assertRaises(FileNotFoundError):
+            cursor_history.has_blob("native-cursor", str(self.cwd), roots[4])
+
+    def test_each_prompt_is_paired_with_the_one_root_that_lists_the_messages_before_it(self):
+        directory, _transcript = self.fixture()
+        roots = store_conversation(directory, ["first prompt", "second prompt", "third prompt"])
+        # No turn is before the prompt the conversation begins with.
+        self.assertEqual(cursor_history.prompt_roots("native-cursor", str(self.cwd)),
+                         [("first prompt", ""), ("second prompt", roots[4]), ("third prompt", roots[6])])
+        with sqlite3.connect(directory / "store.db") as db:
+            # A second root over the same four messages, and no root left over the first six.
+            (four,) = db.execute("SELECT data FROM blobs WHERE id = ?", (roots[4],)).fetchone()
+            twin = four[:-2] + b"\x50\x02"
+            db.execute("INSERT INTO blobs VALUES (?, ?)", (hashlib.sha256(twin).hexdigest(), twin))
+            db.execute("DELETE FROM blobs WHERE id = ?", (roots[6],))
+        self.assertEqual(cursor_history.prompt_roots("native-cursor", str(self.cwd)),
+                         [("first prompt", ""), ("second prompt", None), ("third prompt", None)])
+
+    def test_a_prompt_in_the_opening_place_does_not_begin_the_conversation_when_one_is_before_it(self):
+        directory, _transcript = self.fixture()
+        roots = store_conversation(directory, ["first prompt", "second prompt"])
+        with sqlite3.connect(directory / "store.db") as db:
+            # The same store without a context message and without the first answer: system, first prompt,
+            # second prompt, its answer. The second prompt stands where a conversation's first one does.
+            (six,) = db.execute("SELECT data FROM blobs WHERE id = ?", (roots[6],)).fetchone()
+            entries = [six[offset:offset + 34] for offset in range(0, 6 * 34, 34)]
+            ids = {}
+            for name, listed in (("before the second prompt", [0, 2]), ("latest", [0, 2, 4, 5])):
+                data = b"".join(entries[index] for index in listed) + six[6 * 34:]
+                ids[name] = hashlib.sha256(data).hexdigest()
+                db.execute("INSERT INTO blobs VALUES (?, ?)", (ids[name], data))
+            metadata = json.loads(bytes.fromhex(db.execute("SELECT value FROM meta WHERE key = '0'").fetchone()[0]))
+            db.execute("UPDATE meta SET value = ? WHERE key = '0'",
+                       (json.dumps({**metadata, "latestRootBlobId": ids["latest"]}).encode().hex(),))
+        self.assertEqual(cursor_history.prompt_roots("native-cursor", str(self.cwd)),
+                         [("first prompt", None), ("second prompt", ids["before the second prompt"])])
 
     def test_native_title_and_exact_identity_are_read_only(self):
         directory, transcript = self.fixture()
