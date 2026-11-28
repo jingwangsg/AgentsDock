@@ -387,6 +387,25 @@ print(json.dumps({"type":"result","subtype":"success","session_id":"native-mcp",
         self.assertNotIn(self.session_id, agent_server.BUSY_SESSIONS)
         self.assertNotIn(self.session_id, agent_server.CURRENT_TURNS)
 
+    async def test_a_chat_with_no_model_runs_the_default_model_where_the_account_offers_it(self) -> None:
+        script = '''#!/usr/bin/env python3
+import json, sys
+sys.stdin.read()
+print(json.dumps({"type":"system","subtype":"init","session_id":"cursor-sess-test","cwd":".","model":"Auto"}), flush=True)
+print(json.dumps({"type":"result","subtype":"success","is_error":False,"result":"ok","session_id":"cursor-sess-test"}), flush=True)
+'''
+        for offered, own_model, expected in [
+            (True, None, "gemini-4-neon-xhigh"),
+            (False, None, None),
+            (True, "composer-2.5", "composer-2.5"),
+        ]:
+            run_id = f"run-default-{offered}-{own_model}"
+            with self.subTest(offered=offered, own_model=own_model), \
+                    patch.object(agent_server, "CURSOR_DEFAULT_MODEL_OFFERED", offered):
+                events = await self._run_script(script, run_id=run_id, session_patch={"model": own_model})
+                argv = next(event for event in events if event["type"] == "process_started")["argv"]
+                self.assertEqual(argv[argv.index("--model") + 1] if "--model" in argv else None, expected)
+
     async def test_composed_prompt_is_delivered_only_over_stdin(self) -> None:
         secret = "AUTHORITY-SENTINEL-STDIN-CURSOR"
         captured = Path(self.tempdir.name) / "captured-prompt.txt"

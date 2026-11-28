@@ -477,6 +477,11 @@ CURSOR_BIN_OVERRIDE = os.environ.get("CURSOR_BIN", "").strip()
 CURSOR_BIN = CURSOR_BIN_OVERRIDE or "cursor-agent"
 CURSOR_EXECUTABLE_CANDIDATES = ("cursor-agent", "agent")
 CURSOR_PROCESS_GUARD = Path(__file__).with_name("cursor_process_guard.py")
+# The model a Cursor chat with no model of its own runs, in place of the CLI's own selection.
+CURSOR_DEFAULT_MODEL = "gemini-4-neon-xhigh"
+# Whether the server's Cursor account offers it, as the last model list said. Assumed until a list has been
+# read: an account without it then gets Cursor's own refusal on that turn, not a different model unannounced.
+CURSOR_DEFAULT_MODEL_OFFERED = True
 OPENCODE_BIN_OVERRIDE = os.environ.get("OPENCODE_BIN", "").strip()
 OPENCODE_BIN = OPENCODE_BIN_OVERRIDE or "opencode"
 OPENCODE_EXECUTABLE_CANDIDATES = ("opencode",)
@@ -62559,6 +62564,7 @@ def discover_cursor_catalog(*, executable: str | None = None) -> dict[str, Any]:
         parse_cursor_account_tier,
         parse_cursor_models_list,
     )
+    global CURSOR_DEFAULT_MODEL_OFFERED
 
     model_source = f"{Path(executable or CURSOR_BIN).name} --list-models"
     try:
@@ -62567,7 +62573,10 @@ def discover_cursor_catalog(*, executable: str | None = None) -> dict[str, Any]:
             raise RuntimeError("no compatible Cursor executable is available")
         model_source = f"{Path(executable).name} --list-models"
         output = cursor_catalog_command([executable, "--list-models"])
-        parsed = parse_cursor_models_list(output)
+        # Left out of a Cursor chat's list: Anthropic and OpenAI models, which run through the Claude and Codex
+        # backends, and Grok models, by the project owner's choice. Cursor's list names them by these id prefixes.
+        parsed = [model for model in parse_cursor_models_list(output)
+                  if not model["id"].startswith(("claude-", "gpt-", "cursor-grok-"))]
     except Exception as exc:
         logger.warning(
             "cursor model discovery failed error_type=%s",
@@ -62577,11 +62586,13 @@ def discover_cursor_catalog(*, executable: str | None = None) -> dict[str, Any]:
         model_source = f"{model_source} failed"
 
     is_free_tier = False
+    plan_read = False
     current_label = None
     try:
         if executable and not runtime_catalog_budget_expired():
             about_output = cursor_catalog_command([executable, "about"])
             is_free_tier = cursor_account_is_free_tier(parse_cursor_account_tier(about_output))
+            plan_read = True
             # --list-models marks the provider's router as default even after /model
             # selects a different model and reasoning effort in the user's CLI.
             model_row = re.search(r"^[ \t]*Model(?:[ \t]*:[ \t]*|[ \t]+)([^\r\n]+)$", about_output, re.I | re.M)
@@ -62594,6 +62605,9 @@ def discover_cursor_catalog(*, executable: str | None = None) -> dict[str, Any]:
         )
 
     if not parsed:
+        if is_free_tier:
+            # A failed listing says nothing about the default model; the plan does, since it runs only Auto.
+            CURSOR_DEFAULT_MODEL_OFFERED = False
         # Free accounts can only select Auto. For other accounts a failed listing
         # supplies no evidence that an already selected model has been withdrawn.
         return {
@@ -62605,7 +62619,15 @@ def discover_cursor_catalog(*, executable: str | None = None) -> dict[str, Any]:
             "default_model": None,
             "default_effort": None,
         }
-    if current_label:
+    # The list says whether the default model exists, the plan whether it can run: a free plan lists every
+    # model and runs only Auto. A read that did not learn the plan keeps what the last one said.
+    listed = next((model for model in parsed if model["id"] == CURSOR_DEFAULT_MODEL), None)
+    if listed is None or plan_read:
+        CURSOR_DEFAULT_MODEL_OFFERED = listed is not None and not is_free_tier
+    if listed and CURSOR_DEFAULT_MODEL_OFFERED:
+        # The server's own default replaces the CLI's selection, label included.
+        default_entry, current_label = listed, None
+    elif current_label:
         # about may include parameters (such as context size) absent from the
         # listing's labels. Keep the native label without inventing a model ID.
         matches = [m for m in parsed if " ".join(m["label"].split()).casefold() == current_label.casefold()]
@@ -70504,6 +70526,8 @@ async def run_cursor_process(
     runner_sess["cursor_permission_mode"] = effective_cursor_permission_mode(
         sess
     )
+    if not runner_sess.get("model") and CURSOR_DEFAULT_MODEL_OFFERED:
+        runner_sess["model"] = CURSOR_DEFAULT_MODEL
     cmd = build_cursor_cmd(
         runner_sess,
         cursor_bin=cursor_bin,

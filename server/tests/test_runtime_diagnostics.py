@@ -35,6 +35,8 @@ class RuntimeDiagnosticTests(unittest.TestCase):
         with agent_server.RUNTIME_DIAGNOSTICS_LOCK:
             agent_server.RUNTIME_DIAGNOSTICS.clear()
             agent_server.RUNTIME_DIAGNOSTIC_GENERATIONS.clear()
+        # discover_cursor_catalog records what the list said; later tests in this process must not inherit it.
+        self.enterContext(patch.object(agent_server, "CURSOR_DEFAULT_MODEL_OFFERED", agent_server.CURSOR_DEFAULT_MODEL_OFFERED))
 
     def test_codex_login_hint_expires_cached_denial_without_claiming_authentication(self):
         agent_server.record_runtime_failure("codex", "Not logged in")
@@ -1103,7 +1105,9 @@ class RuntimeDiagnosticTests(unittest.TestCase):
             with self.subTest(tier=tier), patch.object(agent_server, "run_catalog_command", side_effect=[
                 subprocess.TimeoutExpired("cursor-agent", 6), f"Model    Gemini 4 Argon 300K High\nSubscription Tier    {tier}",
             ]):
+                agent_server.CURSOR_DEFAULT_MODEL_OFFERED = True
                 result = agent_server.discover_cursor_catalog(executable="/fake/cursor-agent")
+                self.assertEqual(agent_server.CURSOR_DEFAULT_MODEL_OFFERED, not exhaustive)
                 self.assertEqual(result["model_list_complete"], exhaustive)
                 self.assertEqual(result["models"][0], {"value": "", "label": "Gemini 4 Argon 300K High"})
 
@@ -1117,11 +1121,66 @@ class RuntimeDiagnosticTests(unittest.TestCase):
                 self.assertEqual(result["models"][0]["label"], label)
                 self.assertEqual(result["default_model"], model)
 
+    def test_cursor_catalog_leaves_out_anthropic_openai_and_grok_models(self) -> None:
+        output = (
+            "Available models\n\n"
+            "auto - Auto (default)\n"
+            "claude-opus-5-thinking-high - Claude Opus 5 1M Thinking\n"
+            "gpt-5.3-codex - Codex 5.3\n"
+            "cursor-grok-4.6-high - Grok 4.6\n"
+            "gemini-4-argon-high - Gemini 4 Argon High\n"
+            "composer-2.5 - Composer 2.5\n"
+        )
+        with patch.object(agent_server, "run_catalog_command", side_effect=[
+            output, "Model    Composer 2.5\nSubscription Tier    Pro",
+        ]):
+            catalog = agent_server.discover_cursor_catalog(executable="/fake/cursor-agent")
+
+        self.assertEqual(
+            [option["value"] for option in catalog["models"]],
+            ["", "auto", "gemini-4-argon-high", "composer-2.5"],
+        )
+        self.assertEqual(catalog["default_model"], "composer-2.5")
+
+        # The server default entry follows the CLI's own selection, which the list filter does not change.
+        with patch.object(agent_server, "run_catalog_command", side_effect=[
+            output, "Model    Claude Opus 5 1M Thinking\nSubscription Tier    Pro",
+        ]):
+            catalog = agent_server.discover_cursor_catalog(executable="/fake/cursor-agent")
+        self.assertEqual(catalog["models"][0], {"value": "", "label": "Claude Opus 5 1M Thinking"})
+        self.assertIsNone(catalog["default_model"])
+
+    def test_cursor_server_default_is_the_default_model_where_the_account_offers_it(self) -> None:
+        output = (
+            "auto - Auto (default)\n"
+            "composer-2.5 - Composer 2.5\n"
+            "gemini-4-neon-xhigh - Gemini 4 Neon  Extra High\n"
+        )
+        about = "Model    Composer 2.5\nSubscription Tier    {tier}"
+        unread = RuntimeError("agent about exited 1")
+        for listed, plan, before, label, model, offered in [
+            (output, about.format(tier="Pro"), False, "Gemini 4 Neon  Extra High", "gemini-4-neon-xhigh", True),
+            # A free plan lists the model and cannot run it; a list without it has nothing to default to.
+            (output, about.format(tier="Free"), True, "Composer 2.5", "composer-2.5", False),
+            ("auto - Auto (default)\ncomposer-2.5 - Composer 2.5\n", about.format(tier="Pro"), True, "Composer 2.5", "composer-2.5", False),
+            ("auto - Auto (default)\ncomposer-2.5 - Composer 2.5\n", unread, True, "Auto", "auto", False),
+            # A read that did not learn the plan keeps what the last one said about a listed model.
+            (output, unread, True, "Gemini 4 Neon  Extra High", "gemini-4-neon-xhigh", True),
+            (output, unread, False, "Auto", "auto", False),
+        ]:
+            with self.subTest(listed=listed, plan=plan, before=before), patch.object(
+                agent_server, "run_catalog_command", side_effect=[listed, plan],
+            ), patch.object(agent_server, "CURSOR_DEFAULT_MODEL_OFFERED", before):
+                catalog = agent_server.discover_cursor_catalog(executable="/fake/cursor-agent")
+                self.assertEqual(catalog["models"][0], {"value": "", "label": label})
+                self.assertEqual(catalog["default_model"], model)
+                self.assertEqual(agent_server.CURSOR_DEFAULT_MODEL_OFFERED, offered)
+
     def test_cursor_catalog_locks_named_models_on_free_plan(self) -> None:
         list_models_output = (
             "Available models\n\n"
             "auto - Auto (default)\n"
-            "gpt-5.2 - GPT-5.2\n"
+            "composer-2.5 - Composer 2.5\n"
         )
         about_output = (
             "About Cursor CLI\n\n"
@@ -1138,8 +1197,8 @@ class RuntimeDiagnosticTests(unittest.TestCase):
 
         by_value = {option["value"]: option for option in catalog["models"]}
         self.assertNotIn("locked", by_value["auto"])
-        self.assertTrue(by_value["gpt-5.2"]["locked"])
-        self.assertIn("free plan", by_value["gpt-5.2"]["locked_reason"])
+        self.assertTrue(by_value["composer-2.5"]["locked"])
+        self.assertIn("free plan", by_value["composer-2.5"]["locked_reason"])
         # The synthetic "Server default" entry mirrors "auto" (the default),
         # so it must stay selectable too - only named models lock.
         self.assertNotIn("locked", by_value[""])
@@ -1148,7 +1207,7 @@ class RuntimeDiagnosticTests(unittest.TestCase):
         list_models_output = (
             "Available models\n\n"
             "auto - Auto (default)\n"
-            "gpt-5.2 - GPT-5.2\n"
+            "composer-2.5 - Composer 2.5\n"
         )
         about_output = (
             "About Cursor CLI\n\n"
@@ -1166,7 +1225,7 @@ class RuntimeDiagnosticTests(unittest.TestCase):
             self.assertNotIn("locked", option)
 
     def test_cursor_catalog_does_not_assume_unknown_tier_is_free(self) -> None:
-        list_models_output = "Available models\n\nauto - Auto (default)\ngpt-5.2 - GPT-5.2\n"
+        list_models_output = "Available models\n\nauto - Auto (default)\ncomposer-2.5 - Composer 2.5\n"
         with patch.object(
             agent_server,
             "run_catalog_command",
@@ -1177,7 +1236,7 @@ class RuntimeDiagnosticTests(unittest.TestCase):
             )
 
         by_value = {option["value"]: option for option in catalog["models"]}
-        self.assertNotIn("locked", by_value["gpt-5.2"])
+        self.assertNotIn("locked", by_value["composer-2.5"])
 
 
 class RuntimePreflightTests(unittest.IsolatedAsyncioTestCase):
