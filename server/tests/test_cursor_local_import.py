@@ -1,8 +1,10 @@
 """Cursor CLI import: public exports only, exact native identity, isolated state."""
+import asyncio
 import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -110,7 +112,7 @@ class CursorFixture:
 
 
 FAKE_ASK_CLI = """#!PYTHON
-import json, sqlite3, sys
+import json, os, signal, sqlite3, sys, time
 from pathlib import Path
 config = Path(CONFIG)
 copy_id = sys.argv[sys.argv.index('--resume') + 1]
@@ -119,6 +121,22 @@ question = sys.stdin.read()
 agent = json.loads(bytes.fromhex(sqlite3.connect(store).execute("SELECT value FROM meta WHERE key = '0'").fetchone()[0]))['agentId']
 (transcript,) = config.glob('projects/*/agent-transcripts')
 (transcript / copy_id).mkdir()
+with open(config / 'runs', 'a') as runs:
+    runs.write(str(os.getpid()) + chr(10))
+(config / 'env').write_text(json.dumps(sorted(name for name in os.environ if name.startswith(('AGENTSDOCK', 'TMUX')))))
+if question.endswith('linger'):
+    # As the real CLI: told to end, it takes a moment and writes its transcript last.
+    def end(*_):
+        time.sleep(0.35)
+        (transcript / copy_id).mkdir(exist_ok=True)
+        (transcript / copy_id / 'late.jsonl').write_text('late')
+        os._exit(0)
+    signal.signal(signal.SIGTERM, end)
+if question.endswith('wait'):
+    while not (config / 'go').exists():
+        time.sleep(0.01)
+if question.endswith(('hold', 'linger')):
+    time.sleep(60)
 print('progress that is not the result')
 print(json.dumps({'type': 'result', 'is_error': 'fail' in question, 'result': json.dumps([agent == copy_id, sys.argv[1:], question])}))
 """
@@ -465,6 +483,19 @@ class CursorImportTests(CursorFixture, unittest.IsolatedAsyncioTestCase):
             "provider_session_id": "native-cursor", "backend": "cursor", "cwd": str(self.cwd), **kwargs,
         }])
 
+    async def test_a_side_run_of_a_chat_with_no_model_uses_the_servers_default_model(self):
+        script = self.root / "agent"
+        script.write_text(FAKE_ASK_CLI.replace("#!PYTHON", "#!" + sys.executable).replace("CONFIG", repr(str(self.config))))
+        script.chmod(0o700)
+        self.store.sessions["chat"] = {"id": "chat", "backend": "cursor", "cwd": str(self.cwd), "cursor_session_id": "native-cursor"}
+        for offered, expected in [(True, ["--model", "gemini-4-neon-xhigh"]), (False, [])]:
+            with self.subTest(offered=offered), patch.object(server, "resolve_cursor_executable", return_value=str(script)), \
+                    patch.object(server, "CURSOR_DEFAULT_MODEL_OFFERED", offered):
+                handle = await server.create_canvas_comment_side_chat("chat")
+                _own, argv, _question = json.loads((await handle.ask("Question: why?", history=[]))["answer"])
+                # The same model the chat's own turn would run.
+                self.assertEqual(argv[8:], expected)
+
     async def test_a_canvas_question_is_answered_in_a_copy_of_the_session_deleted_once_its_answer_returns(self):
         directory = self.config / "chats" / hashlib.md5(str(self.cwd).encode(), usedforsecurity=False).hexdigest()
         transcripts = self.config / "projects" / cursor_history.project_slug(str(self.cwd)) / "agent-transcripts"
@@ -494,7 +525,183 @@ class CursorImportTests(CursorFixture, unittest.IsolatedAsyncioTestCase):
             self.store.sessions["chat"]["cwd"] = str(self.root / "gone")
             with self.assertRaises(server.side_questions.SideQuestionError):
                 await handle.ask("Question: why?", history=[])
-        self.assertEqual([path.name for path in directory.iterdir()], ["native-cursor"])
+            # A copy that cannot be made, here of a store that is not there, leaves no record either.
+            self.store.sessions["chat"].update(cwd=str(self.cwd), cursor_session_id="native-cursor")
+            handle = await server.create_canvas_comment_side_chat("chat")
+            shutil.rmtree(directory / "native-cursor")
+            with self.assertRaises(server.side_questions.SideQuestionError):
+                await handle.ask("Question: why?", history=[])
+        self.assertEqual(list(directory.iterdir()), [])
+        self.assertEqual(server.SIDE_QUESTIONS.synced.store.recorded_copies("cursor"), [])
+
+    async def test_a_side_chat_asks_each_question_in_a_new_copy_while_the_chats_turn_runs(self):
+        directory = self.config / "chats" / hashlib.md5(str(self.cwd).encode(), usedforsecurity=False).hexdigest()
+        transcripts = self.config / "projects" / cursor_history.project_slug(str(self.cwd)) / "agent-transcripts"
+        script = self.root / "agent"
+        script.write_text(FAKE_ASK_CLI.replace("#!PYTHON", "#!" + sys.executable).replace("CONFIG", repr(str(self.config))))
+        script.chmod(0o700)
+        session = self.store.sessions["chat"] = {"id": "chat", "backend": "cursor", "cwd": str(self.cwd), "cursor_session_id": "native-cursor", "model": "auto"}
+        # The chat's own turn runs for the whole side chat.
+        turns = {"chat": {"run_id": "run-1", "backend": "cursor"}}
+        before = (directory / "native-cursor" / "store.db").read_bytes(), json.dumps(session, sort_keys=True), json.dumps(turns)
+        key = ("owner", "chat")
+        chats = server.side_questions.SyncedSideChats(self.root / "side.sqlite3", native_factory=server.create_native_side_chat)
+        self.addAsyncCleanup(chats.close)
+        side_chat = (await chats.snapshot(*key))["side_chat_id"]
+        leftovers = lambda: ([path.name for path in directory.iterdir()], [path.name for path in transcripts.iterdir()])
+
+        async def answered(request_id, question, after):
+            await chats.submit(*key, request_id, question, side_chat, after)
+            await chats.tasks[key]
+            exchange = (await chats.snapshot(*key))["exchanges"][-1]
+            self.assertEqual((exchange["request_id"], exchange["status"], exchange["backend"]), (request_id, "completed", "cursor"))
+            self.assertEqual(exchange["context_note"], "The chat's native session from when the message was sent.")
+            return exchange["answer"]
+
+        with patch.object(server, "resolve_cursor_executable", return_value=str(script)), \
+                patch.object(server, "CURRENT_TURNS", turns), patch.object(server, "BUSY_SESSIONS", {"chat"}), \
+                patch.dict(os.environ, {"TMUX": "/tmp/tmux-0/default,1,0", "TMUX_PANE": "%1"}):
+            first = await answered("one", "which?", None)
+            is_own_chat, argv, question = json.loads(first)
+            self.assertTrue(is_own_chat)
+            # Read-only ask mode on the chat's model, as for a Canvas question.
+            self.assertEqual(argv[:4] + argv[5:], ["-p", "--output-format", "json", "--resume", "--trust", "--mode", "ask", "--model", "auto"])
+            self.assertEqual(question, server.SIDE_QUESTION_INSTRUCTION + "Question:\nwhich?")
+            # A question can run shell commands: it gets none of the chat's own coordinates, nor the server's terminal.
+            self.assertEqual(json.loads((self.config / "env").read_text()), [])
+            # Nothing is kept on the provider's side, so the follow-up carries the earlier exchange.
+            second = await answered("two", "and then?", "one")
+            self.assertEqual(json.loads(second)[2], server.SIDE_QUESTION_INSTRUCTION
+                             + f"Earlier question in this side chat:\nwhich?\n\nYour answer:\n{first}\n\nQuestion:\nand then?")
+            self.assertEqual(leftovers(), (["native-cursor"], ["native-cursor"]))
+            # A stopped question: its process ends, and its copy and what the run left are deleted.
+            await chats.submit(*key, "three", "hold", side_chat, "two")
+            for _ in range(500):
+                if (self.config / "runs").read_text().count("\n") == 3:
+                    break
+                await asyncio.sleep(0.01)
+            self.assertEqual([len(names) for names in leftovers()], [2, 2])
+            # While it runs, its copy is recorded: the next start removes it if this server ends here.
+            (copy_id,) = set(leftovers()[0]) - {"native-cursor"}
+            copies = server.SIDE_QUESTIONS.synced.store
+            self.assertEqual(copies.recorded_copies("cursor"), [(copy_id, str(self.cwd))])
+            held = int((self.config / "runs").read_text().split()[-1])
+            self.assertEqual((await chats.cancel(*key, "three"))["exchanges"][-1]["status"], "cancelled")
+            self.assertEqual(leftovers(), (["native-cursor"], ["native-cursor"]))
+            self.assertEqual(copies.recorded_copies("cursor"), [])
+            for _ in range(500):
+                try:
+                    os.kill(held, 0)
+                except ProcessLookupError:
+                    break
+                await asyncio.sleep(0.01)
+            else:
+                self.fail("The stopped question's CLI still runs")
+        # The chat's native store, its settings and its running turn were not touched.
+        self.assertEqual(((directory / "native-cursor" / "store.db").read_bytes(), json.dumps(session, sort_keys=True), json.dumps(turns)), before)
+        self.assertEqual(server.read_events("chat"), [])
+
+    async def test_after_a_rewind_during_its_run_a_canvas_question_is_dropped_and_an_edit_request_gets_its_reply(self):
+        script = self.root / "agent"
+        script.write_text(FAKE_ASK_CLI.replace("#!PYTHON", "#!" + sys.executable).replace("CONFIG", repr(str(self.config))))
+        script.chmod(0o700)
+        chat = self.store.sessions["chat"] = {"id": "chat", "backend": "cursor", "cwd": str(self.cwd), "model": "auto"}
+        anchor = {"canvas_id": "summary", "tag": "td", "text": "loss 2.41", "html": ""}
+        with patch.object(server, "resolve_cursor_executable", return_value=str(script)):
+            for mode in ("ask", "edit"):
+                chat["cursor_session_id"] = "native-cursor"
+                for name in ("runs", "go"):
+                    (self.config / name).unlink(missing_ok=True)
+                prompt = server.agentsdock_canvas.comment_prompt(self.root / "report.canvas.tsx", 7, anchor, mode, "wait", follow_up=False)[0]
+                asking = asyncio.ensure_future((await server.create_canvas_comment_side_chat("chat")).ask(prompt, history=[]))
+                for _ in range(500):
+                    if (self.config / "runs").exists():
+                        break
+                    await asyncio.sleep(0.01)
+                # A rewind makes a copy of the session the chat's session while the comment's CLI runs.
+                chat["cursor_session_id"] = "rewound-copy"
+                (self.config / "go").touch()
+                if mode == "ask":
+                    # As a Codex or Claude comment: an answer about the conversation the chat has left is not shown.
+                    with self.assertRaises(server.side_questions.SideQuestionError) as dropped:
+                        await asking
+                    self.assertEqual(dropped.exception.status_code, 410)
+                else:
+                    # The file is changed by then, so the reply that says what changed is delivered.
+                    self.assertTrue(json.loads((await asking)["answer"])[0])
+
+    def left_copy(self, copy_id):
+        """A side run's copy as it is once the CLI has written to it: a session of its own, with the chat's title."""
+        directory, transcripts = cursor_history.copy_session("native-cursor", copy_id, str(self.cwd))
+        transcripts.mkdir()
+        (transcripts / f"{copy_id}.jsonl").write_text(json.dumps(text_event("user", "<user_query>Side question</user_query>")) + "\n")
+        return directory, transcripts
+
+    def test_a_recorded_copy_is_no_import_chat_candidate(self):
+        copies = server.SIDE_QUESTIONS.synced.store
+        self.left_copy("side-copy")
+        listed = lambda: sorted(item["provider_session_id"] for item in server.local_cursor_session_candidates(set()))
+        self.assertEqual(listed(), ["native-cursor", "side-copy"])
+        copies.record_copy("cursor", "side-copy", str(self.cwd))
+        self.addCleanup(copies.forget_copy, "cursor", "side-copy")
+        self.assertEqual(listed(), ["native-cursor"])
+        # Also for a server started after this one: the record is read from the file.
+        copies.close()
+        self.assertEqual(listed(), ["native-cursor"])
+
+    def test_a_start_removes_the_copies_that_an_ended_server_recorded_and_nothing_else(self):
+        copies = server.SIDE_QUESTIONS.synced.store
+        recorded, unrecorded = self.left_copy("recorded-copy"), self.left_copy("unrecorded-copy")
+        copies.record_copy("cursor", "recorded-copy", str(self.cwd))
+        # Recorded and never made: the server ended before the copy.
+        copies.record_copy("cursor", "never-made", str(self.cwd))
+        copies.close()
+        server.remove_leftover_cursor_copies()
+        self.assertEqual([path.exists() for path in (*recorded, *unrecorded)], [False, False, True, True])
+        self.assertEqual(copies.recorded_copies("cursor"), [])
+        # The chat's own session and a directory nobody recorded stay, and stay importable.
+        self.assertEqual(sorted(item["provider_session_id"] for item in server.local_cursor_session_candidates(set())),
+                         ["native-cursor", "unrecorded-copy"])
+
+    async def test_clear_right_after_stop_removes_the_copy_only_when_the_cli_has_ended(self):
+        directory = self.config / "chats" / hashlib.md5(str(self.cwd).encode(), usedforsecurity=False).hexdigest()
+        transcripts = self.config / "projects" / cursor_history.project_slug(str(self.cwd)) / "agent-transcripts"
+        script = self.root / "agent"
+        script.write_text(FAKE_ASK_CLI.replace("#!PYTHON", "#!" + sys.executable).replace("CONFIG", repr(str(self.config))))
+        script.chmod(0o700)
+        self.store.sessions["chat"] = {"id": "chat", "backend": "cursor", "cwd": str(self.cwd), "cursor_session_id": "native-cursor"}
+        key = ("owner", "chat")
+        chats = server.side_questions.SyncedSideChats(self.root / "side.sqlite3", native_factory=server.create_native_side_chat)
+        self.addAsyncCleanup(chats.close)
+        side_chat = (await chats.snapshot(*key))["side_chat_id"]
+        with patch.object(server, "resolve_cursor_executable", return_value=str(script)):
+            await chats.submit(*key, "one", "linger", side_chat)
+            for _ in range(500):
+                if (self.config / "runs").exists():
+                    break
+                await asyncio.sleep(0.01)
+            cli = int((self.config / "runs").read_text())
+            stopping = asyncio.create_task(chats.cancel(*key, "one"))
+            await asyncio.sleep(0.05)
+            # Clear cancels the answer a second time, while the CLI is still ending.
+            await chats.clear(*key, side_chat)
+            await stopping
+        # The CLI had ended before the copy was removed, so what it wrote last is removed with it.
+        with self.assertRaises(ProcessLookupError):
+            os.kill(cli, 0)
+        self.assertEqual(([path.name for path in directory.iterdir()], [path.name for path in transcripts.iterdir()]),
+                         (["native-cursor"], ["native-cursor"]))
+
+    async def test_the_side_chat_capability_lists_cursor_unless_its_cli_is_not_installed(self):
+        # None: no check has run since the server started. A check that failed and a login that expired
+        # keep Cursor listed, so a client can still read, stop and clear a side chat it shows.
+        for status, listed in ((None, ["cursor"]), ("unknown", ["cursor"]), ("ready", ["cursor"]),
+                               ("unauthenticated", ["cursor"]), ("error", ["cursor"]), ("missing", [])):
+            checked = {"cursor": server.runtime_diagnostic_payload("cursor", status, installed=None, authenticated=None)} if status else {}
+            with self.subTest(status=status), patch.dict(server.RUNTIME_DIAGNOSTICS, checked, clear=True), \
+                    patch.object(server, "working_tmux_bin", return_value=None):
+                capability = (await server.health())["capabilities"]["side_questions"]
+            self.assertEqual(capability["backends"], ["codex", "claude", *listed])
 
     async def test_an_edit_request_runs_in_a_copy_with_the_permission_flags_of_the_chats_turns(self):
         directory = self.config / "chats" / hashlib.md5(str(self.cwd).encode(), usedforsecurity=False).hexdigest()
@@ -515,6 +722,8 @@ class CursorImportTests(CursorFixture, unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(is_own_chat)
                 self.assertEqual(argv[:4] + argv[5:], ["-p", "--output-format", "json", "--resume", *flags, "--model", "auto"])
                 self.assertEqual(question, prompt)
+        # An edit request keeps the chat's coordinates, which a question does not get: it needs the Canvas directory.
+        self.assertIn("AGENTSDOCK_CANVAS_DIR", json.loads((self.config / "env").read_text()))
         # Nothing of the copies is left.
         self.assertEqual([path.name for path in directory.iterdir()], ["native-cursor"])
         self.assertEqual([path.name for path in transcripts.iterdir()], ["native-cursor"])

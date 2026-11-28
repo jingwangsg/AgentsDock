@@ -294,7 +294,7 @@
   "sideQuestion.title": "Side question",
   "sideQuestion.description": "Ask a side question while your agent keeps working. Questions and answers stay separate from the main conversation.",
   "sideQuestion.close": "Close side question",
-  "sideQuestion.context": "Uses native provider context, including tool results: a separate Codex conversation or Claude /btw. Side questions stay separate from the main conversation.",
+  "sideQuestion.context": "Uses native provider context, including tool results: a separate Codex conversation, Claude /btw, or a read-only copy of the Cursor session. Side questions stay separate from the main conversation.",
   "sideQuestion.ended": "This native side conversation has ended. Clear Side chat to start again from the current main conversation.",
   "sideQuestion.question": "Question",
   "sideQuestion.placeholder": "What would you like to clarify?",

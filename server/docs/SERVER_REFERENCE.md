@@ -843,10 +843,12 @@ background configuration refresh is added.
 
 ## Side Questions
 
-Native clients can ask Codex or Claude a temporary side question using the
+Native clients can ask Codex, Claude or Cursor a temporary side question using the
 provider's conversation context, including completed tool results, without
-changing the main turn, queue, goals or chat history. Codex uses an ephemeral
-fork; Claude uses its native side-question control on the existing connection.
+changing the main turn, queue, goals or chat history. Codex uses a fork of the
+thread; Claude uses its native side-question control on the existing connection;
+Cursor runs its CLI once per question, in its read-only ask mode, on a copy of
+the chat's session.
 Saved settings for a later Claude turn do not reconfigure that connection when
 asking a side question. See [Native side conversations](../docs/NATIVE_SIDE_CHAT.md)
 for follow-ups, cancellation and context behavior.

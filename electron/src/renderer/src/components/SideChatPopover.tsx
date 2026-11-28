@@ -2,11 +2,12 @@ import * as Popover from '@radix-ui/react-popover'
 import { MessageCircleQuestion, Trash2, X } from 'lucide-react'
 import { useId, useRef } from 'react'
 import { t } from '@shared/i18n'
-import type { SideQuestionScope } from '@shared/side-questions'
+import { sideQuestionsAvailable, type SideQuestionScope } from '@shared/side-questions'
 import type { Session } from '@shared/types'
 import { useLocale } from '../lib/i18n'
 import { SideChatController } from '../lib/side-chat'
 import { useTransientClose } from '../lib/transient-close'
+import { useAppStore } from '../store/app-store'
 import { SideQuestionPanel } from './SideQuestionPanel'
 
 export function SideChatPopover({ session, scope, controller, open, focusVersion, onOpenChange }: {
@@ -17,7 +18,10 @@ export function SideChatPopover({ session, scope, controller, open, focusVersion
   const titleId = useId()
   const content = useRef<HTMLDivElement>(null)
   useTransientClose(open, () => onOpenChange(false))
-  if (window.agentsDock.sharedChat || !['codex', 'claude'].includes(session.backend)) return null
+  const listed = useAppStore(state => sideQuestionsAvailable(state.health, session.backend))
+  // Codex and Claude keep the button on a server that does not list them (an older one, or one that has
+  // not answered yet): the panel says what is missing. Any other backend has it where the server lists it.
+  if (window.agentsDock.sharedChat || !(listed || session.backend === 'codex' || session.backend === 'claude')) return null
   return <div className="side-chat-anchor">
     <Popover.Root open={open} onOpenChange={onOpenChange}>
       <Popover.Trigger asChild>

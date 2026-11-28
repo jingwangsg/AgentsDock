@@ -41,9 +41,97 @@ class SideQuestionError(Exception):
         self.status_code = status_code
 
 
-def capability():
-    return {"available": True, "version": 2, "native_context": True, "backends": ["codex", "claude"],
+def capability(backends):
+    return {"available": True, "version": 2, "native_context": True, "backends": list(backends),
             "max_question_chars": MAX_QUESTION_CHARS, "sync": True}
+
+
+class SideChatCarrier:
+    """One backend's way to answer a side conversation of a chat: the composer's Side chat or a Canvas comment thread.
+
+    A side conversation is the one the server stores: its exchanges and what a carrier saved for it. A carrier
+    answers its messages for a while. The server makes one at a message that finds none, bound to the chat's
+    provider conversation as it is then, uses it for the messages that follow, and awaits ``close`` after thirty
+    minutes without one, after a failed or cancelled message, on Clear, on the chat's removal and at shutdown.
+
+    ``close`` ends the carrier, not the side conversation. It releases what the carrier holds in this server: a
+    process, a connection, files. What a durable carrier saved with ``persist_state`` stays usable at the
+    provider: the side conversation's next carrier gets it as ``persisted_state`` and takes it up again. Clear
+    discards the saved state; the carrier is closed as on any other path and is not told why.
+
+    One message runs at a time. A message is cancelled by cancelling the task that awaits ``ask``, followed by
+    ``close``. The class attributes and ``available`` say what a carrier can do: the callers read them, never a
+    backend's name. ``server/docs/NATIVE_SIDE_CHAT.md`` has the full contract.
+    """
+
+    # Answers the composer's Side chat. False: Canvas comment threads only.
+    composer = True
+    # The provider knows that it answers beside the chat: a native side question, a fork with side instructions.
+    # False: it is the chat's own CLI on a copy, and the composer's question has to say so.
+    side_aware = True
+    # A run can wait for an approval, which then belongs to the side run alone.
+    approvals = False
+
+    @staticmethod
+    def usable() -> bool:
+        """Whether this server can run the backend at all. The Side chat capability lists a composer carrier while it can."""
+        return True
+
+    @staticmethod
+    def provider_id(session) -> str:
+        """The id of the chat's provider conversation, empty before it exists. A side conversation ends when it changes."""
+        raise NotImplementedError
+
+    @staticmethod
+    def provider_revision(session):
+        """What else has to stay as it is for a side conversation to go on, such as the provider account in use."""
+        return None
+
+    @classmethod
+    def available(cls, session, question, *, edit) -> bool:
+        """Whether this server can answer this message for this chat. Asked before a Canvas comment is accepted."""
+        return bool(cls.provider_id(session))
+
+    # The server passes every argument. The defaults are for CopiedSessionSideChat(session_id), which runs one
+    # message outside a side conversation and reads none of them.
+    def __init__(self, session_id, binding=None, *, current=None, durable=False, persisted_state=None, persist_state=None):
+        self.session_id = session_id
+        # {"backend", "parent_id", "provider_revision"} of the chat when the side conversation started.
+        self.binding = binding
+        # () -> the chat's session now. Raises SideQuestionError once the side conversation cannot go on.
+        self.current = current
+        # The side conversation is stored and outlives this carrier: save what its next carrier needs.
+        self.durable = durable
+        # What an earlier carrier of this side conversation saved, or None.
+        self.persisted_state = persisted_state
+        # async (value) -> None, for a JSON value.
+        self.persist_state = persist_state
+
+    def check(self, session) -> None:
+        """Raise SideQuestionError when the carrier cannot go on for the chat as it is now. Called around every ``ask``."""
+
+    def lacks(self, history, *, edit=False) -> bool:
+        """Whether the provider would answer the next message without these earlier exchanges.
+
+        Where it would, the caller writes them into the question and passes no history. A carrier whose provider
+        keeps the side conversation, or takes the exchanges from ``ask``, answers False for them.
+        """
+        return bool(history)
+
+    async def ask(self, question, *, history, edit=False, on_step=None) -> dict:
+        """Answer one message: ``{"answer": str, "context_note": str}``.
+
+        ``context_note`` is one line about the context the answer was given from; the desktop shows it under the
+        side chat's description. ``history`` is the side conversation so far, ``[{"question", "response"}]``, at
+        most twenty exchanges. A question (``edit`` False) reads the workspace and runs commands that change
+        nothing; it never changes the chat's provider conversation, and changes no file on its own account. An
+        edit request changes files with the chat's own permissions. ``on_step``, when given, takes the run's
+        tool calls and interim messages as ``{"id", "kind", "title", "status", "output"?}``.
+        """
+        raise NotImplementedError
+
+    async def close(self) -> None:
+        """End the carrier: release what it holds in this server. Awaited on every path above, possibly twice."""
 
 
 def validate_history(value) -> tuple[tuple[str, str], ...]:
@@ -332,6 +420,7 @@ class SideChatStore:
             database.execute("CREATE TABLE IF NOT EXISTS chats (owner TEXT, session TEXT, document TEXT NOT NULL, PRIMARY KEY(owner, session))")
             database.execute("CREATE TABLE IF NOT EXISTS receipts (owner TEXT, session TEXT, request TEXT, side_chat TEXT NOT NULL, question TEXT NOT NULL, PRIMARY KEY(owner, session, request))")
             database.execute("CREATE TABLE IF NOT EXISTS provider_threads (thread TEXT PRIMARY KEY)")
+            database.execute("CREATE TABLE IF NOT EXISTS provider_copies (backend TEXT, copy TEXT, cwd TEXT NOT NULL, PRIMARY KEY(backend, copy))")
             with database:
                 if database.execute("PRAGMA user_version").fetchone()[0] == 0:
                     # Early development databases stored receipt question
@@ -398,6 +487,26 @@ class SideChatStore:
             database.execute("DELETE FROM chats WHERE session=?", (session,))
             database.execute("DELETE FROM receipts WHERE session=?", (session,))
 
+    # A carrier that runs a side message in a copy of the chat's provider session records the copy under its
+    # backend before it makes it, and forgets it once it has removed it. While recorded, the copy is not an
+    # Import Chat candidate (provider_thread_ids), and after a server that ended during the run, the next
+    # one finds here what to remove. `cwd` is the chat's directory, which a CLI needs to find a session.
+
+    def record_copy(self, backend, copy_id, cwd):
+        database = self._db()
+        with database:
+            database.execute("INSERT INTO provider_copies VALUES(?,?,?)", (backend, copy_id, cwd))
+
+    def forget_copy(self, backend, copy_id):
+        database = self._db()
+        with database:
+            database.execute("DELETE FROM provider_copies WHERE backend=? AND copy=?", (backend, copy_id))
+
+    def recorded_copies(self, backend):
+        if self.database is None and not self.path.exists():
+            return []
+        return self._db().execute("SELECT copy, cwd FROM provider_copies WHERE backend=?", (backend,)).fetchall()
+
     def provider_thread_ids(self):
         # Local history discovery runs in a worker thread. Use a separate
         # read-only connection instead of sharing the event-loop writer. The
@@ -408,7 +517,9 @@ class SideChatStore:
         with closing(sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True)) as database:
             tables = {row[0] for row in database.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if "provider_threads" in tables:
-                return {row[0] for row in database.execute("SELECT thread FROM provider_threads")}
+                # A database last written by a server without provider_copies has no such table yet.
+                copies = database.execute("SELECT copy FROM provider_copies") if "provider_copies" in tables else ()
+                return {row[0] for row in (*database.execute("SELECT thread FROM provider_threads"), *copies)}
             if "chats" in tables:
                 threads = set()
                 for (raw,) in database.execute("SELECT document FROM chats"):
