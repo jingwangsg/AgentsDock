@@ -85635,7 +85635,8 @@ async def health() -> dict[str, Any]:
         "capabilities": {
             "subagent_limit_v1": {"version": 1, "backends": ["codex", "claude"]},
             "provider_usage": {"available": bool(AGENT_TOKEN), "version": 1, "backends": ["codex", "claude"]},
-            "side_questions": side_questions.capability(),
+            "side_questions": side_questions.capability(
+                backend for backend, carrier in SIDE_CHAT_CARRIERS.items() if carrier.composer and carrier.usable()),
             "background_activity_v1": {"available": True},
             "codex_auth_v1": codex_auth.capability(available=bool(AGENT_TOKEN) and CODEX_TRANSPORT != CODEX_TRANSPORT_EXEC),
             "codex_provider_v1": {"available": bool(AGENT_TOKEN) and CODEX_TRANSPORT != CODEX_TRANSPORT_EXEC, "wire_api": "responses", "per_chat": True, "per_chat_models": True, "model_discovery": True, "model_compatibility": True},
@@ -87368,11 +87369,20 @@ def public_chat_share_session_exists(session_id: str) -> bool:
     )
 
 
-async def create_native_side_chat(session_id: str, *, persisted_state=None, persist_state=None, durable=False):
+# The composer's words in front of a question for a provider that does not know it answers beside the chat.
+# Measured on Cursor without them: a follow-up was answered from the chat's own last reply, and a request for a
+# change with "switch to Agent mode", which a side chat does not have.
+SIDE_QUESTION_INSTRUCTION = ("This is a question in a read-only side chat about the conversation above. Answer it. If it asks "
+                             "for a change, say that the change has to be requested in the chat itself.\n\n")
+
+
+async def create_native_side_chat(session_id: str, *, persisted_state=None, persist_state=None, durable=False, comment=False):
     """Bind a side conversation to the provider's actual parent.
 
     No visible-message projection, main turn, queue or goal mutation belongs
-    here. Codex owns a separate native fork; Claude uses native /btw control.
+    here. The chat's backend selects the carrier (SIDE_CHAT_CARRIERS); from there on this function and its
+    callers read what the carrier says about itself. ``comment``: the conversation is a Canvas comment
+    thread, which a carrier that does not answer the composer's Side chat serves too.
     """
     if SERVER_SHUTTING_DOWN:
         raise side_questions.SideQuestionError(503, "Server is shutting down")
@@ -87380,161 +87390,233 @@ async def create_native_side_chat(session_id: str, *, persisted_state=None, pers
         raise side_questions.SideQuestionError(404, "Chat not found")
     session = dict(STORE.sessions[session_id])
     backend = str(session.get("backend") or DEFAULT_BACKEND).lower()
-    if backend not in {BACKEND_CODEX, BACKEND_CLAUDE}:
+    carrier_type = SIDE_CHAT_CARRIERS.get(backend)
+    if carrier_type is None or not (comment or carrier_type.composer):
         raise side_questions.SideQuestionError(503, "This backend does not support side questions")
-    def provider_id(value):
-        return (session_codex_thread_id(value) if backend == BACKEND_CODEX else
-                str(value.get("claude_session_id") or value.get("session_id") or "").strip())
-    parent_id = provider_id(session)
+    parent_id = carrier_type.provider_id(session)
     if not parent_id:
         raise side_questions.SideQuestionError(409, "The native conversation has not started yet")
-    custom_codex = backend == BACKEND_CODEX and codex_provider.session_choice(session.get("codex_provider")) == "custom"
-    provider_revision = CODEX_PROVIDER_STORE.for_session(session)["credential_id"] if custom_codex else None
-    binding = {"backend": backend, "parent_id": parent_id, "provider_revision": provider_revision}
+    binding = {"backend": backend, "parent_id": parent_id, "provider_revision": carrier_type.provider_revision(session)}
     if persisted_state is not None and any(persisted_state.get(key) != value for key, value in binding.items()):
         raise side_questions.SideQuestionError(410, "The main provider conversation changed; clear Side chat")
     if durable and persist_state is not None and persisted_state is None:
         await persist_state(binding)
 
     class NativeSideChat:
-        codex = None
+        def __init__(self):
+            async def save_state(value):
+                if persist_state is not None:
+                    await persist_state({**binding, backend: value})
+            self.carrier = carrier_type(session_id, binding, current=self.current, durable=durable,
+                                        saved_state=(persisted_state or {}).get(backend), save_state=save_state)
 
         def current(self):
             if SERVER_SHUTTING_DOWN:
                 raise side_questions.SideQuestionError(503, "Server is shutting down")
-            if backend == BACKEND_CODEX and CODEX_GOALS_RECONFIGURING:
-                raise side_questions.SideQuestionError(409, "Wait for Codex configuration to finish before using Side chat")
             if not public_chat_share_session_exists(session_id):
                 raise side_questions.SideQuestionError(404, "Chat not found")
             current = STORE.sessions[session_id]
-            if str(current.get("backend") or DEFAULT_BACKEND).lower() != backend or provider_id(current) != parent_id:
+            if str(current.get("backend") or DEFAULT_BACKEND).lower() != backend or carrier_type.provider_id(current) != parent_id:
                 raise side_questions.SideQuestionError(410, "The main provider conversation changed; clear Side chat")
-            if backend == BACKEND_CODEX:
-                selected = CODEX_PROVIDER_STORE.for_session(current)
-                if (selected or {}).get("credential_id") != provider_revision:
-                    raise side_questions.SideQuestionError(410, "This chat's Codex endpoint changed; clear Side chat")
-                CODEX_PROVIDER_STORE.require_thread(parent_id, selected)
+            self.carrier.check(current)
             return current
 
-        async def ask(self, question, *, history, on_step=None):
-            current = self.current()
-            if backend == BACKEND_CLAUDE:
-                from claude_sdk_client import (ClaudeSDKGenerationChanged, ClaudeSDKConfigurationConflict,
-                    ClaudeSDKRunActive, ClaudeSDKSupervisorError)
-                try:
-                    cwd = existing_cwd(str(current.get("cwd") or DEFAULT_CWD))
-                    options, configuration_key, _cli_path = build_claude_sdk_options(
-                        session_id, current, cwd, codex_manifest_path(session_id))
-                    manager = await claude_sdk_manager()
-                    result = await manager.ask_side_question(session_id, question, history=history,
-                        options=options, configuration_key=configuration_key, expected_provider_id=parent_id)
-                except ClaudeSDKGenerationChanged:
-                    raise side_questions.SideQuestionError(410, "Claude conversation changed; clear Side chat") from None
-                except (ClaudeSDKConfigurationConflict, ClaudeSDKRunActive):
-                    raise side_questions.SideQuestionError(409, "Claude conversation is changing; retry") from None
-                except ClaudeSDKSupervisorError:
-                    raise side_questions.SideQuestionError(503, "Claude native side questions are unavailable; retry after reconnecting") from None
-            else:
-                from codex_side_question import NativeCodexSideChat
-                if self.codex is None:
-                    cwd = existing_cwd(str(current.get("cwd") or DEFAULT_CWD))
-                    model, effort, service_tier = codex_runtime_settings(current)
-                    approval_policy = current.get("codex_approval_policy")
-                    if approval_policy not in CODEX_APPROVAL_POLICIES:
-                        approval_policy = CODEX_DEFAULT_APPROVAL_POLICY
-                    reviewer = current.get("codex_approvals_reviewer")
-                    if reviewer not in CODEX_APPROVAL_REVIEWERS:
-                        reviewer = CODEX_DEFAULT_APPROVALS_REVIEWER
-                    fork_overrides = {
-                        "approvalPolicy": approval_policy,
-                        "approvalsReviewer": reviewer,
-                        "runtimeWorkspaceRoots": [cwd],
-                    }
-                    turn_overrides = dict(fork_overrides)
-                    permission_profile = str(current.get("codex_permission_profile")
-                                             or CODEX_DEFAULT_PERMISSION_PROFILE or "").strip()
-                    if permission_profile:
-                        fork_overrides["permissions"] = permission_profile
-                        turn_overrides["permissions"] = permission_profile
-                    else:
-                        sandbox = current.get("codex_sandbox_mode")
-                        if sandbox not in CODEX_SANDBOX_MODES:
-                            sandbox = CODEX_DEFAULT_SANDBOX_MODE
-                        fork_overrides["sandbox"] = sandbox
-                        turn_overrides["sandboxPolicy"] = {"type": CODEX_SANDBOX_POLICY_TYPES[sandbox]}
-                    config = flatten_codex_config_overrides(codex_effective_thread_config(current))
-                    reserved_prefix = f"mcp_servers.{CODEX_PROVIDER_MCP_NAME}"
-                    config = {key: value for key, value in config.items()
-                              if key != reserved_prefix and not key.startswith(reserved_prefix + ".")}
-                    fork_overrides["config"] = config
-                    if effort:
-                        turn_overrides["effort"] = effort
-                    if service_tier:
-                        fork_overrides["serviceTier"] = codex_app_server_service_tier(service_tier)
-                        turn_overrides["serviceTier"] = codex_app_server_service_tier(service_tier)
-
-                    async def side_server_request(request_id, method, params):
-                        def is_current():
-                            try:
-                                self.current()
-                            except side_questions.SideQuestionError:
-                                return False
-                            return bool(self.codex is not None and not self.codex.closed
-                                        and self.codex.thread_id
-                                        and str(params.get("threadId") or "") == self.codex.thread_id)
-                        return await handle_codex_server_request(request_id, method, params,
-                            side_session_id=session_id, side_owner_is_current=is_current)
-
-                    provider_selection = CODEX_PROVIDER_STORE.for_session(current, include_key=True)
-                    if provider_selection:
-                        provider_selection["effort"] = codex_provider.runtime_effort(
-                            provider_selection, CODEX_PROVIDER_STORE.cached_catalog(provider_selection), current.get("effort"),
-                        )
-                        provider_selection["reasoning_summary"] = codex_provider.runtime_summary(
-                            provider_selection, CODEX_PROVIDER_STORE.cached_catalog(provider_selection))
-                    async def save_codex_state(value):
-                        if persist_state is not None:
-                            await persist_state({**binding, "codex": value})
-                    self.codex = NativeCodexSideChat(parent_id, executable=CODEX_BIN,
-                        external_login=hub_codex_login if HUB_PROVIDER_INSTALL and not provider_selection else None,
-                        model=model if isinstance(model, str) and model.strip() else None,
-                        cwd=cwd, fork_overrides=fork_overrides, turn_overrides=turn_overrides,
-                        server_request_handler=side_server_request,
-                        env=isolated_process.isolated_environment(runner_env()),
-                        provider_selection=provider_selection, durable=durable,
-                        resume_state=(persisted_state or {}).get("codex"), persist_state=save_codex_state)
-                result = {"answer": await self.codex.ask(question, on_step=on_step),
-                          "context_note": "Native Codex context from when Side chat started, including tool results. Clear Side chat to use the latest main context."}
+        async def ask(self, question, *, history, edit=False, on_step=None):
+            self.current()
+            if not comment:
+                # What the composer's Side chat writes in front of a question for a provider that needs it. A
+                # comment thread writes its own (create_canvas_comment_side_chat).
+                words = "" if self.carrier.native else SIDE_QUESTION_INSTRUCTION
+                if self.carrier.lacks(history, edit=edit):
+                    words += "".join(f"Earlier question in this side chat:\n{item['question']}\n\nYour answer:\n{item['response']}\n\n"
+                                     for item in history)
+                    history = []
+                if words:
+                    question = f"{words}Question:\n{question}"
+            result = await self.carrier.ask(question, history=history, edit=edit, on_step=on_step)
             self.current()
             return {"backend": backend, **result}
 
         async def close(self):
-            if self.codex is not None:
-                await self.codex.close()
-            # Claude /btw is request-scoped; never close the main SDK client.
+            await self.carrier.close()
 
     return NativeSideChat()
 
 
-# The time bound of a Gemini turn, for a copied session's process and for a Codex fork that answer a Canvas comment.
+class CodexSideChat(side_questions.SideChatCarrier):
+    """Codex: an ephemeral native fork of the chat's thread, kept for the side conversation's follow-ups.
+
+    The fork runs in an app-server process of its own with the chat's workspace and permissions, for a question
+    and for an edit request alike. An approval that the chat's settings require belongs to the fork alone.
+    """
+
+    approvals = True
+    codex = None
+
+    @staticmethod
+    def provider_id(session):
+        return session_codex_thread_id(session)
+
+    @staticmethod
+    def provider_revision(session):
+        # The credential of a custom endpoint: a side conversation does not move to another one.
+        custom = codex_provider.session_choice(session.get("codex_provider")) == "custom"
+        return CODEX_PROVIDER_STORE.for_session(session)["credential_id"] if custom else None
+
+    def check(self, session):
+        if CODEX_GOALS_RECONFIGURING:
+            raise side_questions.SideQuestionError(409, "Wait for Codex configuration to finish before using Side chat")
+        selected = CODEX_PROVIDER_STORE.for_session(session)
+        if (selected or {}).get("credential_id") != self.binding["provider_revision"]:
+            raise side_questions.SideQuestionError(410, "This chat's Codex endpoint changed; clear Side chat")
+        CODEX_PROVIDER_STORE.require_thread(self.binding["parent_id"], selected)
+
+    def lacks(self, history, *, edit=False):
+        # A durable fork is taken up again from its saved state and holds what it answered. A fork made for one
+        # message, as for a Canvas comment, starts from the chat alone.
+        return bool(history) and self.codex is None and not self.durable
+
+    async def ask(self, question, *, history, edit=False, on_step=None):
+        from codex_side_question import NativeCodexSideChat
+        if self.codex is None:
+            current = self.current()
+            cwd = existing_cwd(str(current.get("cwd") or DEFAULT_CWD))
+            model, effort, service_tier = codex_runtime_settings(current)
+            approval_policy = current.get("codex_approval_policy")
+            if approval_policy not in CODEX_APPROVAL_POLICIES:
+                approval_policy = CODEX_DEFAULT_APPROVAL_POLICY
+            reviewer = current.get("codex_approvals_reviewer")
+            if reviewer not in CODEX_APPROVAL_REVIEWERS:
+                reviewer = CODEX_DEFAULT_APPROVALS_REVIEWER
+            fork_overrides = {
+                "approvalPolicy": approval_policy,
+                "approvalsReviewer": reviewer,
+                "runtimeWorkspaceRoots": [cwd],
+            }
+            turn_overrides = dict(fork_overrides)
+            permission_profile = str(current.get("codex_permission_profile")
+                                     or CODEX_DEFAULT_PERMISSION_PROFILE or "").strip()
+            if permission_profile:
+                fork_overrides["permissions"] = permission_profile
+                turn_overrides["permissions"] = permission_profile
+            else:
+                sandbox = current.get("codex_sandbox_mode")
+                if sandbox not in CODEX_SANDBOX_MODES:
+                    sandbox = CODEX_DEFAULT_SANDBOX_MODE
+                fork_overrides["sandbox"] = sandbox
+                turn_overrides["sandboxPolicy"] = {"type": CODEX_SANDBOX_POLICY_TYPES[sandbox]}
+            config = flatten_codex_config_overrides(codex_effective_thread_config(current))
+            reserved_prefix = f"mcp_servers.{CODEX_PROVIDER_MCP_NAME}"
+            config = {key: value for key, value in config.items()
+                      if key != reserved_prefix and not key.startswith(reserved_prefix + ".")}
+            fork_overrides["config"] = config
+            if effort:
+                turn_overrides["effort"] = effort
+            if service_tier:
+                fork_overrides["serviceTier"] = codex_app_server_service_tier(service_tier)
+                turn_overrides["serviceTier"] = codex_app_server_service_tier(service_tier)
+
+            async def side_server_request(request_id, method, params):
+                def is_current():
+                    try:
+                        self.current()
+                    except side_questions.SideQuestionError:
+                        return False
+                    return bool(self.codex is not None and not self.codex.closed
+                                and self.codex.thread_id
+                                and str(params.get("threadId") or "") == self.codex.thread_id)
+                return await handle_codex_server_request(request_id, method, params,
+                    side_session_id=self.session_id, side_owner_is_current=is_current)
+
+            provider_selection = CODEX_PROVIDER_STORE.for_session(current, include_key=True)
+            if provider_selection:
+                provider_selection["effort"] = codex_provider.runtime_effort(
+                    provider_selection, CODEX_PROVIDER_STORE.cached_catalog(provider_selection), current.get("effort"),
+                )
+                provider_selection["reasoning_summary"] = codex_provider.runtime_summary(
+                    provider_selection, CODEX_PROVIDER_STORE.cached_catalog(provider_selection))
+            self.codex = NativeCodexSideChat(self.binding["parent_id"], executable=CODEX_BIN,
+                external_login=hub_codex_login if HUB_PROVIDER_INSTALL and not provider_selection else None,
+                model=model if isinstance(model, str) and model.strip() else None,
+                cwd=cwd, fork_overrides=fork_overrides, turn_overrides=turn_overrides,
+                server_request_handler=side_server_request,
+                env=isolated_process.isolated_environment(runner_env()),
+                provider_selection=provider_selection, durable=self.durable,
+                resume_state=self.saved_state, persist_state=self.save_state)
+        return {"answer": await self.codex.ask(question, on_step=on_step),
+                "context_note": "Native Codex context from when Side chat started, including tool results. Clear Side chat to use the latest main context."}
+
+    async def close(self):
+        if self.codex is not None:
+            await self.codex.close()
+
+
+class ClaudeSideChat(side_questions.SideChatCarrier):
+    """Claude: the native side question (/btw) on the chat's own SDK connection, which has no tools. An edit
+    request, which it therefore cannot carry out, runs in a fork of the session that the print CLI makes for
+    that one run (CopiedSessionSideChat). /btw is request-scoped: nothing is held, and the chat's SDK client
+    is never closed from here.
+    """
+
+    @staticmethod
+    def provider_id(session):
+        return str(session.get("claude_session_id") or session.get("session_id") or "").strip()
+
+    @classmethod
+    def available(cls, session, question, *, edit):
+        # /btw needs the Agent SDK and has a question limit. The fork of an edit request runs with full access,
+        # so it is for a chat that has it, and with a CLI that writes no transcript of the fork beside the chat's.
+        return (bool(cls.provider_id(session))
+                and CLAUDE_TRANSPORT != CLAUDE_TRANSPORT_PRINT and claude_sdk_dependency_available()
+                and len(question) <= side_questions.MAX_QUESTION_CHARS
+                and (not edit
+                     or effective_claude_permission_mode(session) == "bypassPermissions"
+                     # Last: its first call in a process runs `claude --help`, 0.07 s when measured.
+                     and claude_supports_no_session_persistence()))
+
+    def lacks(self, history, *, edit=False):
+        # /btw replays the exchanges it is given; the fork of an edit request does not.
+        return bool(history) and edit
+
+    async def ask(self, question, *, history, edit=False, on_step=None):
+        if edit:
+            return await CopiedSessionSideChat(self.session_id).ask(question, history=history, edit=True)
+        from claude_sdk_client import (ClaudeSDKGenerationChanged, ClaudeSDKConfigurationConflict,
+            ClaudeSDKRunActive, ClaudeSDKSupervisorError)
+        current = self.current()
+        try:
+            cwd = existing_cwd(str(current.get("cwd") or DEFAULT_CWD))
+            options, configuration_key, _cli_path = build_claude_sdk_options(
+                self.session_id, current, cwd, codex_manifest_path(self.session_id))
+            manager = await claude_sdk_manager()
+            return await manager.ask_side_question(self.session_id, question, history=history,
+                options=options, configuration_key=configuration_key, expected_provider_id=self.binding["parent_id"])
+        except ClaudeSDKGenerationChanged:
+            raise side_questions.SideQuestionError(410, "Claude conversation changed; clear Side chat") from None
+        except (ClaudeSDKConfigurationConflict, ClaudeSDKRunActive):
+            raise side_questions.SideQuestionError(409, "Claude conversation is changing; retry") from None
+        except ClaudeSDKSupervisorError:
+            raise side_questions.SideQuestionError(503, "Claude native side questions are unavailable; retry after reconnecting") from None
+
+
+# The time bound of a Gemini turn: for a copied session's process, and for a Canvas comment's carrier that can wait for an approval.
 CANVAS_COMMENT_SIDE_CHAT_SECONDS = 3600
 
 
-class CopiedSessionSideChat:
-    """Answers a Canvas comment for Gemini and Cursor, which have no native side chat, and a Claude edit request,
+class CopiedSessionSideChat(side_questions.SideChatCarrier):
+    """The carrier of Gemini and Cursor, which have no native side chat, and the way a Claude edit request runs,
     which /btw cannot carry out: it has no tools.
 
-    Each comment runs in a process of its own on the chat's native session as it stands then: Gemini and
+    Each message runs in a process of its own on the chat's native session as it stands then: Gemini and
     Cursor resume a copy of it, without write tools for a question and in the chat's permission mode for
     an edit request; Claude's print CLI resumes a fork of it. The chat's session is only read, and what
-    the process leaves is deleted once its answer returns. ``history`` is not used:
-    create_canvas_comment_side_chat puts it in the question.
+    the process leaves is deleted once its answer returns. Nothing is kept between messages, and no steps
+    are reported. ``history`` is not used: the callers put it in the question (``lacks``).
     """
 
-    def __init__(self, session_id: str):
-        self.session_id = session_id
+    native = False
 
-    async def ask(self, question: str, *, history, edit: bool = False) -> dict[str, Any]:
+    async def ask(self, question: str, *, history, edit: bool = False, on_step=None) -> dict[str, Any]:
         session = dict(STORE.sessions[self.session_id])
         backend = str(session.get("backend") or DEFAULT_BACKEND).lower()
         requested_cwd = str(session.get("cwd") or DEFAULT_CWD)
@@ -87639,12 +87721,43 @@ class CopiedSessionSideChat:
                         await terminate_process_tree(proc, grace=CURSOR_GUARD_TEARDOWN_GRACE_SECONDS)
             except Exception as exc:
                 # Native errors can contain the prompt or a credential.
-                logger.warning("Canvas comment in a copy or fork of the %s session failed error_type=%s", backend, type(exc).__name__)
+                logger.warning("Side chat in a copy or fork of the %s session failed error_type=%s", backend, type(exc).__name__)
                 answer = None
         if not isinstance(answer, str) or not answer.strip():
             raise side_questions.SideQuestionError(503, "The provider did not answer in a copy or fork of this chat")
         return {"backend": backend, "answer": answer,
-                "context_note": "The chat's native session from when the comment was sent."}
+                "context_note": "The chat's native session from when the message was sent."}
+
+
+class CursorSideChat(CopiedSessionSideChat):
+    """Cursor: one CLI run per message on a copy of the chat's session; a question runs in the CLI's ask mode."""
+
+    @staticmethod
+    def usable():
+        # The last runtime check found the CLI ready, or none has run since this server started: a client's
+        # connection starts one.
+        return (RUNTIME_DIAGNOSTICS.get(BACKEND_CURSOR) or {}).get("status", "unknown") in ("ready", "unknown")
+
+    @staticmethod
+    def provider_id(session):
+        return str(session.get("cursor_session_id") or "").strip()
+
+
+class GeminiSideChat(CopiedSessionSideChat):
+    """Gemini: one CLI run per message on a copy of the chat's session, for Canvas comments."""
+
+    composer = False
+
+    @staticmethod
+    def provider_id(session):
+        return str(session.get("gemini_session_id") or "").strip()
+
+
+# The one place that maps a chat's backend to what answers its side conversations. A backend without an entry
+# (OpenCode) has no side chat, and its Canvas comments start a turn.
+SIDE_CHAT_CARRIERS: dict[str, type[side_questions.SideChatCarrier]] = {
+    BACKEND_CODEX: CodexSideChat, BACKEND_CLAUDE: ClaudeSideChat, BACKEND_CURSOR: CursorSideChat, BACKEND_GEMINI: GeminiSideChat,
+}
 
 
 # By the canvas file's path. An entry lasts while an edit request of the file runs or waits.
@@ -87652,40 +87765,34 @@ CANVAS_EDIT_LOCKS: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.Weak
 
 
 async def create_canvas_comment_side_chat(session_id: str, **_persistence):
-    """Answers a Canvas comment in a copy of the chat as it stands, keeping nothing for the comment thread's next comment.
+    """Answers a Canvas comment in a side conversation of its own, keeping nothing for the comment thread's next comment.
 
-    Claude's /btw and a Codex fork are native copies; Gemini and Cursor resume a copied session, and a
-    Claude edit request runs in a fork that the print CLI makes. The side chat store offers a thread's saved
-    provider state and its earlier exchanges. Only /btw replays the exchanges itself, so the other handles
-    get them in the question.
+    Every comment gets a new carrier, so its provider sees the chat as it stands. The side chat store offers
+    a thread's saved provider state and its earlier exchanges. The state is not used; the exchanges go in
+    the question where the carrier's provider would answer without them.
     """
-    backend = str((STORE.sessions.get(session_id) or {}).get("backend") or DEFAULT_BACKEND).lower()
-    # load-bearing: the store's `durable` and saved state are dropped, so a Codex fork is ephemeral and
-    # bound to no earlier conversation of the chat.
-    native = None if backend in (BACKEND_GEMINI, BACKEND_CURSOR) else await create_native_side_chat(session_id)
+    # load-bearing: the store's `durable` and saved state are dropped, so a carrier that keeps a conversation,
+    # as a Codex fork does, starts an ephemeral one that is bound to no earlier conversation of the chat.
+    native = await create_native_side_chat(session_id, comment=True)
 
     class CommentSideChat:
         async def ask(self, question, *, history, on_step=None):
             # Read before the earlier exchanges are put in front: they hold the thread's earlier prompts.
             edited_file = agentsdock_canvas.edit_request_path(question)
-            if backend == BACKEND_CLAUDE and edited_file is None:
-                return await native.ask(question, history=history, on_step=on_step)
-            question = agentsdock_canvas.with_earlier_exchanges(
-                question, ((item["question"], item["response"]) for item in history))
+            if native.carrier.lacks(history, edit=edited_file is not None):
+                question, history = agentsdock_canvas.with_earlier_exchanges(
+                    question, ((item["question"], item["response"]) for item in history)), []
             # load-bearing: two Gemini copies that changed one canvas file at the same time both reported their
             # change and the file held only one, so the edit requests of one canvas file run one after another,
-            # on every backend. A Codex fork keeps the lock while it waits for an approval. A turn of the chat
+            # on every backend. A carrier keeps the lock while it waits for an approval. A turn of the chat
             # itself takes no lock: it can write the file while a side chat does.
             async with CANVAS_EDIT_LOCKS.setdefault(edited_file, asyncio.Lock()) if edited_file else nullcontext():
-                if backend == BACKEND_CODEX:
-                    # An approval that nobody answers would keep the fork, and the file's lock, without end.
-                    async with asyncio.timeout(CANVAS_COMMENT_SIDE_CHAT_SECONDS):
-                        return await native.ask(question, history=[], on_step=on_step)
-                return await CopiedSessionSideChat(session_id).ask(question, history=[], edit=edited_file is not None)
+                # An approval that nobody answers would keep the run, and the file's lock, without end.
+                async with asyncio.timeout(CANVAS_COMMENT_SIDE_CHAT_SECONDS) if native.carrier.approvals else nullcontext():
+                    return await native.ask(question, history=history, edit=edited_file is not None, on_step=on_step)
 
         async def close(self):
-            if native is not None:
-                await native.close()
+            await native.close()
 
     return CommentSideChat()
 
@@ -103334,31 +103441,14 @@ async def start_canvas_comment_turn(session_id: str, prompt: str, display_prompt
 
 
 def canvas_comment_side_chat_available(session_id: str, prompt: str) -> bool:
-    """Whether a copy of the chat can answer a Canvas comment; otherwise the comment starts a turn.
+    """Whether a side conversation of the chat can answer a Canvas comment; otherwise the comment starts a turn.
 
-    Each condition is one a question's side chat would fail on after the comment was accepted: a chat
-    without a native conversation to copy, Claude without the Agent SDK that carries /btw, and a question
-    over Claude's limit. An edit request starts a turn under the same conditions. On Claude it also starts
-    one for a chat without full access, because its fork runs with full access, and with a CLI that would
-    write the fork's transcript beside the chat's.
+    The chat's carrier decides (SideChatCarrier.available). Each of its conditions is one the side chat would
+    fail on after the comment was accepted, such as a chat without a provider conversation to copy.
     """
     session = STORE.sessions.get(session_id) or {}
-    backend = str(session.get("backend") or DEFAULT_BACKEND).lower()
-    if backend == BACKEND_CODEX:
-        return bool(session_codex_thread_id(session))
-    if backend == BACKEND_CLAUDE:
-        return (bool(str(session.get("claude_session_id") or session.get("session_id") or "").strip())
-                and CLAUDE_TRANSPORT != CLAUDE_TRANSPORT_PRINT and claude_sdk_dependency_available()
-                and len(prompt) <= side_questions.MAX_QUESTION_CHARS
-                and (agentsdock_canvas.edit_request_path(prompt) is None
-                     or effective_claude_permission_mode(session) == "bypassPermissions"
-                     # Last: its first call in a process runs `claude --help`, 0.07 s when measured.
-                     and claude_supports_no_session_persistence()))
-    if backend == BACKEND_GEMINI:
-        return bool(session.get("gemini_session_id"))
-    if backend == BACKEND_CURSOR:
-        return bool(session.get("cursor_session_id"))
-    return False  # OpenCode
+    carrier = SIDE_CHAT_CARRIERS.get(str(session.get("backend") or DEFAULT_BACKEND).lower())
+    return carrier is not None and carrier.available(session, prompt, edit=agentsdock_canvas.edit_request_path(prompt) is not None)
 
 
 agentsdock_canvas.register_canvas_routes(

@@ -10,7 +10,8 @@ const capability = { available: true, version: 2, native_context: true, sync: tr
 const health = (sideQuestions: object) => ({ ok: true, capabilities: { side_questions: sideQuestions } }) as unknown as Health
 
 assert(sideChatAvailable(health(capability), 'codex') && sideChatAvailable(health(capability), 'claude'), 'Codex and Claude chats get side chat')
-assert(!sideChatAvailable(health(capability), 'cursor'), 'Cursor chats do not')
+assert(!sideChatAvailable(health(capability), 'cursor'), 'a backend the server does not list gets none')
+assert(sideChatAvailable(health({ ...capability, backends: ['codex', 'claude', 'cursor'] }), 'cursor'), 'a backend the server lists gets side chat')
 assert(!sideChatAvailable(health({ ...capability, sync: false }), 'codex'), 'a server without synced side chat does not')
 assert(!sideChatAvailable(null, 'codex'), 'no health, no side chat')
 assert(sideChatLimit(health(capability)) === 4000 && sideChatLimit(null) === 8000, 'the server limit applies, capped at 8000')

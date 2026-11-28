@@ -25,6 +25,11 @@ describe('side chat input validation', () => {
     expect(sideQuestionsAvailable(health, 'codex')).toBe(true)
     expect(sideQuestionsAvailable(health, 'claude')).toBe(false)
     expect(sideQuestionsAvailable(health, 'cursor')).toBe(false)
+    // The server's list decides: a backend it lists is offered, with no list of backends in the client.
+    const listed = { ok: true, capabilities: { side_questions: { ...capability, backends: ['codex' as const, 'cursor' as const] } } }
+    expect(sideQuestionsAvailable(listed, 'cursor')).toBe(true)
+    expect(sideQuestionsAvailable(listed, 'opencode')).toBe(false)
+    expect(sideQuestionsAvailable(listed, undefined)).toBe(false)
     for (const override of [{ version: 1, history: true }, { version: 3 }, { native_context: false },
       { native_context: undefined }, { available: false }]) {
       expect(sideQuestionsAvailable({ ...health, capabilities: { side_questions: { ...capability, ...override } } }, 'codex')).toBe(false)
@@ -68,5 +73,12 @@ describe('side chat input validation', () => {
     for (const invalid of [{}, [{ ...step, kind: 3 }], [{ ...step, title: null }], [{ ...step, output: 3 }], [null]]) {
       expect(() => parseSyncedSideChat(chat(invalid), 'chat-a')).toThrow('side_question_invalid_response')
     }
+  })
+
+  it('accepts an answer from any backend the server answers for', () => {
+    const chat = (backend: unknown) => ({ session_id: 'chat-a', side_chat_id: 'side-a', revision: 1, last_request_id: 'request-a',
+      exchanges: [{ request_id: 'request-a', question: 'Q', status: 'completed', answer: 'A', backend, created_at: 'now', updated_at: 'now' }] })
+    expect(parseSyncedSideChat(chat('cursor'), 'chat-a').exchanges[0].backend).toBe('cursor')
+    expect(() => parseSyncedSideChat(chat(3), 'chat-a')).toThrow('side_question_invalid_response')
   })
 })

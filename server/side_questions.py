@@ -41,9 +41,80 @@ class SideQuestionError(Exception):
         self.status_code = status_code
 
 
-def capability():
-    return {"available": True, "version": 2, "native_context": True, "backends": ["codex", "claude"],
+def capability(backends):
+    return {"available": True, "version": 2, "native_context": True, "backends": list(backends),
             "max_question_chars": MAX_QUESTION_CHARS, "sync": True}
+
+
+class SideChatCarrier:
+    """One backend's way to answer in a side conversation of a chat: the composer's Side chat or a Canvas comment thread.
+
+    The server makes a carrier at a side conversation's first message, for the chat's provider conversation as
+    it is then, keeps it for the conversation's later messages, and awaits ``close`` when the conversation ends:
+    Clear, an idle period, a failed or cancelled message, the chat's removal, server shutdown. What a carrier
+    holds for the conversation (a fork, a process, files) lives between those two points. One message runs at
+    a time. A message is cancelled by cancelling the task that awaits ``ask``, followed by ``close``.
+
+    The class attributes and ``available`` say what a carrier can do. The callers read them, never a backend's
+    name. ``server/docs/NATIVE_SIDE_CHAT.md`` has the full contract.
+    """
+
+    composer = True    # answers the composer's Side chat; False: Canvas comment threads only
+    native = True      # the provider knows it answers beside the chat (a native side question, a fork with side
+                       # instructions); False: it is the chat's own CLI on a copy, and the question has to say so
+    approvals = False  # a run can wait for an approval, which then belongs to the side conversation alone
+
+    @staticmethod
+    def usable() -> bool:
+        """Whether this server can run the backend at all. The Side chat capability lists a composer carrier while it can."""
+        return True
+
+    @staticmethod
+    def provider_id(session) -> str:
+        """The id of the chat's provider conversation, empty before it exists. A side conversation ends when it changes."""
+        raise NotImplementedError
+
+    @staticmethod
+    def provider_revision(session):
+        """What else has to stay as it is for a side conversation to go on, such as the provider account in use."""
+        return None
+
+    @classmethod
+    def available(cls, session, question, *, edit) -> bool:
+        """Whether this server can answer this message for this chat. Asked before a Canvas comment is accepted."""
+        return bool(cls.provider_id(session))
+
+    def __init__(self, session_id, binding=None, *, current=None, durable=False, saved_state=None, save_state=None):
+        self.session_id = session_id
+        self.binding = binding          # {"backend", "parent_id", "provider_revision"} of the chat at the first message
+        self.current = current          # () -> the chat's session now; raises SideQuestionError once the conversation is over
+        self.durable = durable          # the side conversation outlives this process: save what a later carrier needs
+        self.saved_state = saved_state  # what an earlier carrier of this side conversation saved, or None
+        self.save_state = save_state    # async (value) -> None; value is JSON
+
+    def check(self, session) -> None:
+        """Raise SideQuestionError when the carrier cannot go on for the chat as it is now. Called around every ``ask``."""
+
+    def lacks(self, history, *, edit=False) -> bool:
+        """Whether the provider would answer the next message without these earlier exchanges.
+
+        Where it would, the caller writes them into the question and passes no history. A carrier whose provider
+        keeps the side conversation, or takes the exchanges from ``ask``, answers False for them.
+        """
+        return bool(history)
+
+    async def ask(self, question, *, history, edit=False, on_step=None) -> dict:
+        """Answer one message: ``{"answer": str, "context_note": str}``.
+
+        ``history`` is the side conversation so far, ``[{"question", "response"}]``, at most twenty exchanges.
+        A question (``edit`` False) never changes the chat's provider conversation, and changes no file on its own
+        account; an edit request changes files with the chat's own permissions. ``on_step``, when given, takes
+        the run's tool calls and interim messages as ``{"id", "kind", "title", "status", "output"?}``.
+        """
+        raise NotImplementedError
+
+    async def close(self) -> None:
+        """Release everything the carrier holds. Awaited on every path that ends the conversation, possibly twice."""
 
 
 def validate_history(value) -> tuple[tuple[str, str], ...]:

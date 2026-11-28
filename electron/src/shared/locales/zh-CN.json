@@ -291,7 +291,7 @@
   "sideQuestion.title": "顺便问一下",
   "sideQuestion.description": "Agent 继续工作时，可以在这里单独提问。问题和回答与主对话分开保存。",
   "sideQuestion.close": "关闭顺便问一下",
-  "sideQuestion.context": "使用提供方的原生上下文，包括工具结果：独立的 Codex 对话或 Claude /btw。侧边对话不会写入主对话。",
+  "sideQuestion.context": "使用提供方的原生上下文，包括工具结果：独立的 Codex 对话、Claude /btw，或 Cursor 会话的只读副本。侧边对话不会写入主对话。",
   "sideQuestion.ended": "此原生侧边对话已结束。清空侧边对话，即可基于当前主对话重新开始。",
   "sideQuestion.question": "问题",
   "sideQuestion.placeholder": "有什么想了解的？",

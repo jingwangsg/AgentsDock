@@ -7,7 +7,7 @@ export const SIDE_QUESTION_MAX_HISTORY_CHARS = 60000
 export interface SideQuestionsCapability {
   available: boolean
   version: number
-  backends: Array<'codex' | 'claude'>
+  backends: Backend[]
   max_question_chars: number
   history?: boolean
   max_history_items?: number
@@ -55,7 +55,8 @@ export interface SideQuestionCancellation {
 
 export function sideQuestionsAvailable(health: Health | null | undefined, backend: Backend | undefined): boolean {
   const capability = health?.capabilities?.side_questions
-  return (backend === 'codex' || backend === 'claude')
+  // The server lists the backends it can answer for: a backend it adds later needs no change here.
+  return backend !== undefined
     && capability?.available === true
     && capability.version === 2 && capability.native_context === true
     && Array.isArray(capability.backends)
@@ -152,7 +153,7 @@ export interface SyncedSideChat {
     status: 'running' | 'completed' | 'cancelled' | 'failed' | 'interrupted'
     answer?: string
     context_note?: string
-    backend?: 'codex' | 'claude'
+    backend?: Backend
     error?: string
     steps?: SideChatStep[]
     created_at: string
@@ -178,7 +179,7 @@ export function parseSyncedSideChat(value: unknown, sessionId: string): SyncedSi
       || typeof exchange.question !== 'string' || !exchange.question.trim()
       || !['running', 'completed', 'cancelled', 'failed', 'interrupted'].includes(exchange.status)
       || (exchange.status === 'completed' && (typeof exchange.answer !== 'string' || !exchange.answer.trim()))
-      || (exchange.backend !== undefined && !['codex', 'claude'].includes(exchange.backend))
+      || (exchange.backend !== undefined && typeof exchange.backend !== 'string')
       || [exchange.answer, exchange.context_note, exchange.error].some(value => value !== undefined && typeof value !== 'string')
       || typeof exchange.created_at !== 'string' || typeof exchange.updated_at !== 'string'
       // A step kind or status added by a newer server still renders (a generic icon) instead of failing the sync.

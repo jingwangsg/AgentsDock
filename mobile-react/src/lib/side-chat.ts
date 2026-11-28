@@ -31,8 +31,8 @@ export interface SyncedSideChat {
 /** Only the synced side chat is offered; older servers keep their history on the desktop that asked. */
 export function sideChatAvailable(health: Health | null, backend: Backend): boolean {
   const capability = health?.capabilities?.side_questions
-  return (backend === 'codex' || backend === 'claude')
-    && capability?.available === true && capability.version === 2
+  // The server lists the backends it can answer for: a backend it adds later needs no change here.
+  return capability?.available === true && capability.version === 2
     && capability.native_context === true && capability.sync === true
     && Array.isArray(capability.backends) && capability.backends.includes(backend)
 }

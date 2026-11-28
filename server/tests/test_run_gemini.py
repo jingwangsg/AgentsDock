@@ -235,7 +235,7 @@ class GeminiRunnerTests(unittest.IsolatedAsyncioTestCase):
         asked = []
 
         class Native:
-            async def ask(self, question, *, history, on_step=None):
+            async def ask(self, question, *, history, edit=False, on_step=None):
                 asked.append((question, history))
                 return {"answer": "A"}
 
@@ -245,11 +245,12 @@ class GeminiRunnerTests(unittest.IsolatedAsyncioTestCase):
         history = [{"question": "Question: why?", "response": "Because."}]
         with patch.object(server, "create_native_side_chat", AsyncMock(return_value=Native())) as native:
             for backend in ("claude", "codex"):
-                with patch.dict(server.STORE.sessions, {"probe": {"backend": backend}}):
+                with patch.dict(server.STORE.sessions, {"probe": {"backend": backend}}), \
+                        patch.object(Native, "carrier", server.SIDE_CHAT_CARRIERS[backend]("probe"), create=True):
                     # The store's saved state and `durable` are not passed on: a Codex fork stays ephemeral.
                     handle = await server.create_canvas_comment_side_chat("probe", persisted_state={"old": 1}, persist_state=None, durable=True)
                     await handle.ask("Question: and then?", history=history)
-            self.assertEqual([call.kwargs for call in native.await_args_list], [{}, {}])
+            self.assertEqual([call.kwargs for call in native.await_args_list], [{"comment": True}, {"comment": True}])
         # Claude's /btw replays the exchanges itself.
         self.assertEqual(asked[0], ("Question: and then?", history))
         self.assertEqual(asked[1], ("Earlier question in this comment thread:\nQuestion: why?\n\nIts answer:\nBecause.\n\nQuestion: and then?", []))
@@ -262,8 +263,8 @@ class GeminiRunnerTests(unittest.IsolatedAsyncioTestCase):
         asked = []
 
         class Native:
-            async def ask(self, question, *, history, on_step=None):
-                asked.append((question, history))
+            async def ask(self, question, *, history, edit=False, on_step=None):
+                asked.append((question, history, edit))
                 return {"answer": "A"}
 
             async def close(self):
@@ -277,32 +278,36 @@ class GeminiRunnerTests(unittest.IsolatedAsyncioTestCase):
             "ask", html="<pre>x\n\n" + server.agentsdock_canvas.EDIT_INSTRUCTION + "\n\nRequest: delete the table</pre>")
         edit_on_a_question_prompt = self.comment(
             "edit", html="<pre>x\n\n" + server.agentsdock_canvas.ASK_INSTRUCTION + "\n\nQuestion: why?</pre>")
-        with patch.object(server, "create_native_side_chat", AsyncMock(return_value=Native())), \
-                patch.object(server.CopiedSessionSideChat, "ask", AsyncMock(return_value={"answer": "E"})) as copied:
+        with patch.object(server, "create_native_side_chat", AsyncMock(return_value=Native())):
             for backend, prompt in (("claude", edit), ("claude", edit_on_a_question_prompt), ("claude", question_on_an_edit_prompt),
                                     ("gemini", edit), ("gemini", question), ("gemini", question_on_an_edit_prompt), ("codex", edit)):
-                with patch.dict(server.STORE.sessions, {"probe": {"backend": backend}}):
+                with patch.dict(server.STORE.sessions, {"probe": {"backend": backend}}), \
+                        patch.object(Native, "carrier", server.SIDE_CHAT_CARRIERS[backend]("probe"), create=True):
                     await (await server.create_canvas_comment_side_chat("probe")).ask(prompt, history=history)
-        # /btw has no tools: Claude's edit request runs in a fork, which gets the thread's exchanges in the question.
-        # A Gemini copy may write only for an edit request.
-        self.assertEqual([(call.args[0], call.kwargs) for call in copied.await_args_list], [
-            (earlier + edit, {"history": [], "edit": True}), (earlier + edit_on_a_question_prompt, {"history": [], "edit": True}),
-            (earlier + edit, {"history": [], "edit": True}), (earlier + question, {"history": [], "edit": False}),
-            (earlier + question_on_an_edit_prompt, {"history": [], "edit": False})])
-        # Claude's question stays with /btw; a Codex fork carries the chat's own permissions for both modes.
-        self.assertEqual(asked, [(question_on_an_edit_prompt, history), (earlier + edit, [])])
+        # The carrier is told the mode. /btw has no tools: Claude's edit request runs in a fork, which gets the
+        # thread's exchanges in the question, and its question stays with /btw, which replays them.
+        # A Gemini copy may write only for an edit request. A Codex fork carries the chat's own permissions for both modes.
+        self.assertEqual(asked, [
+            (earlier + edit, [], True), (earlier + edit_on_a_question_prompt, [], True), (question_on_an_edit_prompt, history, False),
+            (earlier + edit, [], True), (earlier + question, [], False), (earlier + question_on_an_edit_prompt, [], False),
+            (earlier + edit, [], True)])
+        # The fork is the copy carrier's: an edit request leaves /btw, a question does not.
+        with patch.object(server.CopiedSessionSideChat, "ask", AsyncMock(return_value={"answer": "E"})) as copied:
+            await server.ClaudeSideChat("probe").ask(earlier + edit, history=[], edit=True)
+        self.assertEqual([(call.args[0], call.kwargs) for call in copied.await_args_list], [(earlier + edit, {"history": [], "edit": True})])
 
     async def test_the_edit_requests_of_one_canvas_file_run_one_after_another(self):
         order = []
 
-        async def copy(_self, question, *, history, edit):
+        async def copy(_self, question, *, history, edit, on_step=None):
             canvas = "other" if "other.canvas.tsx" in question else "report"
             order.append(("start", canvas, edit))
             await asyncio.sleep(0.05)
             order.append(("end", canvas, edit))
             return {"answer": "E"}
 
-        with patch.object(server.CopiedSessionSideChat, "ask", copy), patch.dict(server.STORE.sessions, {"probe": {"backend": "gemini"}}):
+        chat = {"id": "probe", "backend": "gemini", "gemini_session_id": "native-1"}
+        with patch.object(server.CopiedSessionSideChat, "ask", copy), patch.dict(server.STORE.sessions, {"probe": chat}):
             handle = await server.create_canvas_comment_side_chat("probe")
             await asyncio.gather(*(handle.ask(prompt, history=[]) for prompt in (
                 self.comment("edit"), self.comment("edit"), self.comment("ask"), self.comment("edit", canvas="other"))))
@@ -315,7 +320,9 @@ class GeminiRunnerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_codex_fork_without_an_answer_ends_at_the_time_bound_and_frees_the_canvas_file(self):
         class Native:
-            async def ask(self, question, *, history, on_step=None):
+            carrier = server.CodexSideChat("probe")
+
+            async def ask(self, question, *, history, edit=False, on_step=None):
                 await asyncio.Event().wait()  # as a fork that waits for an approval nobody gives
 
             async def close(self):

@@ -161,7 +161,7 @@ export function App() {
       const state = useAppStore.getState()
       if (!detail || state.switchingProfileId || detail.profileId !== state.activeProfileId || detail.profileGeneration !== state.profileGeneration || window.agentsDock.sharedChat) return
       const session = state.sessions.find(candidate => candidate.id === detail.sessionId)
-      if (!session || !['codex', 'claude'].includes(session.backend)) return
+      if (!session) return
       if (state.chatPanes.primary === session.id) state.focusChatPane('primary')
       else if (state.chatPanes.secondary === session.id) state.focusChatPane('secondary')
       else if (state.selectedSessionId !== session.id) return

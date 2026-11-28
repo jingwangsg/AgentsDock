@@ -310,6 +310,12 @@ describe('App chat workspace identity', () => {
     expect(sideChatHarness.props.focusVersion).toBe(focusVersion + 1)
     open(4, 'missing')
     expect(sideChatHarness.props.session.id).toBe('chat-b')
+    // The button decides which chats have a side chat; its request opens one on any backend.
+    act(() => useAppStore.setState({ sessions: [sessions[0], { ...sessions[1], backend: 'cursor' }] }))
+    act(() => sideChatHarness.props.onOpenChange(false))
+    expect(sideChatHarness.props.open).toBe(false)
+    open(4, 'chat-b')
+    expect(sideChatHarness.props.open).toBe(true)
   })
 
   it('keeps side state and pending work through hiding and a failed profile switch', async () => {
