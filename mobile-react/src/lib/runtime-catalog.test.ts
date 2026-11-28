@@ -3,6 +3,7 @@ import test from 'node:test'
 import type { Health, RuntimeCatalog } from '../types'
 import { runtimeChipLabel } from './runtime-chip'
 import { readyChatBackends,
+  cursorBackendAvailable,
   cursorBackendSupported,
   isBackendLocked,
   runtimeCatalogOptions,
@@ -144,8 +145,41 @@ test('a new chat may start on Cursor only while the host has a ready Cursor CLI'
   assert.deepEqual(selectableChatBackends(cursorHealth(2)), ['claude', 'codex', 'cursor'])
   assert.deepEqual(readyChatBackends(cursorHealth(2), cursorCatalog), ['claude', 'codex', 'cursor'])
   assert.deepEqual(readyChatBackends(cursorHealth(2), missingCursor), ['claude', 'codex'])
-  assert.deepEqual(readyChatBackends(cursorHealth(2), null), ['claude', 'codex'])
+  // Before the catalog arrives, a Cursor that the health does not report as not ready is listed.
+  assert.deepEqual(readyChatBackends(cursorHealth(2), null), ['claude', 'codex', 'cursor'])
   assert.deepEqual(readyChatBackends(cursorHealth(1), cursorCatalog), ['claude', 'codex'])
+})
+
+function reporting(status: 'ready' | 'unknown' | 'missing' | 'unauthenticated' | 'error', checked_at = '2026-08-30T10:01:00Z'): Health {
+  return { ...cursorHealth(2), runtimes: { cursor: { backend: 'cursor', status, available: status === 'ready', message: 'Cursor CLI is missing.', checked_at } } }
+}
+
+test('Cursor follows the health status until the catalog arrives', () => {
+  // Ready, not probed yet, or no status at all: Cursor can be used, with a model saved earlier.
+  for (const health of [reporting('ready'), reporting('unknown'), cursorHealth(2)]) {
+    assert.equal(cursorBackendAvailable(health, null), true)
+    assert.equal(runtimeSelectionError(health, null, 'cursor', 'named-model'), null)
+  }
+  // The server reported it not ready: unavailable, with the server's reason.
+  for (const status of ['missing', 'unauthenticated', 'error'] as const) {
+    assert.equal(cursorBackendAvailable(reporting(status), null), false)
+    assert.equal(runtimeSelectionError(reporting(status), null, 'cursor'), 'Cursor is unavailable. Cursor CLI is missing.')
+  }
+  assert.equal(cursorBackendAvailable({ ok: true }, null), false)
+})
+
+test('the catalog decides for Cursor while the health status is unknown after a server restart', () => {
+  const held = (status: 'ready' | 'missing'): RuntimeCatalog => ({ backends: { ...cursorCatalog.backends, cursor: {
+    ...cursorCatalog.backends.cursor!, available: status === 'ready',
+    diagnostic: { backend: 'cursor', status, available: status === 'ready', message: 'From the catalog.', checked_at: '2026-08-30T10:00:00Z' },
+  } } })
+  // The restarted server has not probed Cursor yet; its health is newer than the catalog the app still holds.
+  const restarted = reporting('unknown', '2026-08-30T10:05:00Z')
+  assert.equal(cursorBackendAvailable(restarted, held('ready')), true)
+  assert.equal(runtimeSelectionError(restarted, held('ready'), 'cursor', 'auto'), null)
+  assert.equal(cursorBackendAvailable(restarted, held('missing')), false)
+  // A newer status that is a verdict still wins over the catalog.
+  assert.equal(cursorBackendAvailable(reporting('missing', '2026-08-30T10:05:00Z'), held('ready')), false)
 })
 
 test('a chat backend is switchable only before a provider session exists', () => {

@@ -68,7 +68,9 @@ export function geminiBackendSupported(health: Health | null | undefined): boole
  *
  * Support and readiness are deliberately separate. A current server should
  * keep Cursor discoverable while its CLI is missing, outdated, or signed out;
- * the runtime catalog remains the admission gate for actually running work.
+ * the runtime catalog remains the admission gate for actually running work,
+ * except before it has arrived, when the health status decides
+ * (cursorBackendAvailable).
  */
 export function cursorBackendSupported(
   health: Health | null | undefined
@@ -85,11 +87,15 @@ export function cursorBackendAvailable(
   catalog: RuntimeCatalog | null | undefined
 ): boolean {
   const backend = catalog?.backends?.cursor
-  if (!cursorBackendSupported(health) || !backend) return false
-  const diagnostic = runtimeDiagnosticFor(health, catalog, 'cursor')
+  if (!cursorBackendSupported(health) || (catalog && !backend)) return false
+  // A health status of "unknown" decides nothing: the server reports it for a backend it has not probed yet, in the
+  // first seconds after it starts. The catalog's own entry then decides, and Cursor is offered while no catalog has
+  // arrived: the server takes seconds to build one, and the health answer comes first. Change the mobile copy
+  // (mobile-react/src/lib/runtime-catalog.ts) too.
+  const diagnostic = runtimeDiagnosticFor(health?.runtimes?.cursor?.status === 'unknown' ? null : health, catalog, 'cursor')
   return diagnostic
     ? diagnostic.status === 'ready' && diagnostic.available === true
-    : backend.available === true
+    : !catalog || backend?.available === true
 }
 
 export function selectableChatBackends(
@@ -215,7 +221,9 @@ export function runtimeModelLockReason(
 
 /**
  * Fail closed before an action is admitted when its backend contract is not
- * available or its explicit model is currently locked.
+ * available or its explicit model is currently locked. One exception: before
+ * the catalog has arrived a Cursor model is not checked here; a model the
+ * account cannot use then fails when the turn runs.
  */
 export function runtimeSelectionError(
   health: Health | null | undefined,
@@ -246,7 +254,7 @@ export function runtimeSelectionError(
   }
   if (backend === 'opencode' && !opencodeBackendAvailable(health, catalog)) return opencodeBackendUnavailableReason(health, catalog)
   const selected = model?.trim()
-  if (backend === 'cursor' && selected) {
+  if (backend === 'cursor' && selected && catalog) {
     const cursor = catalog?.backends.cursor
     // Older servers identify a partial list only by its discovery source.
     const source = cursor?.model_source ?? ''

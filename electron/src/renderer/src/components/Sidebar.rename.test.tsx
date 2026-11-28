@@ -258,6 +258,32 @@ describe('sidebar chat rename', () => {
     expect(requestNewChat).toHaveBeenCalledWith({ folder: 'Research', backend: 'cursor' })
   })
 
+  it('lists New Cursor Chat before the catalog arrives, and after a server restart while the health status is unknown', async () => {
+    const requestNewChat = vi.fn().mockResolvedValue(undefined)
+    const capabilities = { cursor_backend: { available: true, required: false, message: '', action: null, version: 2 as const } }
+    const newChats = async () => (await screen.findAllByRole('menuitem')).map(item => item.textContent).filter(label => label?.startsWith('New ') && label.endsWith(' Chat'))
+    useAppStore.setState({
+      requestNewChat, sessions: [session], folderOrder: ['General'], runtimeCatalog: null,
+      health: { ok: true, capabilities, runtimes: { cursor: { backend: 'cursor', status: 'ready', available: true, message: '' } } }
+    })
+    const user = userEvent.setup()
+    render(<Sidebar />)
+
+    fireEvent.contextMenu(screen.getByText('General').closest('.section-header')!)
+    expect(await newChats()).toEqual(['New Claude Chat', 'New Codex Chat', 'New Cursor Chat'])
+    await user.click(screen.getByRole('menuitem', { name: 'New Cursor Chat' }))
+    expect(requestNewChat).toHaveBeenCalledWith({ folder: 'General', backend: 'cursor' })
+
+    // The restarted server has not probed Cursor yet; the app still holds the catalog it read before.
+    act(() => useAppStore.setState({
+      health: { ok: true, capabilities, runtimes: { cursor: { backend: 'cursor', status: 'unknown', available: false, message: 'Cursor has not been checked yet.', checked_at: '2026-08-30T10:05:00Z' } } },
+      runtimeCatalog: { backends: { cursor: { available: true, models: [{ value: 'auto', label: 'Auto' }], efforts: [],
+        diagnostic: { backend: 'cursor', status: 'ready', available: true, message: '', checked_at: '2026-08-30T10:00:00Z' } } } }
+    }))
+    fireEvent.contextMenu(screen.getByText('General').closest('.section-header')!)
+    expect(await newChats()).toEqual(['New Claude Chat', 'New Codex Chat', 'New Cursor Chat'])
+  })
+
   it('explains an unavailable Gemini CLI from the folder menu without creating a chat', async () => {
     const message = 'The NVIDIA Inference Hub budget for this credential is exhausted.'
     const requestNewChat = vi.fn()

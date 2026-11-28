@@ -342,7 +342,7 @@ describe('RuntimeHealthPanel tmux prerequisite', () => {
     )
   })
 
-  it('shows catalog loading instead of contradictory setup guidance for ready Cursor health', () => {
+  it('shows catalog loading instead of contradictory setup guidance while a catalog lacks the entry of a ready Cursor', () => {
     useAppStore.setState({
       health: {
         ok: true,
@@ -367,7 +367,7 @@ describe('RuntimeHealthPanel tmux prerequisite', () => {
           }
         }
       },
-      runtimeCatalog: null,
+      runtimeCatalog: { backends: {} },
       snapshots: {}
     })
 
@@ -376,6 +376,22 @@ describe('RuntimeHealthPanel tmux prerequisite', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Cursor Unavailable')
     expect(screen.getByRole('alert')).toHaveTextContent(/model choices are still loading/i)
     expect(screen.getByRole('alert')).not.toHaveTextContent('Cursor is installed and authenticated.')
+  })
+
+  it('shows no notice for a Cursor the server health reports ready, before the catalog arrives', () => {
+    useAppStore.setState({
+      health: {
+        ok: true,
+        capabilities: { cursor_backend: { available: true, required: false, message: 'Cursor backend is supported.', action: null, version: 2 } },
+        runtimes: { cursor: { backend: 'cursor', status: 'ready', available: true, installed: true, authenticated: true, message: 'Cursor is installed and authenticated.', checked_at: '2026-07-30T20:02:00Z' } }
+      },
+      runtimeCatalog: null,
+      snapshots: {}
+    })
+
+    const { container } = render(<RuntimeHealthNotice backend="cursor" sessionId="cursor-chat" />)
+
+    expect(container).toBeEmptyDOMElement()
   })
 
   it('forces a fresh CLI probe and applies its returned diagnostics immediately', async () => {

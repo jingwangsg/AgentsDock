@@ -1219,7 +1219,7 @@ describe('SessionDialog runtime selection', () => {
   })
 
   it.each(['newChat', 'resume'] as const)(
-    'keeps supported Cursor visible with setup guidance in the %s dialog while its catalog loads',
+    'keeps supported Cursor visible with setup guidance in the %s dialog while a catalog lacks its entry',
     async mode => {
       Object.defineProperty(window, 'agentsDock', {
         configurable: true,
@@ -1227,7 +1227,7 @@ describe('SessionDialog runtime selection', () => {
       })
       useAppStore.setState({
         sessions: [],
-        runtimeCatalog: null,
+        runtimeCatalog: { backends: {} },
         health: {
           ok: true,
           runtimes: {
@@ -1267,6 +1267,37 @@ describe('SessionDialog runtime selection', () => {
       expect(screen.getByRole('button', { name: mode === 'newChat' ? 'Create chat' : 'Resume chat' })).toBeDisabled()
     }
   )
+
+  it('creates a Cursor chat before the catalog arrives when the server health reports it ready', async () => {
+    const create = vi.fn().mockResolvedValue({ id: 'cursor-chat' })
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { sessions: { create } } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      sessions: [],
+      runtimeCatalog: null,
+      health: {
+        ok: true,
+        capabilities: { cursor_backend: { available: true, required: false, message: 'Cursor is supported.', action: null, version: 2 } },
+        runtimes: { cursor: { backend: 'cursor', status: 'ready', available: true, message: 'Cursor is installed and authenticated.' } }
+      },
+      refreshSessions: vi.fn().mockResolvedValue(undefined),
+      selectSession: vi.fn().mockResolvedValue(undefined),
+      modals: {
+        settings: false, newChat: true, resume: false, folder: false,
+        digest: false, job: false, search: false, review: false, importChats: false
+      }
+    })
+    const user = userEvent.setup()
+    render(<SessionDialog mode="newChat" />)
+
+    await user.click(screen.getByRole('button', { name: /Cursor$/ }))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Create chat' }))
+
+    await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({ backend: 'cursor' })))
+  })
 
   it('explains that Cursor resume binds provider context without importing its transcript', async () => {
     const resume = vi.fn().mockResolvedValue({ id: 'cursor-chat' })
@@ -2094,7 +2125,7 @@ describe('JobDialog', () => {
       selectedSessionId: 'chat-1',
       sessions: [{ id: 'chat-1', title: 'Status', backend: 'codex' }],
       health: cursorHealth,
-      runtimeCatalog: null,
+      runtimeCatalog: { backends: {} },
       drafts: {},
       modals: { settings: false, newChat: false, resume: false, folder: false, digest: false, job: true, search: false, review: false, importChats: false }
     })
@@ -2113,6 +2144,37 @@ describe('JobDialog', () => {
       }
     } }))
     await user.click(await screen.findByRole('button', { name: /^Cursor$/ }))
+    await user.type(screen.getByLabelText('Title'), 'Fresh Cursor report')
+    await user.type(screen.getByLabelText('Prompt'), 'Inspect the workspace.')
+    await user.click(screen.getByRole('button', { name: 'Save job' }))
+
+    await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      context_mode: 'standalone', backend: 'cursor'
+    })))
+  })
+
+  it('creates an independent Cursor job before the catalog arrives', async () => {
+    const create = vi.fn().mockResolvedValue({})
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { jobs: { create } } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      selectedSessionId: 'chat-1',
+      sessions: [{ id: 'chat-1', title: 'Status', backend: 'codex' }],
+      health: { ok: true, capabilities: {
+        scheduled_jobs: { available: true, required: false, message: 'Ready', action: null, version: 2, context_modes: ['chat', 'standalone'] },
+        cursor_backend: { available: true, required: false, message: 'Cursor is ready.', action: null, version: 2 }
+      } },
+      runtimeCatalog: null,
+      drafts: {},
+      modals: { settings: false, newChat: false, resume: false, folder: false, digest: false, job: true, search: false, review: false, importChats: false }
+    })
+    const user = userEvent.setup()
+    render(<JobDialog />)
+
+    await user.click(screen.getByRole('button', { name: /Independent runs/ }))
+    await user.click(within(screen.getByRole('group', { name: 'Backend' })).getByRole('button', { name: /^Cursor$/ }))
     await user.type(screen.getByLabelText('Title'), 'Fresh Cursor report')
     await user.type(screen.getByLabelText('Prompt'), 'Inspect the workspace.')
     await user.click(screen.getByRole('button', { name: 'Save job' }))
