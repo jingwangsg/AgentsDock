@@ -43,10 +43,20 @@ Verified private-format adapter for Cursor CLI `2026.09.18-9a7762b`:
    workspace, conversation presence and subagent status.
 2. Read-only `store.db`, `meta` key `0`, hex-encoded JSON: verify `agentId`, read
    `name` and reject `subagentInfo`. No blob table, encryption key or private
-   conversation content is read/decrypted. The one exception outside import is
-   `copy_session`, for a Canvas question: SQLite's backup copies the whole
-   store, blobs undecoded, under a new id, and only the copy's `agentId` is
-   rewritten.
+   conversation content is read/decrypted. Outside import, these functions
+   work on the session of a chat that this server runs (verified with CLI
+   `2026.11.22`):
+   - `copy_session`, for a Canvas comment or a rewind, copies the whole store
+     with SQLite's backup, blobs undecoded, under a new id. It rewrites two
+     fields of the copy's `meta`: `agentId`, and for a rewind
+     `latestRootBlobId`, set to an earlier root that the store holds.
+   - `latest_root_blob_id` reads `latestRootBlobId` from `meta` when a turn
+     starts, and `has_blob` looks up one blob id. A rewind to that turn resumes
+     a copy from the recorded root.
+   - `prompt_roots`, only for a turn whose root was not recorded, reads the
+     store's root blobs and the messages the latest root lists. It finds the
+     message that carries the turn's prompt and the root that lists exactly
+     the messages before it; the rewind is refused unless each is the only one.
 3. Public JSONL export:
    `<data-root>/projects/<native-workspace-slug>/agent-transcripts/<id>/<id>.jsonl`.
    Data root is `CURSOR_DATA_DIR`, falling back to `~/.cursor`, independently

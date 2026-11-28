@@ -7,9 +7,16 @@ Cursor IDE and cloud histories are different formats and are not advertised.
 The one write is ``copy_session`` (verified with 2026.11.22): a copy of a
 session's store under another id, whose blob pages SQLite copies undecoded.
 The session's own store is only read.
+
+A chat's rewind (verified with 2026.11.22) is the one reader of conversation
+blobs, and only of that chat's own session: ``prompt_roots`` reads its root
+blobs and the messages the latest root lists, to place a turn whose root was
+not recorded. ``latest_root_blob_id`` reads the store's metadata only, and
+``has_blob`` looks up one blob id.
 """
 from __future__ import annotations
 
+from contextlib import closing
 from dataclasses import dataclass
 import hashlib
 import json
@@ -25,6 +32,9 @@ from typing import Iterator
 MAX_METADATA_BYTES = 64 * 1024
 MAX_SCAN_ENTRIES = 10_000
 IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}")
+# A root blob starts with one entry per message of the conversation, in order: the bytes 0a 20,
+# then the 32-byte id of the message's blob.
+ROOT_ENTRIES = re.compile(rb"(?:\x0a\x20.{32})*", re.DOTALL)
 
 
 def native_title(value: object) -> str | None:
@@ -182,17 +192,24 @@ def read_session(directory: Path, root: Path, *, expected_cwd: str | None = None
     return LocalSession(provider_id, cwd, title, timestamp, transcript)
 
 
-def copy_session(provider_id: str, copy_id: str, cwd: str) -> list[Path]:
-    """Copy a session's store under another id, for the CLI to resume as a session of its own.
-
-    SQLite's backup reads a consistent store while the session's own CLI writes it. Returns every path
-    the copy and its resumed run leave on disk, the copy's directory first.
-    """
+def session_directory(provider_id: str, cwd: str) -> tuple[Path, dict]:
+    """A session's directory and its sidecar, which a copy of the session needs too."""
     root = config_root(cwd)
     source = next((root / "chats").glob(f"*/{provider_id}"), None) if IDENTIFIER.fullmatch(provider_id) else None
     sidecar = read_json(source / "meta.json", root) if source is not None else None
     if not sidecar or not isinstance(sidecar.get("cwd"), str):
         raise FileNotFoundError("Cursor session store")
+    return source, sidecar
+
+
+def copy_session(provider_id: str, copy_id: str, cwd: str, root_blob_id: str | None = None) -> list[Path]:
+    """Copy a session's store under another id, for the CLI to resume as a session of its own.
+
+    SQLite's backup reads a consistent store while the session's own CLI writes it. Returns every path
+    the copy and its resumed run leave on disk, the copy's directory first. With ``root_blob_id`` the
+    copy resumes from that earlier root of the conversation instead of its latest one.
+    """
+    source, sidecar = session_directory(provider_id, cwd)
     copy = source.with_name(copy_id)
     copy.mkdir(mode=0o700)
     try:
@@ -202,6 +219,11 @@ def copy_session(provider_id: str, copy_id: str, cwd: str) -> list[Path]:
             original.backup(target)
             metadata = json.loads(bytes.fromhex(target.execute("SELECT value FROM meta WHERE key = '0'").fetchone()[0]))
             metadata["agentId"] = copy_id
+            if root_blob_id is not None:
+                # load-bearing: the CLI resumes a root the store lacks as an empty conversation, without an error.
+                if target.execute("SELECT 1 FROM blobs WHERE id = ?", (root_blob_id,)).fetchone() is None:
+                    raise FileNotFoundError("Cursor conversation root")
+                metadata["latestRootBlobId"] = root_blob_id
             with target:
                 target.execute("UPDATE meta SET value = ? WHERE key = '0'", (json.dumps(metadata).encode().hex(),))
         finally:
@@ -212,6 +234,59 @@ def copy_session(provider_id: str, copy_id: str, cwd: str) -> list[Path]:
         shutil.rmtree(copy, ignore_errors=True)
         raise
     return [copy, data_root(cwd) / "projects" / project_slug(sidecar["cwd"]) / "agent-transcripts" / copy_id]
+
+
+def open_store(provider_id: str, cwd: str) -> sqlite3.Connection:
+    """A session's store, read-only."""
+    source, _sidecar = session_directory(provider_id, cwd)
+    return sqlite3.connect((source / "store.db").resolve().as_uri() + "?mode=ro", uri=True)
+
+
+def latest_root_blob_id(provider_id: str, cwd: str) -> str:
+    """The id of the root blob a resume of the session continues from."""
+    with closing(open_store(provider_id, cwd)) as store:
+        return json.loads(bytes.fromhex(store.execute("SELECT value FROM meta WHERE key = '0'").fetchone()[0]))["latestRootBlobId"]
+
+
+def has_blob(provider_id: str, cwd: str, blob_id: str) -> bool:
+    """Whether a session's store holds a blob with this id."""
+    with closing(open_store(provider_id, cwd)) as store:
+        return store.execute("SELECT 1 FROM blobs WHERE id = ?", (blob_id,)).fetchone() is not None
+
+
+def prompt_roots(provider_id: str, cwd: str) -> list[tuple[str, str | None]]:
+    """A session's user prompts, oldest first, each with the root of the conversation as it stood before it.
+
+    The store keeps every earlier root, so the conversation before a prompt is the root whose entries
+    are exactly the entries before that prompt's: None when the store holds no such root or more than
+    one. The prompt a conversation begins with has "": no turn is before it.
+    """
+    with closing(open_store(provider_id, cwd)) as store:
+        latest = store.execute("SELECT data FROM blobs WHERE id = ?", (latest_root_blob_id(provider_id, cwd),)).fetchone()[0]
+        before: dict[int, list[str]] = {}
+        for blob_id, data in store.execute("SELECT id, data FROM blobs WHERE substr(data, 1, 2) = x'0a20'"):
+            size = ROOT_ENTRIES.match(data).end()
+            if data[:size] == latest[:size]:
+                before.setdefault(size, []).append(blob_id)
+        prompts = []
+        for offset in range(0, ROOT_ENTRIES.match(latest).end(), 34):
+            # A message that is not readable JSON raises: with a message unread, no prompt can be called the only one.
+            message = json.loads(store.execute(
+                "SELECT data FROM blobs WHERE id = ?", (latest[offset + 2:offset + 34].hex(),),
+            ).fetchone()[0])
+            if message["role"] != "user" or not isinstance(message["content"], list):
+                continue
+            # The CLI wraps a prompt like this; its other user messages (workspace context, tool results) are not prompts.
+            query = re.fullmatch(
+                r"(?:<timestamp>[^<>\r\n]{1,128}</timestamp>\s*)?<user_query>\n(.*)\n</user_query>\s*",
+                "".join(block["text"] for block in message["content"] if block["type"] == "text"), flags=re.DOTALL,
+            )
+            if query is not None:
+                roots = before.get(offset, [])
+                # A conversation opens with a system message and a context message; a store without the
+                # context message has its second prompt at this place.
+                prompts.append((query[1], "" if offset == 2 * 34 and not prompts else roots[0] if len(roots) == 1 else None))
+    return prompts
 
 
 def find_session(provider_id: str, cwd: str) -> LocalSession | None:

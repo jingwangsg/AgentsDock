@@ -9,6 +9,7 @@ than mocking the runner's internals.
 import asyncio
 import json
 import os
+import sqlite3
 import stat
 import subprocess
 import tempfile
@@ -1104,6 +1105,39 @@ sys.exit(7)
             "cursor_instruction_version",
         ):
             self.assertEqual(self.session.get(key), before.get(key))
+
+    async def test_a_run_records_the_root_its_chats_conversation_stood_at(self) -> None:
+        config = Path(self.tempdir.name) / "cursor-config"
+        store = config / "chats" / "bucket" / "existing-cursor-id"
+        store.mkdir(parents=True)
+        with sqlite3.connect(store / "store.db") as db:
+            db.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)")
+            db.execute("INSERT INTO meta VALUES ('0', ?)", (json.dumps({
+                "agentId": "existing-cursor-id", "latestRootBlobId": "ab" * 32,
+            }).encode().hex(),))
+        (store / "meta.json").write_text(json.dumps({"cwd": self.cwd}))
+        bound = {"cursor_session_id": "existing-cursor-id", "session_id": "existing-cursor-id"}
+        resumed = _event_script([_init_event("existing-cursor-id"), _result_event(session_id="existing-cursor-id")])
+
+        def recorded(events: list[dict]) -> str | None:
+            return next(event for event in events if event["type"] == "process_started").get("cursor_root_blob_id")
+
+        with patch.dict(os.environ, {"CURSOR_CONFIG_DIR": str(config)}):
+            # No conversation yet: a rewind to this run starts a new one.
+            self.assertEqual(recorded(await self._run_script(_event_script([_init_event(), _result_event()]))), "")
+            self.assertEqual(recorded(await self._run_script(resumed, run_id="run-cursor-2", session_patch=bound)), "ab" * 32)
+            # A standalone run is handed a clone of the chat without its conversation. It records nothing:
+            # "" would let a rewind onto it take the chat's conversation for one this run began.
+            self.assertIsNone(recorded(await self._run_script(
+                _event_script([_init_event("standalone-id"), _result_event(session_id="standalone-id")]),
+                run_id="run-cursor-3", standalone=True,
+                session_patch=agent_server.standalone_provider_session({**self.session, **bound}),
+            )))
+            # Nothing is recorded for a store that cannot be read, and the turn still runs.
+            (store / "store.db").unlink()
+            events = await self._run_script(resumed, run_id="run-cursor-4", session_patch=bound)
+            self.assertIsNone(recorded(events))
+            self.assertEqual(next(event for event in events if event["type"] == "turn_finished")["exit_code"], 0)
 
     async def test_active_cursor_turn_stops_and_releases_process(self) -> None:
         script = _write_fake_cli(
