@@ -2112,5 +2112,92 @@ class CursorFileDeliveryInstructionTests(unittest.TestCase):
         self.assertNotEqual(previous, current)
 
 
+class CursorCanvasInstructionTests(unittest.TestCase):
+    # Real failure this guards (observed in a live chat): a Cursor chat asked
+    # for a Canvas searched its skills for the word, then published a single
+    # HTML file. Its instructions never said what a Canvas is or where the
+    # chat's Canvas directory is; Codex, Claude and Gemini chats are told.
+    def setUp(self) -> None:
+        self.state = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(patch.object(agent_server, "STATE_DIR", self.state))
+        # The section depends on node being installed; these tests must not.
+        self.enterContext(patch.object(
+            agent_server.agentsdock_canvas, "node_binary", lambda: "/fake/node"
+        ))
+        self.manifest = self.state / "manifest.json"
+
+    def test_instructions_name_the_canvas_directory_and_check_command(self) -> None:
+        instructions = agent_server.cursor_provider_instructions(
+            "chat-x", {}, self.manifest
+        )
+
+        directory = self.state / "canvases" / "chat-x"
+        self.assertIn(
+            f"## Canvas\nThis chat has a managed Canvas directory: {directory}\n",
+            instructions,
+        )
+        self.assertIn(
+            f"agentsdock_canvas.py check {directory}/<name>.canvas.tsx",
+            instructions,
+        )
+        self.assertTrue((directory / "AUTHORING.md").is_file())
+
+    def test_existing_chat_gets_the_canvas_section_once(self) -> None:
+        # The hash a chat stored while its instructions had no Canvas section.
+        with patch.object(
+            agent_server.agentsdock_canvas, "prompt_section", lambda *_a, **_k: ""
+        ):
+            stored = agent_server.cursor_instruction_hash(
+                "chat-x", {}, self.manifest
+            )
+        session = {
+            "backend": agent_server.BACKEND_CURSOR,
+            "cursor_session_id": "cursor-sess-test",
+            "cursor_instruction_hash": stored,
+            "cursor_instruction_version": agent_server.CURSOR_PROMPT_POLICY_VERSION,
+        }
+
+        prompt, current, injected, _memory = agent_server.build_cursor_provider_prompt(
+            "chat-x", session, "hello", self.manifest
+        )
+
+        self.assertNotEqual(stored, current)
+        self.assertTrue(injected)
+        self.assertIn("## Canvas\n", prompt)
+
+        # A successful turn stores the new hash; the turn after it sends the
+        # prompt alone.
+        session["cursor_instruction_hash"] = current
+        self.assertEqual(
+            agent_server.build_cursor_provider_prompt(
+                "chat-x", session, "hello", self.manifest
+            ),
+            ("[Current user prompt]\nhello", current, False, False),
+        )
+
+    def test_unavailable_canvas_is_named_with_its_reason(self) -> None:
+        available = agent_server.cursor_instruction_hash(
+            "chat-x", {}, self.manifest
+        )
+        with patch.object(
+            agent_server.agentsdock_canvas, "node_binary", lambda: None
+        ):
+            instructions = agent_server.cursor_provider_instructions(
+                "chat-x", {}, self.manifest
+            )
+            unavailable = agent_server.cursor_instruction_hash(
+                "chat-x", {}, self.manifest
+            )
+
+        self.assertIn(
+            "Canvas is unavailable on this server: Canvas needs `node`",
+            instructions,
+        )
+        self.assertIn("tell them it is unavailable and why", instructions)
+        self.assertNotIn("managed Canvas directory", instructions)
+        # A chat is told again when node is installed or removed.
+        self.assertNotEqual(available, unavailable)
+
+
 if __name__ == "__main__":
     unittest.main()

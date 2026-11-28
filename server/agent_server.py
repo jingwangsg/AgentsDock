@@ -70252,6 +70252,7 @@ def cursor_provider_instructions(
                 manifest_path=str(manifest_path),
             ).rstrip(),
             session_prompt_addendum(sess).strip(),
+            agentsdock_canvas.prompt_section(STATE_DIR, session_id),
         )
         if value
     )
