@@ -608,6 +608,8 @@ class CursorRewindTests(CursorFixture, RewindFixture):
         self.started: dict[str, dict] = {}
         self.turns: dict[str, dict] = {}
         self.before_first_turn: list[dict] = []
+        # Per run id: fields of the process_started row of the turn's retry, a second start of the CLI.
+        self.retried: dict[str, dict] = {}
 
     def events(self):
         rows = list(self.before_first_turn)
@@ -618,6 +620,9 @@ class CursorRewindTests(CursorFixture, RewindFixture):
                     rows.append({"type": "process_started", "run_id": event["run_id"], "backend": "cursor", "ts": event["ts"],
                                  **self.started[event["run_id"]]})
             else:
+                if event["type"] == "turn_finished" and event["run_id"] in self.retried:
+                    rows.append({"type": "process_started", "run_id": event["run_id"], "backend": "cursor", "ts": event["ts"],
+                                 **self.retried[event["run_id"]]})
                 rows.append(event)
         return [{**event, "seq": seq, "id": f"e{seq}"} for seq, event in enumerate(rows, 1)]
 
@@ -672,6 +677,20 @@ class CursorRewindTests(CursorFixture, RewindFixture):
         # The adopted copy holds every root, so an earlier turn's record still resolves in it.
         await server.rewind_session("chat", self.request("second"))
         self.assertNotIn(sess["cursor_session_id"], {"native-cursor", copy_id})
+        self.assertEqual(cursor_history.latest_root_blob_id(sess["cursor_session_id"], str(self.cwd)), roots[4])
+
+    async def test_a_retried_turn_is_rewound_to_the_root_of_its_first_start(self) -> None:
+        roots = self.conversation("Earlier question", "Second question", "Third question")
+        self.started = {"first": {"cursor_root_blob_id": ""}, "second": {"cursor_root_blob_id": roots[4]},
+                        "third": {"cursor_root_blob_id": roots[6]}}
+        # The second turn was retried after the CLI had stored its prompt; the retry recorded that root.
+        self.retried = {"second": {"cursor_root_blob_id": roots[5]}}
+        sess = self.cursor_chat()
+        # The turn after it: the conversation keeps everything both starts added.
+        await server.rewind_session("chat", self.request("third"))
+        self.assertEqual(cursor_history.latest_root_blob_id(sess["cursor_session_id"], str(self.cwd)), roots[6])
+        # The turn itself: the conversation from before its prompt.
+        await server.rewind_session("chat", self.request("second"))
         self.assertEqual(cursor_history.latest_root_blob_id(sess["cursor_session_id"], str(self.cwd)), roots[4])
 
     async def test_cursor_rewind_to_the_run_that_began_the_conversation_starts_a_new_one(self) -> None:
@@ -731,6 +750,21 @@ class CursorRewindTests(CursorFixture, RewindFixture):
         # The first prompt follows the instructions in its message, and no turn is before it.
         result = await server.rewind_session("chat", self.request("first"))
         self.assertEqual((result["provider_rewind"], sess["cursor_session_id"], sess["session_id"]), ("cursor_reset", None, None))
+
+    async def test_the_prompt_a_retry_gave_the_cli_is_not_counted_as_a_turn_of_the_chat(self) -> None:
+        # The second turn was retried on its conversation: the store holds one prompt more than the chat has
+        # turns. No turn has a recorded root, so each is placed by its prompt.
+        directory, _transcript = self.fixture()
+        roots = store_conversation(directory, [
+            cursor_provider_envelope("Earlier question"), cursor_provider_envelope("Second question", resumed=True),
+            server.CURSOR_PROVIDER_RETRY_PROMPT, cursor_provider_envelope("Third question", resumed=True),
+        ])
+        self.started = {"first": {}, "second": {}, "third": {}}
+        sess = self.cursor_chat()
+        # The turn after the retried one keeps what the retry added; the retried turn loses its prompt.
+        for run_id, messages_before in (("third", 8), ("second", 4)):
+            await server.rewind_session("chat", self.request(run_id))
+            self.assertEqual(cursor_history.latest_root_blob_id(sess["cursor_session_id"], str(self.cwd)), roots[messages_before])
 
     async def test_an_unrecorded_run_that_cannot_be_matched_to_one_message_is_refused(self) -> None:
         self.started = {"first": {}, "second": {}, "third": {}}
@@ -865,6 +899,22 @@ class CursorRewindTests(CursorFixture, RewindFixture):
         # A copy resumed from before that message would hold no memory and be sent none.
         self.assertEqual((result["provider_rewind"], sess["cursor_session_id"], sess["session_id"]), ("cursor_reset", None, None))
         self.assertEqual(sess["memory_seed"], self.SEED)
+        self.assertIn(self.SEED, self.next_prompt(sess))
+
+    async def test_a_forks_first_own_turn_that_was_retried_still_begins_its_conversation(self) -> None:
+        # One row is copied from the parent. The fork's first own turn began its conversation with the memory
+        # and was retried once; a second own turn followed. No turn has a recorded root.
+        self.turns = {"first": {"forked": True}}
+        directory, _transcript = self.fixture("fork-conversation")
+        store_conversation(directory, [
+            cursor_provider_envelope("Second question", memory=self.SEED), server.CURSOR_PROVIDER_RETRY_PROMPT,
+            cursor_provider_envelope("Third question", resumed=True),
+        ])
+        self.started = {"second": {}, "third": {}}
+        sess = self.cursor_chat("fork-conversation", memory_seed=self.SEED, memory_seed_used=True, memory_fork_reason="no native fork")
+        # A new conversation starts, with the parent's history again.
+        result = await server.rewind_session("chat", self.request("second"))
+        self.assertEqual((result["provider_rewind"], sess["cursor_session_id"]), ("cursor_reset", None))
         self.assertIn(self.SEED, self.next_prompt(sess))
 
     async def test_restore_checkpoint_is_refused_before_a_file_changes_when_the_rewind_would_be(self) -> None:

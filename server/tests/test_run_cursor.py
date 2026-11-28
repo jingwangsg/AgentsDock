@@ -9,13 +9,17 @@ than mocking the runner's internals.
 import asyncio
 import json
 import os
+import re
 import sqlite3
 import stat
 import subprocess
 import tempfile
 import time
 import unittest
+from collections import OrderedDict, deque
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import agent_server
@@ -124,6 +128,47 @@ def _result_event(
         "result": text,
         "session_id": session_id,
     }
+
+
+# How the CLI ends when Cursor's model provider returned RESOURCE_EXHAUSTED, and one tool call that came before.
+EXHAUSTED = {"exit": 1, "stderr": "RetriableError: [resource_exhausted] Error\n"}
+TOOL_CALL = [
+    {"type": "tool_call", "subtype": subtype, "call_id": "call-1", "session_id": "cursor-sess-test",
+     "tool_call": {"readToolCall": {"args": {"path": "a.txt"}, **({"result": {"success": {}}} if subtype == "completed" else {})}}}
+    for subtype in ("started", "completed")
+]
+# One step per start of the CLI: the events after its init event ("init": False leaves that one out), the
+# root it moves the conversation to, what it does to the store's files ("store": "no sidecar", "symlink",
+# "no store" or "no directory"), a file it writes, how long it hangs, its exit code and stderr. Each start's
+# arguments and prompt are recorded.
+RETRIED_CLI = """#!/usr/bin/env python3
+import json, os, pathlib, shutil, sqlite3, sys, time
+calls = pathlib.Path(CALLS)
+step = json.loads(STEPS)[len(calls.read_text().splitlines()) if calls.exists() else 0]
+with calls.open("a") as out:
+    out.write(json.dumps({"argv": sys.argv[1:], "prompt": sys.stdin.read()}) + "\\n")
+if "root" in step:
+    with sqlite3.connect(STORE) as db:
+        db.execute("INSERT OR IGNORE INTO blobs VALUES (?, x'')", (str(step["root"]),))
+        db.execute("UPDATE meta SET value = ? WHERE key = '0'", (json.dumps({"latestRootBlobId": step["root"]}).encode().hex(),))
+if step.get("store") == "no sidecar":
+    pathlib.Path(STORE).with_name("meta.json").unlink()
+if step.get("store") == "symlink":
+    os.rename(STORE, STORE + ".moved")
+    os.symlink(STORE + ".moved", STORE)
+if step.get("store") == "no store":
+    os.unlink(STORE)
+if step.get("store") == "no directory":
+    shutil.rmtree(pathlib.Path(STORE).parent)
+if "write" in step:
+    pathlib.Path(step["write"]).write_text("changed\\n")
+init = {"type": "system", "subtype": "init", "session_id": SESSION, "cwd": ".", "model": "Auto"}
+for event in [*([init] if step.get("init", True) else []), *step.get("events", [])]:
+    print(json.dumps(event), flush=True)
+time.sleep(step.get("hang", 0))
+sys.stderr.write(step.get("stderr", ""))
+sys.exit(step.get("exit", 0))
+"""
 
 
 class RunCursorTests(unittest.IsolatedAsyncioTestCase):
@@ -984,7 +1029,9 @@ sys.exit(7)
             ("empty-result", [_init_event(), _result_event("", is_error=True)],
              f"\x1b[31mConnectError: [resource_exhausted] {private}\x1b[0m\n", 1),
         ):
-            with self.subTest(case=case):
+            # The script fails the same way at every start. A schedule of one wait of 0 seconds keeps this to
+            # one retry, after which the turn fails: the notice must not expose the details either.
+            with self.subTest(case=case), patch.object(agent_server, "CURSOR_PROVIDER_RETRY_WAITS_SECONDS", (0,)):
                 script = _event_script(events, exit_code=code, stderr_text=stderr)
                 received = await self._run_script(script, run_id=f"run-exhausted-{case}")
                 error = next(event for event in received if event["type"] == "error")
@@ -1001,15 +1048,515 @@ sys.exit(7)
             "cursor-sess-test", self.cwd, None, 0.0, Path(self.cwd) / "transcript.jsonl",
         )
         for outcome in (None, OSError("store unavailable"), saved):
+            # An empty schedule: the turn fails at its first start, as it does once its retries are used up.
+            # test_a_new_conversation_is_bound_to_the_chat_before_the_wait_only_when_it_holds_the_prompt
+            # covers a start that is retried.
             with self.subTest(outcome=outcome), patch.object(
                 agent_server.cursor_history, "find_session",
                 side_effect=[outcome],
-            ) as lookup:
+            ) as lookup, patch.object(agent_server, "CURSOR_PROVIDER_RETRY_WAITS_SECONDS", ()):
                 events = await self._run_script(script)
                 lookup.assert_called_once_with("cursor-sess-test", self.cwd)
                 self.assertTrue(next(e for e in events if e["type"] == "turn_finished")["is_error"])
                 self.assertNotIn("cursor_instruction_hash", self.session)
                 self.assertEqual(self.session.get("cursor_session_id"), "cursor-sess-test" if outcome is saved else None)
+
+    def _retried_cli(self, *steps: dict, root: str = "") -> str:
+        """RETRIED_CLI for these steps, and the conversation store they move (session cursor-sess-test)."""
+        directory = Path(tempfile.mkdtemp(dir=self.tempdir.name))
+        self.calls = directory / "calls.jsonl"
+        self.store = directory / "cursor-config" / "chats" / "bucket" / "cursor-sess-test" / "store.db"
+        self.store.parent.mkdir(parents=True)
+        with sqlite3.connect(self.store) as db:
+            db.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)")
+            db.execute("CREATE TABLE blobs(id TEXT PRIMARY KEY, data BLOB)")
+            db.execute("INSERT INTO meta VALUES ('0', ?)", (json.dumps({"latestRootBlobId": root}).encode().hex(),))
+            db.execute("INSERT INTO blobs VALUES (?, x'')", (root,))
+        (self.store.parent / "meta.json").write_text(json.dumps({"cwd": self.cwd}))
+        self.enterContext(patch.dict(os.environ, {"CURSOR_CONFIG_DIR": str(directory / "cursor-config")}))
+        return (RETRIED_CLI.replace("CALLS", repr(str(self.calls))).replace("STEPS", repr(json.dumps(steps)))
+                .replace("STORE", repr(str(self.store))).replace("SESSION", repr("cursor-sess-test")))
+
+    def _cli_starts(self) -> list[dict]:
+        return [json.loads(line) for line in self.calls.read_text().splitlines()]
+
+    def _waiting(self) -> bool:
+        """Whether the turn waits for a retry: it then holds a record without a process."""
+        return "proc" not in agent_server.ACTIVE.get(self.session_id, {"proc": None})
+
+    @contextmanager
+    def _retry_clock(self):
+        """Fake time for the wait before a retry: inside agent_server a sleep of the waiting turn returns at
+        once and moves the clock by its length. Yields the seconds skipped so far, as a list of one number."""
+        skipped = [0.0]
+
+        async def sleep(seconds: float) -> None:
+            if self._waiting():
+                skipped[0] += seconds
+                seconds = 0
+            await asyncio.sleep(seconds)
+
+        def seen_by_server(module, **replaced):
+            return SimpleNamespace(**{name: getattr(module, name) for name in dir(module)} | replaced)
+
+        with patch.object(agent_server, "asyncio", seen_by_server(asyncio, sleep=sleep)), patch.object(
+            agent_server, "time", seen_by_server(time, monotonic=lambda: time.monotonic() + skipped[0]),
+        ):
+            yield skipped
+
+    @staticmethod
+    def _notices(events: list[dict]) -> list[str]:
+        """Each wait's notice, without the clock time in it."""
+        return [
+            re.sub(r", at \d\d:\d\d:\d\d [+-]\d{4}\.", ".", event["text"])
+            for event in events if event.get("phase") == "commentary"
+        ]
+
+    async def test_an_exhausted_provider_does_not_fail_the_turn_and_the_cli_is_started_again_in_the_same_run(self) -> None:
+        script = self._retried_cli(
+            {"events": TOOL_CALL, "root": "root-1", **EXHAUSTED},
+            {"events": [_result_event("Done.")], "root": "root-2"},
+        )
+        with self._retry_clock() as skipped, patch.object(agent_server, "record_runtime_failure") as failure:
+            events = await self._run_script(script, session_patch={"model": "composer-2.5"})
+
+        # Every row of the chat carries the one run id: a retry opens no second run.
+        self.assertEqual(events, self._read_events())
+        self.assertEqual([event["type"] for event in events], [
+            "process_started", "tool_started", "tool_finished", "reasoning_summary",
+            "process_started", "provider_session", "turn_finished",
+        ])
+        self.assertRegex(events[3]["text"], (
+            r"^Cursor's model provider returned RESOURCE_EXHAUSTED\. The turn is retried in 30 seconds, at "
+            r"\d\d:\d\d:\d\d [+-]\d{4}\. This is retry 1 of at most 8 in a row without progress\.$"
+        ))
+        # The clock moved by the wait, less the real time the wait took.
+        self.assertTrue(25 < skipped[0] <= 30, skipped)
+        terminal = events[-1]
+        self.assertEqual((terminal["is_error"], terminal["exit_code"], terminal["result_text"]), (False, 0, "Done."))
+        self.assertNotIn("message", terminal)
+        failure.assert_not_called()
+        # The conversation held the prompt and the tool call, so the retry resumed it, on the model of the
+        # first start, and was told to go on. Those words are the server's: no row of the timeline carries them.
+        first, second = self._cli_starts()
+        self.assertTrue(first["prompt"].endswith("[Current user prompt]\nhello"))
+        self.assertNotIn("--resume", first["argv"])
+        self.assertEqual(second["argv"][second["argv"].index("--resume") + 1], "cursor-sess-test")
+        self.assertEqual([start["argv"][start["argv"].index("--model") + 1] for start in (first, second)], ["composer-2.5"] * 2)
+        self.assertEqual(second["prompt"], "go on")
+        self.assertNotIn('"go on"', json.dumps(events))
+        # Each start records the root the conversation stood at; the instructions sent with the first count as delivered.
+        self.assertEqual([event.get("cursor_root_blob_id") for event in events if event["type"] == "process_started"], ["", "root-1"])
+        self.assertEqual(self.session.get("cursor_session_id"), "cursor-sess-test")
+        self.assertIn("cursor_instruction_hash", self.session)
+        self.assertNotIn(self.session_id, agent_server.BUSY_SESSIONS)
+
+    async def test_a_retry_gives_the_cli_the_prompt_again_unless_the_conversation_holds_it(self) -> None:
+        bound = {"cursor_session_id": "cursor-sess-test", "session_id": "cursor-sess-test"}
+        done = {"events": [_result_event("Done.")]}
+        for case, steps, root, session_patch, expected in (
+            # The start stored nothing: the retry gets the same prompt, on the chat's conversation if it has one.
+            ("new chat", [EXHAUSTED, done], "", None, lambda prompt: [(prompt, False), (prompt, False)]),
+            ("new chat, no store yet", [{"store": "no store", **EXHAUSTED}, done], "", None, lambda prompt: [(prompt, False), (prompt, False)]),
+            ("new chat, no directory yet", [{"store": "no directory", **EXHAUSTED}, done], "", None, lambda prompt: [(prompt, False), (prompt, False)]),
+            ("resumed chat", [EXHAUSTED, done], "root-0", bound, lambda prompt: [(prompt, True), (prompt, True)]),
+            # The same when the CLI ended before it named its conversation; what it stored by then counts.
+            ("resumed chat, no init", [{"init": False, **EXHAUSTED}, done], "root-0", bound, lambda prompt: [(prompt, True), (prompt, True)]),
+            ("resumed chat, stored before init", [{"init": False, "root": "root-1", **EXHAUSTED}, done], "root-0", bound,
+             lambda prompt: [(prompt, True), ("go on", True)]),
+            # A retry that stored nothing is followed by one that is told the same.
+            ("second retry", [{"root": "root-1", **EXHAUSTED}, EXHAUSTED, done], "", None,
+             lambda prompt: [(prompt, False), ("go on", True), ("go on", True)]),
+        ):
+            with self.subTest(case=case), patch.object(agent_server, "CURSOR_PROVIDER_RETRY_WAITS_SECONDS", (0, 0)):
+                self.session.pop("cursor_session_id", None)  # The case before bound the chat when it finished.
+                events = await self._run_script(self._retried_cli(*steps, root=root), run_id=f"run-{case}", session_patch=session_patch)
+                starts = self._cli_starts()
+                self.assertEqual([(start["prompt"], "--resume" in start["argv"]) for start in starts], expected(starts[0]["prompt"]))
+                self.assertFalse(events[-1]["is_error"], events)
+
+    async def test_a_retry_carries_the_provider_instructions_only_with_the_prompt_and_the_turn_records_them_once(self) -> None:
+        instructions = "[AgentsDock provider instructions]"
+        # A chat whose recorded instructions are not the current ones gets them again at its next turn.
+        outdated = {
+            "cursor_session_id": "cursor-sess-test", "session_id": "cursor-sess-test",
+            "cursor_instruction_hash": "outdated", "cursor_instruction_version": agent_server.CURSOR_PROMPT_POLICY_VERSION,
+        }
+        done = {"events": [_result_event("Done.")]}
+        for case, first, root, chat, again in (
+            # The conversation did not store the prompt: the retry gets it again, instructions included.
+            ("new chat, nothing stored", EXHAUSTED, "", {}, True),
+            ("outdated instructions, nothing stored", EXHAUSTED, "root-0", outdated, True),
+            # The conversation holds the prompt with its instructions: the retry is told to go on, without them.
+            ("new chat, stored", {"root": "root-1", **EXHAUSTED}, "", {}, False),
+            ("outdated instructions, stored", {"root": "root-1", **EXHAUSTED}, "root-0", outdated, False),
+        ):
+            with self.subTest(case=case), patch.object(agent_server, "CURSOR_PROVIDER_RETRY_WAITS_SECONDS", (0,)), patch.object(
+                agent_server, "persist_run_provider_session", wraps=agent_server.persist_run_provider_session,
+            ) as persist:
+                for key in outdated:
+                    self.session.pop(key, None)  # The case before bound the chat and recorded its instructions.
+                self.session.update(chat)
+                script = self._retried_cli(first, done, done, root=root)
+                await self._run_script(script, run_id=f"run-{case}")
+                first_start, retry = (start["prompt"] for start in self._cli_starts())
+                self.assertIn(instructions, first_start)
+                self.assertEqual(retry, first_start if again else "go on")
+                # The turn records the instructions once, when it succeeds, and the turn after it sends none.
+                recorded = [call.kwargs["cursor_instruction_hash"] for call in persist.await_args_list]
+                self.assertEqual([value for value in recorded if value], [self.session["cursor_instruction_hash"]])
+                self.assertNotEqual(self.session["cursor_instruction_hash"], "outdated")
+                await self._run_script(script, run_id=f"run-{case}-next")
+                self.assertEqual(self._cli_starts()[2]["prompt"], "[Current user prompt]\nhello")
+
+    async def test_the_waits_grow_to_five_minutes_and_after_eight_retries_without_progress_the_turn_fails(self) -> None:
+        with self._retry_clock() as skipped:
+            events = await self._run_script(self._retried_cli(*[EXHAUSTED] * 9))
+
+        self.assertEqual(self._notices(events), [
+            f"Cursor's model provider returned RESOURCE_EXHAUSTED. The turn is retried in {wait} seconds. "
+            f"This is retry {number} of at most 8 in a row without progress."
+            for number, wait in enumerate((30, 60, 120, 240, 300, 300, 300, 300), 1)
+        ])
+        # The clock moved by the eight waits, less the real time they took.
+        self.assertTrue(1600 < skipped[0] <= 1650, skipped)
+        self.assertEqual(len(self._cli_starts()), 9)
+        error, terminal = (next(event for event in events if event["type"] == kind) for kind in ("error", "turn_finished"))
+        self.assertEqual(error["message"], (
+            "Cursor's model provider kept returning RESOURCE_EXHAUSTED: 8 retries in a row made no progress, after "
+            "1650 seconds of waiting. Try again later, or select another available model in this chat."
+        ))
+        self.assertEqual((terminal["message"], terminal["is_error"], terminal["result_text"]), (error["message"], True, ""))
+        # The Codex and Claude resend of "go on" keys on these words in an error row.
+        self.assertIsNone(agent_server.MODEL_CAPACITY_ERROR_RE.search(error["message"]))
+
+    async def test_a_tool_call_or_text_from_a_retry_starts_the_count_again(self) -> None:
+        text = {"type": "assistant", "session_id": "cursor-sess-test", "message": {"role": "assistant", "content": [{"type": "text", "text": "Step two is next."}]}}
+        with self._retry_clock():
+            events = await self._run_script(self._retried_cli(
+                EXHAUSTED, EXHAUSTED, {"events": TOOL_CALL, **EXHAUSTED}, EXHAUSTED, {"events": [text], **EXHAUSTED},
+                {"events": [_result_event("Done.")]},
+            ))
+        self.assertEqual([notice.split("The turn is retried in ")[1].split(" of at most")[0] for notice in self._notices(events)], [
+            "30 seconds. This is retry 1", "60 seconds. This is retry 2",
+            "30 seconds. This is retry 1", "60 seconds. This is retry 2",
+            "30 seconds. This is retry 1",
+        ])
+        self.assertFalse(events[-1]["is_error"])
+
+    async def test_a_usage_limit_in_the_providers_message_is_named_without_quoting_the_message(self) -> None:
+        limit = {"exit": 1, "stderr": "RetriableError: [resource_exhausted] You have hit your usage limit for account-7\n"}
+        with patch.object(agent_server, "CURSOR_PROVIDER_RETRY_WAITS_SECONDS", (0,)):
+            events = await self._run_script(self._retried_cli(limit, limit))
+        named = " Its message names a usage or rate limit: check the Cursor account."
+        self.assertEqual(self._notices(events), [
+            f"Cursor's model provider returned RESOURCE_EXHAUSTED.{named} The turn is retried in 0 seconds. "
+            "This is retry 1 of at most 1 in a row without progress."
+        ])
+        self.assertIn(f"after 0 seconds of waiting.{named} Try again later", events[-1]["message"])
+        self.assertNotIn("account-7", json.dumps(events))
+
+    async def test_other_failures_are_not_retried(self) -> None:
+        bound = {"cursor_session_id": "cursor-sess-test", "session_id": "cursor-sess-test"}
+        refused = {"exit": 1, "stderr": "NonRetriableError: [resource_exhausted] Error\n"}
+        logical = {"events": [_result_event("provider failure", is_error=True)]}
+        exhausted = (
+            "Cursor's model provider returned RESOURCE_EXHAUSTED. Wait briefly and try again. "
+            "If it recurs, select another available model in this chat."
+        )
+        for case, steps, session_patch, starts, message in (
+            # Cursor's service marked the error as not retryable, at the first start or at a retry: the
+            # failure keeps its own message, which counts no retries.
+            ("refused", [refused], None, 1, exhausted),
+            ("refused at a retry", [{"root": "root-1", **EXHAUSTED}, refused], None, 2, exhausted),
+            # A retry that fails in another way fails the turn in that way.
+            ("another failure", [{"root": "root-1", **EXHAUSTED}, logical], None, 2, "Cursor reported a logical provider error."),
+            # The chat's conversation could not be read when the turn started, or after the CLI ended, with
+            # or without naming it: what the CLI stored is not known, and the prompt is not sent into the
+            # conversation a second time.
+            ("unread before", [EXHAUSTED], bound, 1, exhausted),
+            ("unread after", [{"store": "no sidecar", **EXHAUSTED}], bound, 1, exhausted),
+            ("unread after, no init", [{"init": False, "store": "no sidecar", **EXHAUSTED}], bound, 1, exhausted),
+        ):
+            with self.subTest(case=case), patch.object(agent_server, "CURSOR_PROVIDER_RETRY_WAITS_SECONDS", (0, 0)):
+                script = self._retried_cli(*steps, root="root-0")
+                if case == "unread before":
+                    self.store.unlink()
+                events = await self._run_script(script, run_id=f"run-{case}", session_patch=session_patch)
+                self.assertEqual(len(self._cli_starts()), starts)
+                self.assertEqual(len(self._notices(events)), starts - 1)
+                self.assertEqual(next(event for event in events if event["type"] == "error")["message"], message)
+                self.assertTrue(events[-1]["is_error"])
+
+    async def test_a_new_conversation_whose_store_cannot_be_read_is_not_given_the_prompt_again(self) -> None:
+        # The start ran a tool and moved the root, so the conversation holds the prompt, but its store cannot
+        # be read afterwards. A retry with the prompt would begin a second conversation and repeat the work.
+        for standalone in (False, True):
+            for left in ("no sidecar", "symlink"):
+                with self.subTest(standalone=standalone, left=left), patch.object(agent_server, "CURSOR_PROVIDER_RETRY_WAITS_SECONDS", (0,)):
+                    script = self._retried_cli({"events": TOOL_CALL, "root": "root-1", "store": left, **EXHAUSTED}, {})
+                    events = await self._run_script(script, run_id=f"run-{standalone}-{left}", standalone=standalone)
+                    self.assertEqual(len(self._cli_starts()), 1)
+                    self.assertEqual(self._notices(events), [])
+                    self.assertIn("returned RESOURCE_EXHAUSTED", next(event for event in events if event["type"] == "error")["message"])
+                    self.assertTrue(events[-1]["is_error"])
+
+    async def test_a_new_conversation_is_bound_to_the_chat_before_the_wait_only_when_it_holds_the_prompt(self) -> None:
+        saved = agent_server.cursor_history.LocalSession(
+            "cursor-sess-test", self.cwd, None, 0.0, Path(self.cwd) / "transcript.jsonl",
+        )
+        append_event = agent_server.append_event
+        for case, first, bound_in_the_wait, resumed in (
+            # The conversation holds the prompt: the chat keeps it from the first failure on, whatever ends
+            # the turn, and the retry resumes it.
+            ("stored", {"root": "root-1", **EXHAUSTED}, "cursor-sess-test", True),
+            # Nothing was stored: the retry begins another conversation, and the chat must not point at this one.
+            ("nothing stored", EXHAUSTED, None, False),
+        ):
+            in_the_wait = []
+
+            async def append_and_note_the_binding(session_id: str, event_type: str, payload: dict | None = None) -> dict:
+                if (payload or {}).get("phase") == "commentary":
+                    in_the_wait.append(self.session.get("cursor_session_id"))
+                return await append_event(session_id, event_type, payload)
+
+            with self.subTest(case=case), patch.object(
+                agent_server.cursor_history, "find_session", return_value=saved,
+            ), patch.object(agent_server, "append_event", append_and_note_the_binding), patch.object(
+                agent_server, "CURSOR_PROVIDER_RETRY_WAITS_SECONDS", (0,),
+            ):
+                self.session.pop("cursor_session_id", None)  # The case before bound the chat.
+                events = await self._run_script(self._retried_cli(first, {"events": [_result_event("Done.")]}), run_id=f"run-{case}")
+                self.assertEqual(in_the_wait, [bound_in_the_wait])
+                self.assertEqual("--resume" in self._cli_starts()[1]["argv"], resumed)
+                # The turn's success binds the chat in both cases. The binding is reported once per turn.
+                self.assertEqual(self.session.get("cursor_session_id"), "cursor-sess-test")
+                self.assertEqual([event["type"] for event in events].count("provider_session"), 1)
+
+    async def test_a_retried_turn_reports_its_working_directory_once(self) -> None:
+        gone = str(Path(self.tempdir.name) / "gone")
+        with patch.object(agent_server, "DEFAULT_CWD", self.cwd), patch.object(agent_server, "CURSOR_PROVIDER_RETRY_WAITS_SECONDS", (0, 0)):
+            events = await self._run_script(
+                self._retried_cli(EXHAUSTED, EXHAUSTED, {"events": [_result_event("Done.")]}), session_patch={"cwd": gone},
+            )
+        self.assertEqual(len(self._cli_starts()), 3)
+        self.assertEqual([(event["requested_cwd"], event["cwd"]) for event in events if event["type"] == "cwd_fallback"], [(gone, self.cwd)])
+
+    async def test_the_result_of_a_retried_turn_holds_the_text_of_every_start(self) -> None:
+        def text(part: str) -> dict:
+            return {"type": "assistant", "session_id": "cursor-sess-test", "message": {"role": "assistant", "content": [{"type": "text", "text": part}]}}
+
+        script = self._retried_cli(
+            {"events": [text("Part one."), *TOOL_CALL], "root": "root-1", **EXHAUSTED},
+            # The CLI's result is the text of its own start, joined without a separator.
+            {"events": [text("Part two."), *TOOL_CALL, text("Part three."), _result_event("Part two.Part three.")]},
+        )
+        with patch.object(agent_server, "CURSOR_PROVIDER_RETRY_WAITS_SECONDS", (0,)):
+            events = await self._run_script(script)
+        self.assertEqual([event["text"] for event in events if event["type"] == "assistant_text"], ["Part one.", "Part two.", "Part three."])
+        # The apps and shared chats show the terminal text in place of the text rows only when it holds them all.
+        self.assertEqual(events[-1]["result_text"], "Part one.Part two.Part three.")
+
+    async def test_a_provider_error_that_leaves_a_tool_call_open_is_retried_and_the_call_is_closed(self) -> None:
+        script = self._retried_cli({"events": TOOL_CALL[:1], "root": "root-1", **EXHAUSTED}, {"events": [_result_event("Done.")]})
+        with patch.object(agent_server, "CURSOR_PROVIDER_RETRY_WAITS_SECONDS", (0,)):
+            events = await self._run_script(script)
+        self.assertEqual([event["type"] for event in events], [
+            "process_started", "tool_started", "tool_finished", "reasoning_summary",
+            "process_started", "provider_session", "turn_finished",
+        ])
+        # The call's row is closed as failed before the notice, so it does not read as running during the wait.
+        self.assertEqual(
+            (events[2]["tool_id"], events[2]["exit_code"], events[2]["output"]),
+            ("call-1", 1, "Cursor tool did not emit a completion event."),
+        )
+        self.assertFalse(events[-1]["is_error"])
+
+    async def test_the_absolute_turn_timeout_bounds_a_turn_whose_every_start_makes_progress(self) -> None:
+        agent_server.CURSOR_TURN_TIMEOUT_SECONDS = 100
+        # Each start runs a tool before the provider fails, so every wait is the first of the schedule, 30
+        # seconds: the fourth wait reaches the timeout.
+        with self._retry_clock():
+            events = await self._run_script(self._retried_cli(*[{"events": TOOL_CALL, **EXHAUSTED}] * 5))
+        self.assertEqual(len(self._cli_starts()), 4)
+        self.assertEqual(len(self._notices(events)), 4)
+        error, = (event for event in events if event["type"] == "error")
+        terminal, = (event for event in events if event["type"] == "turn_finished")
+        self.assertEqual(error["message"], "Cursor exceeded the absolute turn timeout of 100 seconds.")
+        self.assertEqual((terminal["is_error"], terminal["message"]), (True, error["message"]))
+        self.assertNotIn(self.session_id, agent_server.BUSY_SESSIONS)
+
+    async def test_the_absolute_turn_timeout_of_a_retry_counts_the_wait_before_it(self) -> None:
+        agent_server.CURSOR_TURN_TIMEOUT_SECONDS = 34
+        # The wait takes 30 of the 34 seconds, so the retry, which hangs, is ended about 4 seconds after it
+        # starts. A timeout counted from the retry's own start would end it after 34.
+        began = time.monotonic()
+        with self._retry_clock():
+            events = await self._run_script(self._retried_cli({"events": TOOL_CALL, **EXHAUSTED}, {"hang": 60}))
+        self.assertLess(time.monotonic() - began, 20)
+        self.assertEqual(len(self._cli_starts()), 2)
+        self.assertEqual(
+            [event["message"] for event in events if event["type"] == "error"],
+            ["Cursor exceeded the absolute turn timeout of 34 seconds."],
+        )
+        self.assertTrue(events[-1]["is_error"])
+
+    async def test_a_retry_that_cannot_be_started_ends_the_turn_with_what_the_earlier_starts_produced(self) -> None:
+        target = Path(self.cwd) / "hello.py"
+        target.write_text("before\n", encoding="utf-8")
+        subprocess.run(["git", "init", "-q"], cwd=self.cwd, check=True)
+        subprocess.run(["git", "add", "hello.py"], cwd=self.cwd, check=True)
+        subprocess.run(
+            ["git", "-c", "user.name=AgentsDock Test", "-c", "user.email=test@agentsdock.invalid", "commit", "-qm", "baseline"],
+            cwd=self.cwd, check=True,
+        )
+        write = [
+            {"type": "tool_call", "subtype": subtype, "call_id": "write-1", "session_id": "cursor-sess-test",
+             "tool_call": {"writeToolCall": {"args": {"path": str(target)}, **({"result": {"success": {"path": str(target)}}} if subtype == "completed" else {})}}}
+            for subtype in ("started", "completed")
+        ]
+        # The hub answers the first start's request for a token and fails the retry's; in the second case
+        # Stop was requested by then.
+        for stop_requested in (False, True):
+            answered = []
+
+            def hub_env(env: dict) -> dict:
+                answered.append(env)
+                if len(answered) == 1:
+                    return env
+                if stop_requested:
+                    agent_server.STOP_REQUESTS.add(self.session_id)
+                raise RuntimeError("hub sign-in expired")
+
+            with self.subTest(stop_requested=stop_requested), patch.object(
+                agent_server, "HUB_PROVIDER_INSTALL", Path(self.tempdir.name),
+            ), patch.object(agent_server, "cursor_hub_env", side_effect=hub_env), patch.object(
+                agent_server, "collect_manifest", wraps=agent_server.collect_manifest,
+            ) as manifest, patch.object(agent_server, "CURSOR_PROVIDER_RETRY_WAITS_SECONDS", (0,)):
+                target.write_text("before\n", encoding="utf-8")
+                self.session.pop("cursor_session_id", None)
+                events = await self._run_script(
+                    self._retried_cli({"events": write, "write": str(target), "root": "root-1", **EXHAUSTED}),
+                    run_id=f"run-{stop_requested}",
+                )
+                self.assertEqual(len(self._cli_starts()), 1)
+                # The diff and the artifacts of the start that ran are published.
+                self.assertEqual(next(event for event in events if event["type"] == "code_diff")["attributed_paths"], ["hello.py"])
+                self.assertEqual([call.kwargs["final"] for call in manifest.await_args_list].count(True), 1)
+                errors = [event["message"] for event in events if event["type"] == "error"]
+                terminal = events[-1]
+                if stop_requested:
+                    self.assertEqual((terminal["type"], terminal["stopped"], terminal["is_error"], errors), ("turn_finished", True, False, []))
+                else:
+                    self.assertEqual(errors, ["failed to start Cursor: hub sign-in expired"])
+                    self.assertEqual((terminal["type"], terminal["is_error"], terminal["message"]), ("turn_finished", True, errors[0]))
+                self.assertNotIn(self.session_id, agent_server.BUSY_SESSIONS)
+
+    def _start_script(self, body: str, run_id: str) -> asyncio.Task:
+        """The run as start_turn starts it: supervised, with the turn's row already recorded on the chat."""
+        script = _write_fake_cli(Path(self.tempdir.name), body)
+        self._arm_run(run_id)
+        self.session["active_run"] = {"run_id": run_id}
+        return asyncio.create_task(agent_server.supervise_provider_turn_task(
+            self.session_id, run_id, agent_server.BACKEND_CURSOR,
+            agent_server.run_cursor(
+                self.session_id, run_id, "hello", {**self.session, "_cursor_executable": str(script)},
+                Path(self.tempdir.name) / "manifest.json",
+            ),
+        ))
+
+    async def _reach_the_wait(self, task: asyncio.Task) -> None:
+        for _ in range(500):
+            if self._waiting():
+                return
+            await asyncio.sleep(0.01)
+        task.cancel()
+        self.fail("the turn never reached its wait")
+
+    async def test_stop_during_the_wait_ends_the_turn_as_stopped_without_waiting_for_its_diff(self) -> None:
+        async def slow_diff(*_args: object) -> None:
+            await asyncio.sleep(1)
+
+        # The real schedule: the wait is 30 seconds, and Stop ends it. The turn's diff takes longer than Stop
+        # waits for a turn to end (5 seconds, shortened here).
+        with patch.object(agent_server, "publish_turn_code_diff", slow_diff), patch.object(agent_server, "STOP_CONFIRM_TIMEOUT_SECONDS", 0.5):
+            task = self._start_script(self._retried_cli({"events": TOOL_CALL, "root": "root-1", **EXHAUSTED}), "run-stop-wait")
+            await self._reach_the_wait(task)
+            try:
+                result = await asyncio.wait_for(agent_server.stop_turn(
+                    self.session_id, schedule_queue=False, cascade_codex_subagents=False, cascade_claude_subagents=False,
+                ), timeout=3)
+                await asyncio.wait_for(task, timeout=3)
+            finally:
+                task.cancel()
+        self.assertTrue(result["stopped"])
+        self.assertNotIn("hard_stop", result)
+        events = self._read_events()
+        self.assertEqual((events[-1]["type"], events[-1]["stopped"], events[-1]["is_error"]), ("turn_finished", True, False))
+        self.assertNotIn("message", events[-1])
+        self.assertEqual([event["type"] for event in events if event["type"] in ("error", "turn_stopped")], [])
+        self.assertEqual(len(self._cli_starts()), 1)
+        self.assertNotIn(self.session_id, agent_server.BUSY_SESSIONS)
+
+    async def test_send_now_during_the_wait_stops_the_turn_and_starts_the_queued_message(self) -> None:
+        agent_server.QUEUED_TURNS[self.session_id] = deque([
+            {"queued_id": "queued-1", "prompt": "next", "file_ids": [], "backend": agent_server.BACKEND_CURSOR},
+        ])
+        with patch.object(agent_server, "append_durable_event", AsyncMock(return_value={})), patch.object(
+            agent_server, "_start_turn_locked", AsyncMock(return_value={}),
+        ) as start_turn, patch.object(agent_server, "STEERING_SESSIONS", set()), patch.object(
+            agent_server, "STEERING_WAIT_TASKS", {},
+        ), patch.object(agent_server, "RUN_NOW_REQUESTS", {}), patch.object(agent_server, "RUN_NOW_COMPLETED_RESULTS", OrderedDict()):
+            task = self._start_script(self._retried_cli({"events": TOOL_CALL, "root": "root-1", **EXHAUSTED}), "run-send-now")
+            await self._reach_the_wait(task)
+            try:
+                result = await asyncio.wait_for(agent_server.run_queued_turn_now(self.session_id, "queued-1"), timeout=3)
+                await asyncio.wait_for(task, timeout=3)
+                for _ in range(300):
+                    if start_turn.await_count:
+                        break
+                    await asyncio.sleep(0.01)
+            finally:
+                task.cancel()
+        self.assertEqual((result["ok"], result["interrupted"], result["deferred"]), (True, True, False))
+        events = self._read_events()
+        self.assertEqual((events[-1]["type"], events[-1]["stopped"]), ("turn_finished", True))
+        self.assertEqual(len(self._cli_starts()), 1)
+        # The queued message starts once the stopped turn has released the chat.
+        start_turn.assert_awaited_once()
+        self.assertEqual((start_turn.await_args.args[0], start_turn.await_args.kwargs["queued_id"]), (self.session_id, "queued-1"))
+        self.assertIn("next", start_turn.await_args.args[1].prompt)
+
+    async def test_a_server_shutdown_ends_the_wait_and_no_retry_is_started(self) -> None:
+        task = self._start_script(self._retried_cli({"events": TOOL_CALL, "root": "root-1", **EXHAUSTED}), "run-shutdown")
+        await self._reach_the_wait(task)
+        try:
+            with patch.object(agent_server, "SERVER_SHUTTING_DOWN", True):
+                await asyncio.wait_for(task, timeout=3)
+        finally:
+            task.cancel()
+        self.assertEqual(len(self._cli_starts()), 1)
+        # The turn ends with the provider's error, which its last start returned.
+        terminal = self._read_events()[-1]
+        self.assertEqual((terminal["type"], terminal["is_error"], terminal["stopped"]), ("turn_finished", True, False))
+        self.assertIn("returned RESOURCE_EXHAUSTED", terminal["message"])
+
+    async def test_a_retried_standalone_run_resumes_its_own_conversation(self) -> None:
+        parent = {"cursor_session_id": "parent-chat", "session_id": "parent-chat"}
+        self.session.update(parent)
+        script = self._retried_cli(
+            {"events": TOOL_CALL, "root": "root-1", **EXHAUSTED}, {"events": [_result_event("Done.")], "root": "root-2"},
+        )
+        with patch.object(agent_server, "CURSOR_PROVIDER_RETRY_WAITS_SECONDS", (0,)):
+            events = await self._run_script(script, standalone=True, session_patch=parent)
+        self.assertFalse(events[-1]["is_error"], events)
+        first, second = self._cli_starts()
+        # The run starts without the chat's conversation, and its retry resumes the one the run began.
+        self.assertNotIn("--resume", first["argv"])
+        self.assertEqual((second["argv"][second["argv"].index("--resume") + 1], second["prompt"]), ("cursor-sess-test", "go on"))
+        # Neither start records a root for a rewind of the chat, and the chat keeps its own conversation.
+        self.assertEqual([event.get("cursor_root_blob_id") for event in events if event["type"] == "process_started"], [None, None])
+        self.assertEqual(self.session["cursor_session_id"], "parent-chat")
 
     async def test_session_id_is_pinned_across_every_projected_event(self) -> None:
         for event in (

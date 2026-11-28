@@ -266,6 +266,19 @@ def latest_root_blob_id(provider_id: str, cwd: str) -> str:
         return stored_root_blob_id(store)
 
 
+def new_session_root_blob_id(provider_id: str, cwd: str) -> str:
+    """``latest_root_blob_id`` for a session that began with the CLI start that just ended, "" when that
+    start stored nothing: the session has no directory, no store in it, or a store with an empty root.
+    Any other store that cannot be read raises: what it holds is not known."""
+    source = next((config_root(cwd) / "chats").glob(f"*/{provider_id}"), None) if IDENTIFIER.fullmatch(provider_id) else None
+    if source is None or not os.path.lexists(source / "store.db"):
+        return ""
+    with closing(open_store(provider_id, cwd)) as store:
+        if json.loads(bytes.fromhex(store.execute("SELECT value FROM meta WHERE key = '0'").fetchone()[0]))["latestRootBlobId"] == "":
+            return ""
+        return stored_root_blob_id(store)
+
+
 def has_blob(provider_id: str, cwd: str, blob_id: str) -> bool:
     """Whether a session's store holds a blob with this id."""
     with closing(open_store(provider_id, cwd)) as store:
