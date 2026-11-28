@@ -481,7 +481,7 @@
   "historyReload.busy": "Wait for the current turn to finish before reloading history.",
   "historyReload.confirm": "Reload",
   "settings.reasoningDisplay": "Show reasoning traces",
-  "settings.reasoningDisplayHelp": "Expand Codex and Claude thinking during active turns. Completed turns stay collapsed; open their activity to read the details.",
+  "settings.reasoningDisplayHelp": "Expand Codex, Claude and Cursor thinking during active turns. Completed turns stay collapsed; open their activity to read the details.",
   "timeline.activity.partialProviderReasoning": "Partial provider-supplied reasoning",
   "timeline.activity.providerReasoning": "Provider-supplied reasoning",
   "timeline.activity.reasoningSummary": "Reasoning summary",

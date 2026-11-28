@@ -70662,10 +70662,12 @@ async def run_cursor_process(
         reasoning_buffer = []
         reasoning_buffer_chars = 0
         if text:
+            # No phase, like a Claude thinking block: `commentary` is the
+            # agent's own message to the user, shown as text in the timeline
+            # and in shared transcripts. A thought stays in the trace.
             await append_event(session_id, "reasoning_summary", {
                 "run_id": run_id,
                 "text": text,
-                "phase": "commentary",
             })
 
     async def emit_provider_session(new_provider_id: str) -> None:
