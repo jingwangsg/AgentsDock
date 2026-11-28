@@ -1,5 +1,14 @@
 # Public development log
 
+## 2026-11-28 — Four cases of editing a turn in a Cursor chat
+
+- A scheduled run that uses its own Cursor session (a standalone run) writes nothing into the chat's conversation. Editing that run's turn, or a turn before it that never started Cursor, was refused with "could not be matched to exactly one message", although a later turn had recorded where the conversation stood or no turn of the conversation was removed. Such a run is now passed over, as it already is for Codex.
+- In a fork of a chat that was imported from Cursor's own history, editing a turn copied from the parent was refused once the fork had run a turn of its own. Editing a turn copied from the parent now always discards the fork's own conversation as a whole and never reads its store, so a fork's first own turn without a recorded root no longer blocks it either.
+- Editing the first turn copied from the parent leaves no parent history in the fork. The next message still carried a fork memory block with an empty conversation. It now carries none.
+- A Cursor store whose metadata names no conversation root was recorded like a chat without a conversation, so editing that turn later would have started a new conversation instead of being treated as unreadable. Such a store now counts as unreadable.
+- The store readers used for a rewind now open a store as the import reader does (not through a symlink, query-only), read it once, and do not read it for a turn imported from Cursor's own history, which is always refused.
+- Verified with a live Cursor chat created from a session of the Cursor CLI (CLI 2026.11.22) with two code words, on an isolated server. A fork with one turn of its own, rewound onto the copied second turn, answered with the first word only. A fork rewound onto the first copied turn answered that it knew none, and the first message of its new conversation held no fork memory block. Each new test fails without its fix. No app was run.
+
 ## 2026-11-28 — A Cursor chat with no model of its own runs Gemini 4 Neon Extra High
 
 - A Cursor chat that had no model selected ran whatever model was selected in the Cursor CLI on that server, and the "server default" entry of the model list showed that selection. The server now has a default of its own for Cursor, `gemini-4-neon-xhigh`: where the server's Cursor account offers it, the default entry of the list shows it and a chat with no model of its own runs it. A chat with a model selected is unchanged.

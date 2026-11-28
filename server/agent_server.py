@@ -70537,8 +70537,9 @@ async def run_cursor_process(
     public_cmd = redacted_provider_argv(cmd, BACKEND_CURSOR)
     # A rewind to this turn resumes the chat's conversation from the root recorded here ("" when the chat has
     # none yet). Read before the CLI starts: the CLI moves the root with the first message it stores. Nothing is
-    # recorded for a standalone run, whose session is not the chat's, or when the store cannot be read: a rewind
-    # then looks for the turn's message in the store and is refused when it cannot place it (cursor_rewind_root).
+    # recorded for a standalone run, whose session is not the chat's and which a rewind passes over, or when
+    # the store cannot be read: a rewind then looks for the turn's message in the store and is refused when it
+    # cannot place it (cursor_rewind_root).
     rewind_record: dict[str, str] = {}
     if not standalone_provider_context:
         try:
@@ -96353,13 +96354,24 @@ async def cursor_rewind_root(
     store holds, for a copy of the store to resume from. Raises the 409 the rewind answers when the
     turn cannot be placed in the conversation or the store cannot be read.
     """
-    # The first removed row of a turn that reached the conversation: the start of a run, which carries the
-    # conversation's root from before that run, or a turn imported from Cursor's own history. The removed
-    # turns before it are not in the conversation: their CLI never started, or a fork copied them from its
-    # parent, whose history a fork holds as memory text (see where the rewind rebuilds memory_seed).
+    provider_id = str(sess.get("cursor_session_id") or "")
+    if events[target_index].get("forked") is True:
+        # A row a fork copied from its parent. The fork holds its parent's history as memory text, not in a
+        # conversation, and every run of the fork itself comes after the copied rows and is removed with this
+        # one: the fork's conversation, if it has one, goes as a whole, whatever its store holds.
+        return "" if provider_id else None
+    # The first removed row of a turn that reached the chat's conversation: the start of a run, which carries
+    # the conversation's root from before that run, or a turn imported from Cursor's own history. The removed
+    # turns before it are not in that conversation: their CLI never started, or they ran standalone, in a
+    # session of their own.
+    standalone_runs = {
+        str(event["run_id"]) for event in events
+        if event.get("type") == "turn_started" and event.get("provider_context_mode") == "standalone" and event.get("run_id")
+    }
     reached = next((
         event for event in events[target_index:]
-        if (event.get("type") == "process_started" and event.get("backend") == BACKEND_CURSOR)
+        if (event.get("type") == "process_started" and event.get("backend") == BACKEND_CURSOR
+            and str(event.get("run_id") or "") not in standalone_runs)
         or (event.get("type") == "turn_started" and is_imported_history_event(event))
     ), None)
     if reached is None:
@@ -96367,11 +96379,20 @@ async def cursor_rewind_root(
     recorded = reached.get("cursor_root_blob_id")
     if recorded == "":
         return ""
-    provider_id = str(sess.get("cursor_session_id") or "")
     if recorded is None and not provider_id:
         # No record and no conversation bound to the chat (a run of an earlier server version that was
         # stopped or failed before its session was kept): there is nothing to rewind on Cursor's side.
         return None
+    # What the timeline says about a run without a record: its own turn among the chat's turns (none for an
+    # imported turn, which no run of this server sent), and how many turns show that turn's prompt.
+    run_id = str(reached.get("run_id") or "")
+    turn_rows = [index for index, event in enumerate(events) if event.get("type") == "turn_started"]
+    turn = next((
+        position for position, index in enumerate(turn_rows)
+        if run_id and str(events[index].get("run_id") or "") == run_id and not is_imported_history_event(events[index])
+    ), None)
+    prompt = str(events[turn_rows[turn]].get("prompt") or "") if turn is not None else ""
+    same_prompt_turns = sum(1 for index in turn_rows if str(events[index].get("prompt") or "") == prompt)
     cwd = existing_cwd(str(sess.get("cwd") or DEFAULT_CWD))
     try:
         if recorded is not None:
@@ -96379,28 +96400,24 @@ async def cursor_rewind_root(
                 # The chat moved to another conversation after that run.
                 raise FileNotFoundError("Cursor conversation root")
             return recorded
-        stored = await asyncio.to_thread(cursor_history.prompt_roots, provider_id, cwd)
+        # No record: the run is from before roots were recorded, or could not read the store when it started.
+        # Its place is taken from the store only when nothing else can be meant: the chat has one turn with
+        # this prompt, and the conversation has one message that ends with this server's envelope of it, with
+        # one root before it. When the timeline alone rules that out, the store is not read.
+        stored = (
+            await asyncio.to_thread(cursor_history.prompt_roots, provider_id, cwd)
+            if prompt and same_prompt_turns == 1 else []
+        )
     except Exception as exc:
         logger.warning("session rewind: cursor store unusable session=%s error_type=%s", session_id, type(exc).__name__)
         raise HTTPException(status_code=409, detail={
             "code": "rewind_provider_unavailable",
             "message": "The Cursor conversation from before that turn is no longer available. The chat was left unchanged.",
         }) from exc
-    # No record: the run is from before roots were recorded, ran standalone, or could not read the store when
-    # it started. Its place is taken from the store only when nothing else can be meant: the chat has one turn
-    # with this prompt, and the conversation has one message that ends with this server's envelope of it, with
-    # one root before it. An imported turn has no run of this server, so no prompt to look for: it fails here.
-    turn_rows = [index for index, event in enumerate(events) if event.get("type") == "turn_started"]
-    turn = next((
-        position for position, index in enumerate(turn_rows)
-        if events[index].get("run_id") == reached.get("run_id") and not is_imported_history_event(events[index])
-    ), None)
-    prompt = str(events[turn_rows[turn]].get("prompt") or "") if turn is not None else ""
     envelope = f"[Current user prompt]\n{prompt}"
     matches = [position for position, (text, _root) in enumerate(stored) if text == envelope or text.endswith("\n\n" + envelope)]
-    same_prompt_turns = sum(1 for index in turn_rows if str(events[index].get("prompt") or "") == prompt)
     if (
-        not prompt or same_prompt_turns != 1 or len(matches) != 1 or stored[matches[0]][1] is None
+        len(matches) != 1 or stored[matches[0]][1] is None
         # Each stored prompt came from one turn, in the same order: more prompts than turns on either side of
         # the match means the message is another turn's (one shown under a different text than it was sent as).
         or matches[0] > turn or len(stored) - matches[0] > len(turn_rows) - turn
@@ -96893,9 +96910,14 @@ async def rewind_session(session_id: str, req: RewindSessionRequest) -> dict[str
                     # text. The target is a row copied from the parent, so every run of this chat is removed
                     # with it: the text is built again from the rows that stay, as the fork built it from the
                     # parent's rows, and is due again.
-                    sess["memory_seed"] = await asyncio.to_thread(
-                        build_fork_memory, dict(sess), session_id, reason=sess.get("memory_fork_reason"),
-                    )
+                    if any(event.get("forked") is True and event.get("type") == "turn_started" for event in prefix):
+                        sess["memory_seed"] = await asyncio.to_thread(
+                            build_fork_memory, dict(sess), session_id, reason=sess.get("memory_fork_reason"),
+                        )
+                    else:
+                        # No copied turn is left (a copied upload before the first turn is not history to give),
+                        # so the next turn sends no memory.
+                        sess["memory_seed"] = None
                     sess["memory_seed_used"] = False
                 await STORE.save(durable=True)
                 if backend == BACKEND_CLAUDE and CLAUDE_SDK_MANAGER is not None:

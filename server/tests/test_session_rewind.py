@@ -607,9 +607,10 @@ class CursorRewindTests(CursorFixture, RewindFixture):
         # Per run id: fields of its process_started row (no entry: the CLI never started), and of its turn_started row.
         self.started: dict[str, dict] = {}
         self.turns: dict[str, dict] = {}
+        self.before_first_turn: list[dict] = []
 
     def events(self):
-        rows = []
+        rows = list(self.before_first_turn)
         for event in super().events():
             if event["type"] == "turn_started":
                 rows.append({**event, **self.turns.get(event["run_id"], {})})
@@ -701,6 +702,25 @@ class CursorRewindTests(CursorFixture, RewindFixture):
         self.assertEqual(result["provider_rewind"], "cursor_fork")
         self.assertEqual(cursor_history.latest_root_blob_id(sess["cursor_session_id"], str(self.cwd)), roots[4])
 
+    async def test_a_standalone_run_does_not_decide_the_cursor_conversation(self) -> None:
+        # A standalone run starts the CLI in a session of its own: the chat's store holds nothing of it.
+        roots = self.conversation("Earlier question", "Third question")
+        self.turns = {"second": {"provider_context_mode": "standalone"}}
+        # The turn after it recorded its root, which is the conversation before the standalone run as well.
+        self.started = {"first": {"cursor_root_blob_id": ""}, "second": {}, "third": {"cursor_root_blob_id": roots[4]}}
+        sess = self.cursor_chat()
+        result = await server.rewind_session("chat", self.request("second"))
+        self.assertEqual(result["provider_rewind"], "cursor_fork")
+        self.assertEqual(cursor_history.latest_root_blob_id(sess["cursor_session_id"], str(self.cwd)), roots[4])
+
+        # No run of the chat's own conversation is removed: a turn whose CLI never started, then a standalone run.
+        self.turns = {"third": {"provider_context_mode": "standalone"}}
+        self.started = {"first": {"cursor_root_blob_id": ""}, "third": {}}
+        for target in ("third", "second"):
+            sess = self.cursor_chat()
+            result = await server.rewind_session("chat", self.request(target))
+            self.assertEqual((result["provider_rewind"], sess["cursor_session_id"]), (None, "native-cursor"))
+
     async def test_a_run_without_a_recorded_root_is_found_by_its_prompt_in_the_store(self) -> None:
         roots = self.conversation("Earlier question", "Second question", "Third question")
         self.started = {"first": {}, "second": {}, "third": {}}
@@ -723,9 +743,13 @@ class CursorRewindTests(CursorFixture, RewindFixture):
         self.conversation("Earlier question", "Second question", "Third question")
         self.turns = {"second": {"prompt": "Third question"}}
         await self.assertChatUnchanged("third", "rewind_boundary_ambiguous")
-        # A turn imported from Cursor's own history was not sent by this server.
+        # A turn imported from Cursor's own history was not sent by this server: no store is read for it.
         self.turns = {"third": {"imported": True}}
         self.started = {"first": {}, "second": {}}
+        await self.assertChatUnchanged("third", "rewind_boundary_ambiguous", "removed-store")
+        # A run row and a turn row that both lack a run id are not each other's.
+        self.turns = {"first": {"run_id": None}}
+        self.started = {"third": {"run_id": None}}
         await self.assertChatUnchanged("third", "rewind_boundary_ambiguous")
 
     async def test_a_message_of_another_turn_that_carries_the_prompt_is_not_taken_for_the_turns_own(self) -> None:
@@ -795,6 +819,39 @@ class CursorRewindTests(CursorFixture, RewindFixture):
         self.assertIn("Earlier question", sent)
         for removed in ("Second question", "Second answer", "Third question"):
             self.assertNotIn(removed, sent)
+
+    async def test_a_rewind_onto_a_parent_row_discards_the_forks_conversation_without_reading_its_store(self) -> None:
+        copied, imported = {"forked": True}, {"forked": True, "imported": True}
+        # The parent's rows as a fork copies them, the fork's own third turn, and the chat's session, whose
+        # store is absent here: a store read would answer 409.
+        for rows, own_turn, provider_id, expected in (
+            (imported, {"cursor_root_blob_id": ""}, "removed-store", "cursor_reset"),  # parent imported from Cursor
+            (imported, {}, "removed-store", "cursor_reset"),  # and the own turn has no recorded root
+            (copied, {}, "removed-store", "cursor_reset"),
+            (imported, None, None, None),  # no own turn, so no conversation to discard
+        ):
+            with self.subTest(rows=rows, own_turn=own_turn):
+                self.turns = {"first": rows, "second": rows, **({"third": rows} if own_turn is None else {})}
+                self.started = {} if own_turn is None else {"third": own_turn}
+                sess = self.cursor_chat(provider_id)
+                result = await server.rewind_session("chat", self.request("second"))
+                self.assertEqual((result["provider_rewind"], sess["cursor_session_id"], sess["session_id"]), (expected, None, None))
+                self.assertEqual([event["run_id"] for event in self.stored_events() if event["type"] == "turn_started"], ["first"])
+
+    async def test_a_fork_rewound_to_its_first_copied_row_is_given_no_memory(self) -> None:
+        self.turns = {run_id: {"forked": True} for run_id in ("first", "second", "third")}
+        # A file uploaded to the parent before its first message is copied too, and stays: it is not a turn.
+        self.before_first_turn = [{"type": "file_uploaded", "forked": True, "ts": "2026-09-08T09:59:00Z"}]
+        sess = self.cursor_chat(None, memory_seed=self.SEED, memory_seed_used=False, memory_fork_reason="no native fork")
+        self.assertIn("[Fork memory context", self.next_prompt(sess))
+
+        await server.rewind_session("chat", self.request("first"))
+
+        # No row of the parent stays, so there is no history to give: not even an empty memory block.
+        sent = self.next_prompt(sess)
+        self.assertNotIn("Fork memory", sent)
+        self.assertNotIn("memory fork", sent)
+        self.assertTrue(sent.endswith("[Current user prompt]\nNext question"))
 
     async def test_a_fork_rewound_to_its_first_own_turn_gets_the_parents_history_again(self) -> None:
         # That turn ran before roots were recorded; its message opens the conversation and carries the memory.
