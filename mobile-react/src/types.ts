@@ -1414,6 +1414,8 @@ export interface RemoteServerDeployJob {
   server: RemoteServer | null
   /** Update & redeploy all: the hub is restarting; the client waits for a new server instance. */
   restarting?: boolean
+  /** What a deploy's CLI step could not do although the server is deployed, one sentence each. Absent from a hub without that step. */
+  cli_failures?: string[]
 }
 
 /** A server Update & redeploy all would interrupt: the hub (`id` null, named by the client) or one of its remotes, with its running chats (null: could not be checked). */

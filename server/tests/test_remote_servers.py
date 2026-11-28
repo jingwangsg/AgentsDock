@@ -922,6 +922,8 @@ time.sleep(30)
         self.enterContext(mock.patch.object(rs, "ssh_binary", return_value=str(script)))
         # manage_tunnels=False opens no tunnel, so the health poll is answered here.
         self.enterContext(mock.patch.object(rs.RemoteServerManager, "_wait_health", mock.AsyncMock(return_value={"version": "1.2.3"})))
+        # So is the deploy's CLI step: another process may listen on the port the entry names.
+        self.update_cli = self.enterContext(mock.patch.object(rs.RemoteServerManager, "update_cli", mock.AsyncMock(return_value=("2.0", False))))
         return state / "calls.jsonl"
 
     def run_job(self, request: rs.RemoteDeployRequest) -> tuple[rs.RemoteServerManager, rs.DeployJob]:
@@ -989,6 +991,105 @@ time.sleep(30)
         _, job = self.run_job(rs.RemoteDeployRequest(ssh_host="dev@build-host"))
         assert job.error == headline.strip(), job.log
         assert [entry["message"] for entry in job.log][-5:-1] == [line for line in output[2:] if line]
+
+    def test_a_deploy_ends_by_updating_the_clis_and_a_failed_one_leaves_it_deployed(self) -> None:
+        self.fake_host(existing_port=None)
+        # A server with the Gemini backend: update-all updates that CLI, a deploy does not.
+        health = {"version": "1.2.3", "capabilities": {"gemini_backend": {"available": True, "version": 1}}}
+        self.enterContext(mock.patch.object(rs.RemoteServerManager, "_wait_health", mock.AsyncMock(return_value=health)))
+
+        async def update_cli(server: rs.RemoteServer, backend: str, timeout: float) -> tuple[str, bool]:
+            if backend == "codex":
+                raise RuntimeError("The codex installer exited with 22: curl: (22) The requested URL returned error: 403")
+            # This host had no Cursor CLI, so its update installed it.
+            return f"{backend}-2.0", backend == "cursor"
+
+        self.update_cli.side_effect = update_cli
+        with self.assertLogs(rs.logger, "WARNING") as logged:
+            _, job = self.run_job(rs.RemoteDeployRequest(ssh_host="dev@build-host"))
+        assert job.done and job.error is None and job.server is not None, job.log
+        # Each CLI once, on the server the deploy registered, with the deploy's bound.
+        assert [call.args for call in self.update_cli.await_args_list] == [
+            (job.server, backend, rs.DEPLOY_CLI_UPDATE_TIMEOUT) for backend in ("claude", "codex", "cursor")]
+        # After the health check. The line that ends a deploy and the job's view repeat the failure: a client keeps the latest line.
+        failed = "Codex: The codex installer exited with 22: curl: (22) The requested URL returned error: 403"
+        assert job.view(None)["cli_failures"] == [failed]
+        # The job and a row note do not outlast a hub restart or a closed server list; the hub's log does.
+        assert logged.output == [f"WARNING:agents-server:remote deployment {job.job_id} left CLI failures on {job.server.id} (dev@build-host): {failed}"]
+        assert [(entry["phase"], entry["message"]) for entry in job.log[-8:]] == [
+            ("health", "Waiting for the server behind the tunnel…"),
+            ("cli", "Updating Claude Code…"), ("cli", "Claude Code claude-2.0"),
+            ("cli", "Updating Codex…"), ("cli", failed),
+            ("cli", "Updating Cursor…"), ("cli", "Installed Cursor cursor-2.0"),
+            ("complete", f"AgentsServer 1.2.3 is reachable through the hub. {failed}"),
+        ]
+        # A deploy that fails before its server is up asks for no CLI. fake_host stubs update_cli anew: the count starts at 0.
+        self.fake_host(existing_port=None, bootstrap_failure=["setup failed"])
+        _, job = self.run_job(rs.RemoteDeployRequest(ssh_host="dev@build-host"))
+        assert job.error == "setup failed" and self.update_cli.await_count == 0, job.log
+
+    def test_a_cancel_during_the_cli_step_leaves_the_deploy_deployed(self) -> None:
+        self.fake_host(existing_port=None)
+        manager = rs.RemoteServerManager(self.tmp_path / "state", source_dir=self.tmp_path, manage_tunnels=False)
+
+        async def main() -> rs.DeployJob:
+            updating = asyncio.Event()
+
+            async def update_cli(server: rs.RemoteServer, backend: str, timeout: float) -> tuple[str, bool]:
+                updating.set()
+                await asyncio.Event().wait()  # until the job is cancelled
+
+            self.update_cli.side_effect = update_cli
+            job = manager.start_deploy(rs.RemoteDeployRequest(ssh_host="dev@build-host"))
+            assert job.task is not None
+            await asyncio.wait_for(updating.wait(), 30)
+            assert manager.cancel_job(job.job_id)
+            await job.task
+            await manager.stop()
+            return job
+
+        job = asyncio.run(main())
+        # The server is registered and answers: only the CLI update was cancelled, and no later CLI was asked for.
+        assert job.done and job.error is None and job.server is not None and job.server.id in manager.servers, job.log
+        assert job.cli_failures == ["CLI update cancelled at Claude Code."]
+        assert (job.log[-1]["phase"], job.log[-1]["message"]) == ("complete", "AgentsServer 1.2.3 is reachable through the hub. CLI update cancelled at Claude Code.")
+        assert [call.args[1] for call in self.update_cli.await_args_list] == ["claude"]
+
+    def test_the_cli_step_stops_where_the_next_cli_would_fail_the_same_way(self) -> None:
+        # Not a failure per CLI: the tunnel is down, the remote still runs the CLI the hub stopped waiting for, or it runs another update.
+        for failure in (httpx.ConnectError("ssh tunnel build-host is down: Connection refused"),
+                        httpx.ReadTimeout("no answer within 3 minutes; the update still runs on the server"),
+                        RuntimeError(rs.CLI_UPDATE_RUNNING)):
+            with self.subTest(failure=failure):
+                self.fake_host(existing_port=None)
+                self.update_cli.side_effect = [("2.0", False), failure]
+                _, job = self.run_job(rs.RemoteDeployRequest(ssh_host="dev@build-host"))
+                assert job.error is None and job.cli_failures == [f"CLI update stopped at Codex: {failure}"], job.log
+                assert job.log[-1]["message"] == f"AgentsServer 1.2.3 is reachable through the hub. CLI update stopped at Codex: {failure}"
+                assert [call.args[1] for call in self.update_cli.await_args_list] == ["claude", "codex"]
+
+    def test_a_cli_update_the_remote_does_not_answer_in_time_says_so(self) -> None:
+        async def main() -> str:
+            release = asyncio.Event()
+            remote = FastAPI()
+
+            @remote.post("/api/admin/runtimes/{backend}/update")
+            async def update(backend: str) -> None:
+                await release.wait()
+
+            server, task, port = await serve(remote)
+            manager = rs.RemoteServerManager(self.tmp_path, source_dir=self.tmp_path, manage_tunnels=False)
+            try:
+                with self.assertRaises(httpx.ReadTimeout) as raised:
+                    await manager.update_cli(make_server(local_port=port), "claude", 0.3)
+                return str(raised.exception)
+            finally:
+                release.set()
+                await manager.stop()
+                await stop(server, task)
+
+        # httpx's own ReadTimeout has no text.
+        assert asyncio.run(main()) == "no answer within 0.005 minutes; the update still runs on the server"
 
     def test_a_cluster_target_rejects_a_password(self) -> None:
         self.fake_host(existing_port=None)
@@ -2181,6 +2282,7 @@ time.sleep(30)
 
     def test_update_all_redeploys_each_remote_updates_every_cli_and_restarts_the_hub_last(self) -> None:
         order: list[tuple[str, ...]] = []
+        timeouts: set[tuple[float, ...]] = set()
         hooks = hub_hooks(hub_running_chat_count=lambda: 2)
         hooks.hub_update_cli.side_effect = lambda backend: order.append(("hub-cli", backend)) or (f"{backend}-hub-9.9", False)
         released = asyncio.Event()
@@ -2192,30 +2294,35 @@ time.sleep(30)
 
         hooks.hub_restart.side_effect = restart
 
-        async def fake_deploy(job, request, redeploy_id):
-            order.append(("redeploy", redeploy_id))
-            job.progress("upload", "Uploading the server…")
-            if redeploy_id == "deaddeaddead":
-                job.error = "ssh exited 255"
-                job.progress("connect", job.error)
-            job.done = True
-
         async def main() -> None:
             manager, remote, dead, hub_port, close = await hub_with_fake(self.tmp_path, hooks=hooks)
-            real_update_cli = manager.update_cli
+            # Taken before fake_host stubs update_cli for every manager.
+            real_update_cli, real_deploy = manager.update_cli, manager._deploy
+            self.fake_host(existing_port=7850)
 
-            async def update_cli(server, backend):
+            async def deploy(job, request, redeploy_id, **options):
+                order.append(("redeploy", redeploy_id))
+                await real_deploy(job, request, redeploy_id, **options)
+
+            async def wait_health(server):
+                if server.id == dead.id:
+                    # As when a tunnel reconnects for longer than the wait: the deploy fails although its server runs.
+                    raise RuntimeError("The remote server did not answer through the tunnel: no response")
+                return {"version": "1.2.3"}
+
+            async def update_cli(server, backend, *timeout):
                 order.append(("cli", server.id, backend))
+                timeouts.add(timeout)
                 # The reachable remote answers the real request; the others have no server behind their port.
-                return await real_update_cli(server, backend)
+                return await real_update_cli(server, backend, *timeout)
 
             probes = mock.AsyncMock(side_effect=lambda server: {"active": ["c1"], "capabilities": {
                 "gemini_backend": {"available": True, "version": 1},
-            }} if server is remote else None)
+            }} if server.id == remote.id else None)
             try:
                 async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{hub_port}") as client:
-                    with mock.patch.object(manager, "_deploy", fake_deploy), mock.patch.object(manager, "update_cli", update_cli), \
-                            mock.patch.object(manager, "probe_health", probes):
+                    with mock.patch.object(manager, "_deploy", deploy), mock.patch.object(manager, "_wait_health", wait_health), \
+                            mock.patch.object(manager, "update_cli", update_cli), mock.patch.object(manager, "probe_health", probes):
                         # Without force, the servers whose chats would stop are reported and nothing runs: the hub by
                         # its own count, a remote by its health, an unreachable remote as unknown.
                         blocked = await client.post("/api/admin/remote-servers/update-all", json={})
@@ -2233,22 +2340,29 @@ time.sleep(30)
                         with self.assertRaises(rs.HTTPException):
                             manager.start_deploy(None, redeploy_id=remote.id)
                         released.set()
-                        await job.task
+                        with self.assertLogs(rs.logger, "WARNING") as logged:
+                            await job.task
                         view = (await client.get(f"/api/admin/remote-servers/deploy/{job.job_id}")).json()
             finally:
                 await close()
+            # Each CLI once per server: inside update-all a redeploy leaves its CLI step to the job, which asks a
+            # failed one's server too, up to the first CLI that finds no server behind the tunnel.
             assert order == [
                 ("redeploy", remote.id), ("cli", remote.id, "claude"), ("cli", remote.id, "codex"), ("cli", remote.id, "cursor"), ("cli", remote.id, "gemini"),
-                ("redeploy", dead.id), ("cli", dead.id, "claude"), ("cli", dead.id, "codex"), ("cli", dead.id, "cursor"),
+                ("redeploy", dead.id), ("cli", dead.id, "claude"),
                 ("hub-cli", "claude"), ("hub-cli", "codex"), ("hub-cli", "cursor"), ("hub-cli", "gemini"), ("restart",),
             ]
+            # With update-all's own wait for a CLI, not a deploy's.
+            assert timeouts == {()}
             messages = [entry["message"] for entry in view["log"]]
-            assert f"{remote.name}: Uploading the server…" in messages and f"{remote.name}: Claude Code claude-2.0" in messages
-            assert f"{remote.name}: installed Codex codex-2.0" in messages
+            assert any(message.startswith(f"{remote.name}: Uploading") for message in messages) and f"{remote.name}: Claude Code claude-2.0" in messages
+            assert f"{remote.name}: Installed Codex codex-2.0" in messages
             assert "hub: Codex codex-hub-9.9" in messages
             assert messages[-1] == "Restarting the hub…" and view["phase"] == "restart" and view["done"] and view["restarting"]
             # A remote's failures are reported; the hub still restarts.
-            assert view["error"].startswith("dead: ssh exited 255; dead: Claude Code: ")
+            assert view["error"].startswith("dead: The remote server did not answer through the tunnel: no response; dead: CLI update stopped at Claude Code: ")
+            # The hub restart that follows ends the job: its log keeps what failed.
+            assert logged.output == [f"WARNING:agents-server:update-all {job.job_id} ended with failures: {view['error']}"]
 
         asyncio.run(main())
 
@@ -2297,26 +2411,65 @@ time.sleep(30)
         # A redeploy into a directory without an env issues a new token; the CLI update must not send the old one
         # (the fake upstream answers 401 to any token but REMOTE_TOKEN).
         hooks = hub_hooks()
+        health_failure = RuntimeError("The remote server did not answer through the tunnel: no response")
 
-        async def main() -> str | None:
+        async def main() -> list[str | None]:
             manager, remote, _dead, _hub_port, close = await hub_with_fake(self.tmp_path, hooks=hooks)
-            # Only the reachable remote, holding the token from before its redeploy.
-            manager.servers = {remote.id: remote.model_copy(update={"token": "old-token-" + "o" * 40})}
-
-            async def redeploy_with_a_new_token(job, request, redeploy_id):
-                manager.servers[redeploy_id] = manager.servers[redeploy_id].model_copy(update={"token": REMOTE_TOKEN})
-                job.done = True
-
+            # Taken before fake_host stubs it for every manager. The host's bootstrap issues REMOTE_TOKEN.
+            real_update_cli = manager.update_cli
+            self.fake_host(existing_port=None)
+            errors: list[str | None] = []
             try:
-                with mock.patch.object(manager, "_deploy", redeploy_with_a_new_token):
-                    job = manager.start_update_all(hub_update_cli=hooks.hub_update_cli, hub_restart=hooks.hub_restart)
-                    await job.task
-                return job.error
+                # The redeploy's own CLI step, then update-all's for a redeploy that failed after it saved the token.
+                for failure in (None, health_failure):
+                    # Only the reachable remote, holding the token from before its redeploy.
+                    manager.servers = {remote.id: remote.model_copy(update={"token": "old-token-" + "o" * 40})}
+                    with mock.patch.object(manager, "update_cli", real_update_cli), \
+                            mock.patch.object(manager, "_wait_health", mock.AsyncMock(return_value={"version": "1.2.3"}, side_effect=failure)):
+                        job = manager.start_update_all(hub_update_cli=hooks.hub_update_cli, hub_restart=hooks.hub_restart)
+                        await job.task
+                    assert f"{remote.name}: Claude Code claude-2.0" in [entry["message"] for entry in job.log], job.log
+                    errors.append(job.error)
+                return errors
             finally:
                 await close()
 
-        error = asyncio.run(main())
-        assert error is None, error
+        assert asyncio.run(main()) == [None, f"osmo: {health_failure}"]
+
+    def test_update_all_cancelled_during_a_remotes_cli_step_ends_as_cancelled(self) -> None:
+        hooks = hub_hooks()
+
+        async def main() -> rs.DeployJob:
+            manager, remote, _dead, _hub_port, close = await hub_with_fake(self.tmp_path, hooks=hooks)
+            self.fake_host(existing_port=7850)
+            manager.servers = {remote.id: remote}
+            updating = asyncio.Event()
+
+            async def update_cli(server: rs.RemoteServer, backend: str) -> tuple[str, bool]:
+                updating.set()
+                await asyncio.Event().wait()  # until the job is cancelled
+
+            self.update_cli.side_effect = update_cli
+            try:
+                job = manager.start_update_all(hub_update_cli=hooks.hub_update_cli, hub_restart=hooks.hub_restart)
+                await asyncio.wait_for(updating.wait(), 30)
+                assert manager.cancel_job(job.job_id)
+                await job.task
+                return job
+            finally:
+                await close()
+
+        job = asyncio.run(main())
+        # Unlike a deploy of its own, which stays deployed: the job is cancelled, in the phase it was in, and the
+        # only "complete" line is the redeploy's, from before the CLI step.
+        assert job.done and job.error == "Update cancelled." and job.phase == "cli" and not job.restarting, job.log
+        assert [(entry["phase"], entry["message"]) for entry in job.log[-3:]] == [
+            ("complete", "osmo: AgentsServer 1.2.3 is reachable through the hub."),
+            ("cli", "osmo: Updating Claude Code…"),
+            ("cli", "Update cancelled."),
+        ]
+        hooks.hub_update_cli.assert_not_awaited()
+        hooks.hub_restart.assert_not_awaited()
 
     def test_update_all_reports_a_hub_that_cannot_restart_itself(self) -> None:
         hooks = hub_hooks(hub_restart=mock.AsyncMock(return_value="not run by launchd"))

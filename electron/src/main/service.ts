@@ -229,6 +229,11 @@ import {
   parseSecurePeerPairing
 } from './secure-peer-contract'
 
+/** A server's answer (409) to a CLI update while it runs another: it runs one at a time (server/remote_servers.py). */
+const CLI_UPDATE_RUNNING = 'A CLI update is already running on this server.'
+/** How long Update & redeploy all keeps asking a server that answers so: the server stops a CLI itself after 10 minutes. */
+const CLI_UPDATE_RUNNING_WAIT_MS = 11 * 60_000
+const CLI_UPDATE_RUNNING_RETRY_MS = 5_000
 const INITIAL_SEMANTIC_ITEM_LIMIT = 48
 const DELTA_EVENT_LIMIT = 480
 const HISTORY_PAGE_SEMANTIC_ITEM_LIMIT = 120
@@ -1754,7 +1759,7 @@ export class AppService {
   async deployRemoteServerViaHub(
     input: RemoteServerDeployInput,
     onProgress: (value: ServerSetupProgress) => void
-  ): Promise<PublicServerProfile> {
+  ): Promise<{ profile: PublicServerProfile; cliFailures?: string[] }> {
     const hub = this.hubProfile()
     if (!hub) throw new Error('Remote servers are added through the local server; add it first.')
     if (this.remoteDeploy) throw new Error('A remote server deployment is already running.')
@@ -1764,14 +1769,15 @@ export class AppService {
       const state = { client, jobId: (await client.startRemoteDeploy(input)).job_id, cancelled: false }
       this.remoteDeploy = state
       const job = await this.followHubJob(client, state.jobId, onProgress)
-      if (state.cancelled) throw new Error('The deployment was cancelled.')
-      if (job.error) throw new Error(job.error)
+      // load-bearing: only a job that failed. A cancel that arrives once the server is up ends the CLI step, and the
+      // job then reports a deployed server.
+      if (job.error) throw new Error(state.cancelled ? 'The deployment was cancelled.' : job.error)
       if (!job.server) throw new Error('The deployment finished without reporting the new server.')
       const serverUrl = normalizeServerURL(`${hub.serverUrl}${job.server.proxy_path}`)
       const profile = (await this.reconcileHubRemotes({ profileId: hub.id, serverUrl: hub.serverUrl, client }, () => true))
         .find(candidate => candidate.serverUrl === serverUrl)
       if (!profile) throw new Error('The deployment finished, but the hub did not list the new server.')
-      return profile
+      return { profile, cliFailures: job.cli_failures }
     } finally {
       if (this.remoteDeploy?.client === client) this.remoteDeploy = null
       client.dispose()
@@ -1895,7 +1901,7 @@ export class AppService {
     profileId: string,
     force: boolean,
     onProgress: (value: ServerSetupProgress) => void
-  ): Promise<{ redeployed: boolean; running: number | null }> {
+  ): Promise<{ redeployed: boolean; running: number | null; cliFailures?: string[] }> {
     const hub = this.hubProfile()
     // An undefined id would fall back to the active profile in SettingsStore.
     if (typeof profileId !== 'string' || !this.settings.getProfile(profileId)) throw new Error('Unknown server profile.')
@@ -1911,15 +1917,17 @@ export class AppService {
     }
     // The hub profile's own token: a rotated hub token is not copied into existing remote profiles.
     const client = this.clientFactory(hub.serverUrl, await this.settings.accessTokenForConnectionAsync(hub.id))
+    let cliFailures: string[] | undefined
     try {
       const remoteId = serverUrl.slice(`${normalizeServerURL(hub.serverUrl)}/api/remote/`.length)
       const job = await this.followHubJob(client, (await client.startRemoteRedeploy(remoteId)).job_id, onProgress)
       if (job.error) throw new Error(job.error)
+      cliFailures = job.cli_failures
     } finally {
       client.dispose()
     }
     this.requestInactiveProfileHealthSweep()
-    return { redeployed: true, running: 0 }
+    return { redeployed: true, running: 0, cliFailures }
   }
 
   /**
@@ -2010,7 +2018,7 @@ export class AppService {
       await this.restartHubAndAwaitNewInstance(hub)
       appLog('hub', 'restarted the hub for update & redeploy all')
 
-      const updateClis = async (profile: PublicServerProfile, redeployError?: string) => {
+      const updateClis = async (profile: PublicServerProfile, redeployError?: string, redeployCliFailures: string[] = []) => {
         const results = redeployError ? [`redeploy: ${redeployError}`] : []
         let failed = Boolean(redeployError)
         const backends: ('claude' | 'codex' | 'cursor' | 'gemini')[] = ['claude', 'codex', 'cursor']
@@ -2021,24 +2029,46 @@ export class AppService {
           failed = true
           results.push(`Gemini CLI capability: ${errorText(error)}`)
         }
+        // A redeploy's own CLI step stops waiting for a slow CLI after 3 minutes, and the server, which runs one CLI
+        // update at a time, still runs it: asked at once, every CLI here would be refused. The server stops a CLI
+        // itself after 10 minutes, so the refusal ends within this wait.
+        const refusedUntil = Date.now() + CLI_UPDATE_RUNNING_WAIT_MS
+        let waitEndedAt: string | undefined
         for (const backend of backends) {
           onProgress({ profileId: profile.id, step: backend })
-          try {
-            results.push((await this.updateServerRuntimeCli(profile.id, backend)).diagnostic.version ?? backend)
-          } catch (error) {
-            failed = true
-            results.push(`${backend}: ${errorText(error)}`)
+          for (;;) {
+            try {
+              results.push((await this.updateServerRuntimeCli(profile.id, backend)).diagnostic.version ?? backend)
+            } catch (error) {
+              if (error instanceof ServerError && error.status === 409 && error.message === CLI_UPDATE_RUNNING) {
+                if (Date.now() < refusedUntil) {
+                  await new Promise(resolve => setTimeout(resolve, CLI_UPDATE_RUNNING_RETRY_MS))
+                  continue
+                }
+                waitEndedAt = backend
+              }
+              failed = true
+              results.push(`${backend}: ${errorText(error)}`)
+            }
+            break
           }
+          // The CLIs after this one would be refused the same way.
+          if (waitEndedAt) break
         }
+        // The redeploy's own CLI step asked for CLIs this loop asks for too, so this loop's outcome for a CLI replaces
+        // what the redeploy reported about it: the row is this loop's results. Only a loop refused until its wait
+        // ran out at the first CLI has no outcome to show (the usual case: the server still runs the update the
+        // redeploy stopped waiting for), and then the redeploy's failures come first.
+        if (waitEndedAt === backends[0]) results.unshift(...redeployCliFailures)
         onProgress({ profileId: profile.id, step: 'done', failed, message: results.join(' · ') })
       }
       // The hub deploys one remote at a time. A remote's CLIs update right after its redeploy, even a failed one:
       // every server's CLIs were asked for.
       const updates = [updateClis(hub)]
       for (const remote of remotes) {
-        const redeployError = await this.redeployHubRemote(remote.id, true, value => onProgress({ profileId: remote.id, step: 'redeploy', message: value.message }))
-          .then(() => undefined, errorText)
-        updates.push(updateClis(remote, redeployError))
+        const redeploy = await this.redeployHubRemote(remote.id, true, value => onProgress({ profileId: remote.id, step: 'redeploy', message: value.message }))
+          .then(result => ({ error: undefined, cliFailures: result.cliFailures }), error => ({ error: errorText(error), cliFailures: undefined }))
+        updates.push(updateClis(remote, redeploy.error, redeploy.cliFailures))
       }
       await Promise.all(updates)
       return []
@@ -2056,7 +2086,7 @@ export class AppService {
     profileId: string,
     input: RemoteServerMoveInput,
     onProgress: (value: ServerSetupProgress) => void
-  ): Promise<void> {
+  ): Promise<string[]> {
     const hub = this.hubProfile()
     // An undefined id would fall back to the active profile in SettingsStore.
     if (typeof profileId !== 'string' || !this.settings.getProfile(profileId)) throw new Error('Unknown server profile.')
@@ -2065,11 +2095,13 @@ export class AppService {
     if (this.remoteDeploy) throw new Error('A remote server deployment is already running.')
     // The hub profile's own token: a rotated hub token is not copied into existing remote profiles.
     const client = this.clientFactory(hub.serverUrl, await this.settings.accessTokenForConnectionAsync(hub.id))
+    // What the CLI step of the move's deploy could not do.
+    let cliFailures: string[] = []
     try {
       const remoteId = serverUrl.slice(`${normalizeServerURL(hub.serverUrl)}/api/remote/`.length)
       const { job_id: jobId } = await client.moveRemoteServer(remoteId, input)
       // No job: the hub already has this host and install dir.
-      if (!jobId) return
+      if (!jobId) return cliFailures
       this.remoteDeploy = { client, jobId, cancelled: false }
       const job = await this.followHubJob(client, jobId, onProgress)
       // The hub moved its entry before deploying, so the profile follows even a failed deploy. A reconcile
@@ -2078,11 +2110,13 @@ export class AppService {
       await this.reconcileHubRemotes({ profileId: hub.id, serverUrl: hub.serverUrl, client }, () => true)
       // Saving the same place again would change nothing on the hub.
       if (job.error) throw new Error(`${job.error} The hub already points this server at the new place; Redeploy retries the deploy there.`)
+      cliFailures = job.cli_failures ?? []
     } finally {
       if (this.remoteDeploy?.client === client) this.remoteDeploy = null
       client.dispose()
     }
     this.requestInactiveProfileHealthSweep()
+    return cliFailures
   }
 
   async updateServer(profileId: string, patch: UpdateServerProfilePatch): Promise<PublicServerProfile> {

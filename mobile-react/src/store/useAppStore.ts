@@ -842,24 +842,25 @@ interface AppState {
   testServerProfile(input: { profileId?: string; serverURL: string; accessToken?: string | null }): Promise<Health>
   /**
    * Deploys a new remote over SSH through the hub, or attaches an install another hub already deployed there,
-   * whichever server is active, then reconciles the hub's registry into profiles. Resolves to the new profile id.
+   * whichever server is active, then reconciles the hub's registry into profiles. Resolves to the new profile id
+   * and to what the deploy's CLI step could not do there.
    */
   deployHubRemoteServer(
     input: { mode: 'deploy' | 'attach'; sshHost: string; installDir?: string; name?: string; password?: string },
     onProgress: (entry: RemoteServerDeployLogEntry) => void,
-  ): Promise<string>
+  ): Promise<{ id: string; cliFailures?: string[] }>
   cancelHubDeploy(): Promise<void>
   /**
    * Server list "Redeploy", whichever server is active. The restart stops the remote's running chats, so
    * without `force` it only reports them: a count, or null when the remote could not be checked.
    */
-  redeployHubRemote(profileId: string, force: boolean, onProgress: (entry: RemoteServerDeployLogEntry) => void): Promise<{ redeployed: boolean; running: number | null }>
+  redeployHubRemote(profileId: string, force: boolean, onProgress: (entry: RemoteServerDeployLogEntry) => void): Promise<{ redeployed: boolean; running: number | null; cliFailures?: string[] }>
   /**
    * Server list "Edit" with a new SSH host or install dir, whichever server is active: the hub moves the remote
    * under the same id and deploys there (server/remote_servers.py); chats stay with the previous install. The
    * new install's identity is adopted like any identity change behind the hub. Cancel stops it as it stops an add.
    */
-  moveHubRemote(profileId: string, input: { sshHost?: string; installDir?: string }, onProgress: (entry: RemoteServerDeployLogEntry) => void): Promise<void>
+  moveHubRemote(profileId: string, input: { sshHost?: string; installDir?: string }, onProgress: (entry: RemoteServerDeployLogEntry) => void): Promise<string[]>
   /**
    * Server list eye toggle, whichever server is active: the hub keeps the flag, so every device leaves a hidden
    * remote out of its server picker. The remote keeps running and its profile can still be selected.
@@ -1206,14 +1207,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       const state = { client, jobId: started.job_id, cancelled: false }
       hubDeployInFlight = state
       const job = await followHubJob(client, state.jobId, onProgress)
-      if (state.cancelled) throw new Error('The deployment was cancelled.')
-      if (job.error) throw new Error(job.error)
+      // load-bearing: only a job that failed. A cancel that arrives once the server is up ends the CLI step, and the
+      // job then reports a deployed server.
+      if (job.error) throw new Error(state.cancelled ? 'The deployment was cancelled.' : job.error)
       if (!job.server) throw new Error('The deployment finished without reporting the new server.')
       await reconcileHubRegistry({ profileId: hub.id, serverURL: hubURL, client }, () => true, set, get)
       const remoteURL = normalizeServerURL(hubURL + job.server.proxy_path)
       const profile = get().profiles.find(candidate => normalizeServerURL(candidate.serverURL) === remoteURL)
       if (!profile) throw new Error(`The deployment finished, but ${job.server.name} did not appear in the hub's server list.`)
-      return profile.id
+      return { id: profile.id, cliFailures: job.cli_failures }
     } finally {
       if (hubDeployInFlight?.client === client) hubDeployInFlight = null
       client.dispose()
@@ -1233,14 +1235,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     // The hub profile's own token: a changed hub token is not copied into existing remote profiles.
     const hub = new AgentServerClient(remote[1], await loadProfileToken(hubProfile.id, hubProfile.credentialVersion))
+    let cliFailures: string[] | undefined
     try {
       const job = await followHubJob(hub, (await hub.startRemoteRedeploy(remote[2])).job_id, onProgress)
       if (job.error) throw new Error(job.error)
+      cliFailures = job.cli_failures
     } finally {
       hub.dispose()
     }
     void get().probeInactiveProfiles()
-    return { redeployed: true, running: 0 }
+    return { redeployed: true, running: 0, cliFailures }
   },
 
   async moveHubRemote(profileId, input, onProgress) {
@@ -1252,23 +1256,27 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (hubDeployInFlight) throw new Error('A remote server deployment is already running.')
     // The hub profile's own token: a changed hub token is not copied into existing remote profiles.
     const client = new AgentServerClient(hubURL, await loadProfileToken(hub.id, hub.credentialVersion))
+    // What the CLI step of the move's deploy could not do.
+    let cliFailures: string[] = []
     try {
       const { job_id: jobId } = await client.moveRemoteServer(remoteId, { ssh_host: input.sshHost, install_dir: input.installDir })
       // A registry list fetched before the move would put the old host back.
       hubRegistryEdits += 1
       // No job: the hub already has this host and install dir.
-      if (!jobId) return
+      if (!jobId) return cliFailures
       hubDeployInFlight = { client, jobId, cancelled: false }
       const job = await followHubJob(client, jobId, onProgress)
       // The hub moved its entry before deploying, so the profile follows even a failed deploy.
       await reconcileHubRegistry({ profileId: hub.id, serverURL: hubURL, client }, () => true, set, get)
       // Saving the same place again starts no job on the hub, so the message points to Redeploy.
       if (job.error) throw new Error(`${job.error} The hub already points this server at the new place; Redeploy retries the deploy there.`)
+      cliFailures = job.cli_failures ?? []
     } finally {
       if (hubDeployInFlight?.client === client) hubDeployInFlight = null
       client.dispose()
     }
     void get().probeInactiveProfiles()
+    return cliFailures
   },
 
   async setHubRemoteHidden(profileId, hidden) {

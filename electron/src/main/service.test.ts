@@ -10393,6 +10393,20 @@ describe('server profile lifecycle', () => {
     await expect(service.redeployHubRemote(undefined as unknown as string, true, () => undefined)).rejects.toThrow('Unknown server profile.')
   })
 
+  it("passes on what a redeploy's CLI step could not do", async () => {
+    const cliFailures = ['Cursor: The cursor installer exited with 22.']
+    const hub = Object.assign(fakeClient(), {
+      startRemoteRedeploy: vi.fn(async () => ({ job_id: 'job-1' })),
+      remoteDeployStatus: vi.fn(async () => ({ job_id: 'job-1', phase: 'complete', done: true, error: null, server: hubRemote('r1'), cli_failures: cliFailures, log: [] }))
+    })
+    const { service, settings } = createProfileService({ 'http://a.test:7850': [fakeClient()], [DEFAULT_SERVER_URL]: [hub] })
+    settings.updateProfile('b', { name: 'Hub', serverUrl: DEFAULT_SERVER_URL })
+    const remote = settings.addProfile({ name: 'r1', serverUrl: `${DEFAULT_SERVER_URL}/api/remote/r1` })
+
+    // The redeploy succeeded: the server is up.
+    await expect(service.redeployHubRemote(remote.id, true, () => undefined)).resolves.toEqual({ redeployed: true, running: 0, cliFailures })
+  })
+
   it('updates and redeploys all: restarts the hub, then redeploys each remote and updates both CLIs on every server', async () => {
     // What the hub answers after kickstart -k: the stopping process, a refused connection, then the new process.
     const afterRestart: Array<string | null> = ['boot-1', null, 'boot-2']
@@ -10476,6 +10490,80 @@ describe('server profile lifecycle', () => {
       { profileId: remote2.id, step: 'cursor' },
       { profileId: remote2.id, step: 'done', failed: true, message: 'redeploy: ssh: connect to host r2.example: Connection refused · claude 9.9 · codex 9.9 · cursor 9.9' }
     ])
+  })
+
+  it("update & redeploy all asks a server again while it still runs a CLI update, and its own results replace the redeploy's", async () => {
+    // A redeploy's own CLI step stops waiting for a slow CLI after 3 minutes; the server then refuses every other update until that one ends.
+    const stopped = 'CLI update stopped at Codex: no answer within 3 minutes; the update still runs on the server'
+    const running = 'A CLI update is already running on this server.'
+    const cursorFailed = 'The cursor installer exited with 22.'
+    const updated = (backend: string) => ({ output: '', diagnostic: { available: true, version: `${backend} 9.9` } })
+    const reported: Record<string, string[]> = {
+      r1: [stopped], r2: [stopped], r3: [`Cursor: ${cursorFailed}`], r4: [stopped], r5: ['Codex: HTTP 502'], r6: [`Cursor: ${cursorFailed}`]
+    }
+    let instance = 'boot-1'
+    const hub = Object.assign(fakeClient({ health: async () => ({ ok: true, active: [], server_instance_id: instance }) }), {
+      updateRuntimeCli: vi.fn(async (backend: string) => updated(backend)),
+      startRemoteRedeploy: vi.fn(async (remoteId: string) => ({ job_id: remoteId })),
+      remoteDeployStatus: vi.fn(async (jobId: string) => ({ job_id: jobId, phase: 'complete', done: true, error: null, server: hubRemote(jobId), cli_failures: reported[jobId], log: [] }))
+    })
+    // refusals: how many asks the server refuses first; refusedFrom: the CLI it refuses for good; failing: the CLI whose update fails.
+    const remoteClient = ({ refusals = 0, refusedFrom, failing }: { refusals?: number; refusedFrom?: string; failing?: string }) => {
+      let asked = 0
+      let refusing = false
+      return Object.assign(fakeClient({ health: async () => ({ ok: true, active: [] }) }), {
+        updateRuntimeCli: vi.fn(async (backend: string) => {
+          refusing ||= backend === refusedFrom
+          if (refusing || ++asked <= refusals) throw new ServerError(409, running)
+          if (backend === failing) throw new Error(cursorFailed)
+          return updated(backend)
+        })
+      })
+    }
+    const clients: Record<string, ReturnType<typeof remoteClient>> = {
+      r1: remoteClient({ refusals: 2 }),                      // the update ends after two more asks
+      r2: remoteClient({ refusedFrom: 'claude' }),            // the update outlasts the wait
+      r3: remoteClient({ failing: 'cursor' }),                // Cursor fails again for the reason its redeploy gave
+      r4: remoteClient({ refusals: 2, failing: 'cursor' }),   // the update ends, then Cursor fails
+      r5: remoteClient({ failing: 'cursor' }),                // Codex, which failed in the redeploy, updates
+      r6: remoteClient({ refusedFrom: 'codex' })              // another update starts after Claude Code and outlasts the wait
+    }
+    const { service, settings } = createProfileService({
+      'http://a.test:7850': Array(400).fill(fakeClient()),
+      [DEFAULT_SERVER_URL]: Array(400).fill(hub),
+      ...Object.fromEntries(Object.entries(clients).map(([name, client]) => [`${DEFAULT_SERVER_URL}/api/remote/${name}`, Array(400).fill(client)]))
+    })
+    settings.updateProfile('b', { name: 'Hub', serverUrl: DEFAULT_SERVER_URL })
+    const ids = Object.fromEntries(Object.keys(clients).map(name => [name, settings.addProfile({ name, serverUrl: `${DEFAULT_SERVER_URL}/api/remote/${name}` }).id]))
+    vi.mocked(startLocalServerAgent).mockReset().mockImplementation(async () => { instance = 'boot-2' })
+    const progress: ServerUpdateAllProgress[] = []
+    const result = (name: string) => {
+      const done = progress.find((value): value is Extract<ServerUpdateAllProgress, { step: 'done' }> => value.profileId === ids[name] && value.step === 'done')
+      return done && { failed: done.failed, message: done.message, asked: clients[name].updateRuntimeCli.mock.calls.map(([backend]) => backend).filter((backend, index, all) => backend !== all[index - 1]) }
+    }
+
+    vi.useFakeTimers()
+    try {
+      const run = service.updateAndRedeployAll(true, value => progress.push(value))
+      await vi.advanceTimersByTimeAsync(10 * 60_000)
+      // Still asking r2: the server stops a CLI itself after 10 minutes.
+      expect(result('r2')).toBeUndefined()
+      await vi.advanceTimersByTimeAsync(60_000 + 5_000)
+      await expect(run).resolves.toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+    // The update ended: every CLI was asked for, and what the redeploy reported is no longer true.
+    expect(result('r1')).toEqual({ failed: false, message: 'claude 9.9 · codex 9.9 · cursor 9.9', asked: ['claude', 'codex', 'cursor'] })
+    expect(clients.r1.updateRuntimeCli.mock.calls.map(([backend]) => backend)).toEqual(['claude', 'claude', 'claude', 'codex', 'cursor'])
+    // The wait ended first: one line for it, no request for the CLIs after it, and what the redeploy reported still holds.
+    expect(result('r2')).toEqual({ failed: true, message: `${stopped} · claude: ${running}`, asked: ['claude'] })
+    // This loop's result for a CLI replaces the redeploy's: a CLI is named once, and one that updated is not reported as failed.
+    expect(result('r3')).toEqual({ failed: true, message: `claude 9.9 · codex 9.9 · cursor: ${cursorFailed}`, asked: ['claude', 'codex', 'cursor'] })
+    expect(result('r4')).toEqual({ failed: true, message: `claude 9.9 · codex 9.9 · cursor: ${cursorFailed}`, asked: ['claude', 'codex', 'cursor'] })
+    expect(result('r5')).toEqual({ failed: true, message: `claude 9.9 · codex 9.9 · cursor: ${cursorFailed}`, asked: ['claude', 'codex', 'cursor'] })
+    // Stopped after a CLI of its own: the row is this loop's results.
+    expect(result('r6')).toEqual({ failed: true, message: `claude 9.9 · codex: ${running}`, asked: ['claude', 'codex'] })
   })
 
   it('restarts the hub only after its running chats are confirmed, one restart at a time', async () => {
@@ -10600,6 +10688,29 @@ describe('server profile lifecycle', () => {
     await expect(service.moveHubRemote('a', { sshHost: 'elsewhere' }, () => undefined)).rejects.toThrow('Only servers the hub manages can be moved.')
   })
 
+  it("passes on what the CLI step of a move's deploy could not do", async () => {
+    const cliFailures = ['Cursor: The cursor installer exited with 22.', 'CLI update cancelled at Codex.']
+    const jobs = [{ job_id: 'job-1' }, { job_id: null }]
+    const hub = Object.assign(fakeClient(), {
+      moveRemoteServer: vi.fn(async () => jobs.shift()!),
+      listRemoteServers: vi.fn(async () => ({ servers: [{ ...hubRemote('r1'), ssh_host: 'oci@new-cluster' }] })),
+      remoteDeployStatus: vi.fn(async () => ({ job_id: 'job-1', phase: 'complete', done: true, error: null, server: hubRemote('r1'), cli_failures: cliFailures, log: [] }))
+    })
+    // Upper bounds: a move also starts background health probes of every profile.
+    const { service, settings } = createProfileService({
+      'http://a.test:7850': Array(6).fill(fakeClient()),
+      [DEFAULT_SERVER_URL]: Array(6).fill(hub),
+      [`${DEFAULT_SERVER_URL}/api/remote/r1`]: Array(6).fill(fakeClient())
+    })
+    settings.updateProfile('b', { name: 'Hub', serverUrl: DEFAULT_SERVER_URL })
+    const remote = settings.addProfile({ name: 'r1', serverUrl: `${DEFAULT_SERVER_URL}/api/remote/r1`, sshHost: 'r1.example' })
+
+    // The move succeeded: the server is up at the new place.
+    await expect(service.moveHubRemote(remote.id, { sshHost: 'oci@new-cluster' }, () => undefined)).resolves.toEqual(cliFailures)
+    // The hub already has this place: no deploy ran.
+    await expect(service.moveHubRemote(remote.id, { sshHost: 'oci@new-cluster' }, () => undefined)).resolves.toEqual([])
+  })
+
   it('adds a remote through the hub while another server is active', async () => {
     const hub = Object.assign(fakeClient(), {
       startRemoteDeploy: vi.fn(async () => ({ job_id: 'job-1' })),
@@ -10613,12 +10724,37 @@ describe('server profile lifecycle', () => {
     settings.updateProfile('b', { name: 'Hub', serverUrl: DEFAULT_SERVER_URL })
     const progress: string[] = []
 
-    const profile = await service.deployRemoteServerViaHub({ sshHost: 'gpu-box' }, value => progress.push(value.message))
+    const { profile, cliFailures } = await service.deployRemoteServerViaHub({ sshHost: 'gpu-box' }, value => progress.push(value.message))
 
     expect(hub.startRemoteDeploy).toHaveBeenCalledWith({ sshHost: 'gpu-box' })
     expect(profile.serverUrl).toBe(`${DEFAULT_SERVER_URL}/api/remote/r1`)
+    // A hub without the CLI step reports none.
+    expect(cliFailures).toBeUndefined()
     expect(progress).toEqual(['Reachable'])
     expect(hub.dispose).toHaveBeenCalledOnce()
+  })
+
+  it('adds the server a cancel reached after it was up, and passes on what the CLI step could not do', async () => {
+    const cliFailures = ['CLI update cancelled at Cursor.']
+    const jobs = [
+      { job_id: 'job-1', phase: 'complete', done: true, error: null, server: hubRemote('r1'), cli_failures: cliFailures, log: [] },
+      { job_id: 'job-1', phase: 'install', done: true, error: 'Deployment cancelled.', server: null, cli_failures: [], log: [] }
+    ]
+    const hubClient = () => Object.assign(fakeClient(), {
+      startRemoteDeploy: vi.fn(async () => ({ job_id: 'job-1' })),
+      cancelRemoteDeploy: vi.fn(async () => ({ cancelled: true })),
+      // The cancel arrives while the app follows the job.
+      remoteDeployStatus: vi.fn(async () => { await service.cancelRemoteDeploy(); return jobs.shift()! }),
+      listRemoteServers: vi.fn(async () => ({ servers: [hubRemote('r1')] }))
+    })
+    const { service, settings } = createProfileService({ 'http://a.test:7850': [fakeClient()], [DEFAULT_SERVER_URL]: [hubClient(), hubClient()] })
+    settings.updateProfile('b', { name: 'Hub', serverUrl: DEFAULT_SERVER_URL })
+
+    const added = await service.deployRemoteServerViaHub({ sshHost: 'gpu-box' }, () => undefined)
+    expect(added.profile.serverUrl).toBe(`${DEFAULT_SERVER_URL}/api/remote/r1`)
+    expect(added.cliFailures).toEqual(cliFailures)
+    // A deploy cancelled before its server was up is still a cancelled deploy.
+    await expect(service.deployRemoteServerViaHub({ sshHost: 'gpu-box' }, () => undefined)).rejects.toThrow('The deployment was cancelled.')
   })
 
   it('removes a hub remote through the hub whichever other profile is active, including one the hub already dropped', async () => {

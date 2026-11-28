@@ -6,6 +6,7 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
+import { create } from 'zustand'
 import { Cable, Check, Clock3, Download, Eye, EyeOff, GripVertical, LoaderCircle, Pencil, Plus, RefreshCw, RotateCw, Server, Trash2, Wifi } from 'lucide-react'
 import type { PublicServerProfile, ServerRunningChats, ServerSetupProgress } from '@shared/types'
 import { DEFAULT_SERVER_URL } from '@shared/server-url'
@@ -37,6 +38,10 @@ const emptyDraft = (): ServerDraft => ({
 })
 
 interface RowWork { kind: 'redeploy' | 'cli' | 'ssh' | 'visibility'; text: string; working?: boolean; failed?: boolean; confirm?: boolean }
+// What a move's CLI step could not do, per profile. Outside the list's state because a move of the server in use
+// remounts the list (the new install has another identity), before or after the deploy ends; the row's next note drops it.
+// Exported for the tests, which empty it between cases.
+export const useMovedCliFailures = create<Record<string, RowWork>>(() => ({}))
 const cliProgressMessages = {
   claude: 'updateAll.updatingClaude',
   codex: 'updateAll.updatingCodex',
@@ -77,6 +82,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null)
   // Per row, so a CLI update (minutes) or a redeploy leaves the other rows usable.
   const [rowWork, setRowWork] = useState<Record<string, RowWork>>({})
+  const movedCliFailures = useMovedCliFailures()
   const [updateAllConfirm, setUpdateAllConfirm] = useState<ServerRunningChats[] | null>(null)
   const editorRef = useRef<HTMLDivElement | null>(null)
   const nameInputRef = useRef<HTMLInputElement | null>(null)
@@ -156,7 +162,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
     try {
       // The password goes untrimmed: spaces can be part of it.
       const input = { sshHost: host, installDir: draft.installDir.trim() || undefined, name: draft.name.trim() || undefined, password: draft.password || undefined }
-      const profile = await window.agentsDock.remoteServers.deploy(input)
+      const { profile, cliFailures } = await window.agentsDock.remoteServers.deploy(input)
       added = true
       trackEvent('server_added', { success: true })
       await refreshProfiles()
@@ -164,6 +170,12 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
       // switch to it, not redeploy and add a second profile for the same host.
       // The add form's install dir would read as a move in the edit form.
       setDraft(current => current ? { ...current, profileId: profile.id, openedName: profile.name, installDir: '' } : current)
+      // What the deploy's CLI step could not do stays in the form, which then stays open: the switch remounts
+      // this list and clears the app's notice. The new server is in the list, where Use switches to it.
+      if (cliFailures?.length) {
+        setEditorError(t('hub.deployedCliFailures', { failures: cliFailures.join('; ') }))
+        return
+      }
       const switched = await switchServer(profile.id)
       if (!switched || useAppStore.getState().activeProfileId !== profile.id) throw new Error(`“${profile.name}” was saved, but AgentsDock could not switch to it.`)
       setDraft(null)
@@ -208,7 +220,11 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
         // 'deploy' makes Cancel stop the hub's job, as in the add form.
         setBusy('deploy')
         setDeployProgress([])
-        await window.agentsDock.remoteServers.move(draft.profileId, { sshHost, installDir })
+        // The row's note is about the install this move leaves.
+        noteRow(draft.profileId, null)
+        const cliFailures = await window.agentsDock.remoteServers.move(draft.profileId, { sshHost, installDir })
+        // The form closes over the deploy's log, so the moved server's row keeps what its CLI step could not do.
+        if (cliFailures?.length) useMovedCliFailures.setState({ [draft.profileId]: { kind: 'redeploy', failed: true, text: t('hub.movedCliFailures', { failures: cliFailures.join('; ') }) } })
         await refreshProfiles()
       }
       setDraft(null)
@@ -295,7 +311,10 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
   }
 
   // Works whichever server is active: the main process talks to the hub (redeploy) or to that server (CLI).
-  const noteRow = (profileId: string, work: RowWork | null) => setRowWork(({ [profileId]: _previous, ...rest }) => work ? { ...rest, [profileId]: work } : rest)
+  const noteRow = (profileId: string, work: RowWork | null) => {
+    useMovedCliFailures.setState(({ [profileId]: _moved, ...rest }) => rest, true)
+    setRowWork(({ [profileId]: _previous, ...rest }) => work ? { ...rest, [profileId]: work } : rest)
+  }
   // Forward SSH keeps a local SSH host named after the server (like SkyPilot's cluster aliases), so
   // `ssh <name>` and Zed reach it; the main process writes the alias from the host's resolved options.
   const toggleSshForward = async (profile: PublicServerProfile) => {
@@ -328,9 +347,11 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
     noteRow(profile.id, { kind: 'redeploy', working: true, text: t('hub.redeploying') })
     const stop = window.agentsDock.events?.on?.('remote-servers:redeploy-progress', value => noteRow(profile.id, { kind: 'redeploy', working: true, text: value.message }))
     try {
-      const { redeployed, running } = await window.agentsDock.remoteServers.redeploy(profile.id, force)
+      const { redeployed, running, cliFailures } = await window.agentsDock.remoteServers.redeploy(profile.id, force)
       noteRow(profile.id, redeployed
-        ? { kind: 'redeploy', text: t('hub.redeployed') }
+        ? cliFailures?.length
+          ? { kind: 'redeploy', failed: true, text: t('hub.redeployedCliFailures', { failures: cliFailures.join('; ') }) }
+          : { kind: 'redeploy', text: t('hub.redeployed') }
         : { kind: 'redeploy', confirm: true, text: running === null ? t('hub.redeployUnchecked') : t('hub.redeployRunning', { count: running }) })
     } catch (error) {
       noteRow(profile.id, { kind: 'redeploy', failed: true, text: cleanIPCError(errorMessage(error)) })
@@ -372,6 +393,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
   const updateAll = async (force: boolean) => {
     setUpdateAllConfirm(null)
     // Each row shows its own step; notes left from earlier row actions (such as Redeploy anyway) go.
+    useMovedCliFailures.setState({}, true)
     setRowWork({})
     setBusy('update-all')
     const stop = window.agentsDock.events?.on?.('remote-servers:update-all-progress', progress => {
@@ -463,7 +485,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
         // The row reads offline while the restarting hub is down; it keeps Restart's spinner instead of offering Start.
         const restarting = busy === `restart:${profile.id}`
         const hubDown = profile.id === hub?.id && (profile.connectionState === 'offline' || profile.connectionState === 'retrying')
-        const work = rowWork[profile.id]
+        const work = movedCliFailures[profile.id] ?? rowWork[profile.id]
         return <SortableServerRow key={profile.id} profile={profile} pinned={profile.id === hub?.id} disabled={Boolean(busy)} className={`server-management-row${current ? ' active' : ''}`}>
           <span className={`server-connection-dot ${profile.connectionState}`} title={connectionLabel(profile)} role="img" aria-label={connectionLabel(profile)} />
           <div className="server-management-copy">

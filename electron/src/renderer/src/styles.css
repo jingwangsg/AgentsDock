@@ -2072,6 +2072,8 @@ button.tool-event-toggle:hover { background: #242424; }
 .server-management-copy strong span.server-hidden-badge { color: var(--muted); background: color-mix(in srgb, var(--muted), transparent 87%); }
 .server-management-copy small { min-width: 0; overflow: hidden; color: var(--faint); font-size: var(--text-size-meta); text-overflow: ellipsis; white-space: nowrap; }
 .server-management-copy .server-management-error { color: var(--danger); }
+/* A failed step's reason ends with what to do about it: it wraps instead of ending in an ellipsis. */
+.server-management-work .server-management-error { white-space: normal; overflow-wrap: anywhere; }
 .server-management-copy .server-management-warning { color: var(--amber); }
 .server-management-actions { display: flex; align-items: center; gap: 3px; }
 .server-management-actions .quiet-button { min-height: 27px; padding: 0 8px; }
