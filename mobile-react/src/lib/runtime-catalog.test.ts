@@ -5,6 +5,7 @@ import { runtimeChipLabel } from './runtime-chip'
 import { readyChatBackends,
   cursorBackendAvailable,
   cursorBackendSupported,
+  cursorBackendUnavailableReason,
   isBackendLocked,
   runtimeCatalogOptions,
   runtimeEffortAfterModelChange,
@@ -180,6 +181,23 @@ test('the catalog decides for Cursor while the health status is unknown after a 
   assert.equal(cursorBackendAvailable(restarted, held('missing')), false)
   // A newer status that is a verdict still wins over the catalog.
   assert.equal(cursorBackendAvailable(reporting('missing', '2026-08-30T10:05:00Z'), held('ready')), false)
+})
+
+// What a restarted server reports for a Cursor it has not probed yet, newer than the catalog the app still holds.
+const notChecked: Health = { ...cursorHealth(2), runtimes: { cursor: {
+  backend: 'cursor', status: 'unknown', available: false, message: 'Cursor has not been checked yet.', checked_at: '2026-08-30T10:05:00Z',
+} } }
+
+test('the catalog\'s reason explains an unavailable Cursor while the health status is unknown', () => {
+  const notInstalled: RuntimeCatalog = { backends: { ...cursorCatalog.backends, cursor: {
+    ...cursorCatalog.backends.cursor!, available: false,
+    diagnostic: { backend: 'cursor', status: 'missing', available: false, message: 'Cursor is not installed.', action: 'Install Cursor, then recheck CLIs.', checked_at: '2026-08-30T10:00:00Z' },
+  } } }
+  assert.equal(cursorBackendUnavailableReason(notChecked, notInstalled), 'Cursor is unavailable. Cursor is not installed. Install Cursor, then recheck CLIs.')
+})
+
+test('the Cursor status is loading while the health status is unknown and the catalog has no Cursor entry', () => {
+  assert.equal(cursorBackendUnavailableReason(notChecked, catalog), 'Cursor status is still loading. Recheck CLIs if this does not clear.')
 })
 
 test('a chat backend is switchable only before a provider session exists', () => {

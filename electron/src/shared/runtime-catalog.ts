@@ -81,6 +81,19 @@ export function cursorBackendSupported(
     && capability.version >= 2
 }
 
+/** The diagnostic that decides whether Cursor is available, and that explains it when it is not.
+ *
+ * A health status of "unknown" decides nothing: the server reports it for a backend it has not probed yet, in the
+ * first seconds after it starts. The catalog's own entry then decides. Change the mobile copy
+ * (mobile-react/src/lib/runtime-catalog.ts) too.
+ */
+function cursorDiagnostic(
+  health: Health | null | undefined,
+  catalog: RuntimeCatalog | null | undefined
+): RuntimeDiagnostic | null {
+  return runtimeDiagnosticFor(health?.runtimes?.cursor?.status === 'unknown' ? null : health, catalog, 'cursor')
+}
+
 /** True only when a supported Cursor backend is ready to accept work. */
 export function cursorBackendAvailable(
   health: Health | null | undefined,
@@ -88,11 +101,9 @@ export function cursorBackendAvailable(
 ): boolean {
   const backend = catalog?.backends?.cursor
   if (!cursorBackendSupported(health) || (catalog && !backend)) return false
-  // A health status of "unknown" decides nothing: the server reports it for a backend it has not probed yet, in the
-  // first seconds after it starts. The catalog's own entry then decides, and Cursor is offered while no catalog has
-  // arrived: the server takes seconds to build one, and the health answer comes first. Change the mobile copy
-  // (mobile-react/src/lib/runtime-catalog.ts) too.
-  const diagnostic = runtimeDiagnosticFor(health?.runtimes?.cursor?.status === 'unknown' ? null : health, catalog, 'cursor')
+  // Cursor is offered while no catalog has arrived: the server takes seconds to build one, and the health answer
+  // comes first. Change the mobile copy (mobile-react/src/lib/runtime-catalog.ts) too.
+  const diagnostic = cursorDiagnostic(health, catalog)
   return diagnostic
     ? diagnostic.status === 'ready' && diagnostic.available === true
     : !catalog || backend?.available === true
@@ -150,7 +161,7 @@ export function cursorBackendUnavailableReason(
       ? 'Cursor is unavailable because this AgentsServer does not support it yet. Update the server, then reconnect.'
       : t('serverConnection.availableOnceConnected')
   }
-  const diagnostic = runtimeDiagnosticFor(health, catalog, 'cursor')
+  const diagnostic = cursorDiagnostic(health, catalog)
   if (!catalog?.backends?.cursor && diagnostic?.status === 'ready') {
     return 'Cursor is unavailable while model choices are still loading. Recheck CLIs if this does not clear.'
   }

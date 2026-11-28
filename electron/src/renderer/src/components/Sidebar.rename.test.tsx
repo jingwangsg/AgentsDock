@@ -208,11 +208,37 @@ describe('sidebar chat rename', () => {
     expect(writeClipboard).not.toHaveBeenCalled()
   })
 
+  // A failure of the read reaches the page through Electron's IPC, which puts this prefix before the reason.
+  const overIPC = (reason: string) => new Error(`Error invoking remote method 'sessions:list-with-provider-ids': Error: ${reason}`)
+
   it('shows why the read of the server\'s list failed, and copies nothing', async () => {
-    const { writeClipboard } = await copySessionId(async () => { throw new Error('Server unavailable') }, { ...session, codex_thread_id: 'thread-held' })
+    const { writeClipboard } = await copySessionId(async () => { throw overIPC('Server unavailable') }, { ...session, codex_thread_id: 'thread-held' })
 
     await waitFor(() => expect(useAppStore.getState().error).toBe('Server unavailable'))
     expect(writeClipboard).not.toHaveBeenCalled()
+  })
+
+  // The ID and a failure both belong to the server the menu was opened on. A read can end while the switch to
+  // another server is still running, or after it is done.
+  it.each([
+    ['is switching', 'lists the ID'], ['is switching', 'lists no ID'], ['is switching', 'fails'],
+    ['has switched', 'lists the ID'], ['has switched', 'lists no ID'], ['has switched', 'fails']
+  ] as const)('copies nothing and shows nothing when the app %s to another server before the read %s', async (phase, outcome) => {
+    let resolve: (sessions: Session[]) => void = () => undefined
+    let reject: (error: Error) => void = () => undefined
+    const { writeClipboard } = await copySessionId(() => new Promise<Session[]>((res, rej) => { resolve = res; reject = rej }))
+    const other: PublicServerProfile = { ...profile, id: 'profile-b', name: 'Lab', serverIdentity: 'server-b' }
+    act(() => useAppStore.setState(phase === 'is switching'
+      ? { profiles: [profile, other], switchingProfileId: other.id }
+      : { profiles: [profile, other], activeProfileId: other.id, profileGeneration: 2 }))
+
+    await act(async () => {
+      if (outcome === 'fails') reject(overIPC('Server profile switch superseded this operation.'))
+      else resolve([outcome === 'lists the ID' ? { ...session, codex_thread_id: 'thread-on-first-server' } : session])
+    })
+
+    expect(writeClipboard).not.toHaveBeenCalled()
+    expect(useAppStore.getState().error).toBeNull()
   })
 
   it('dispatches agentsdock:rename-folder from the folder context menu', async () => {

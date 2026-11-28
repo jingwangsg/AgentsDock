@@ -1,4 +1,4 @@
-import type { Backend, Health, RuntimeCatalog, RuntimeOption, Session } from '../types'
+import type { Backend, Health, RuntimeCatalog, RuntimeDiagnostic, RuntimeOption, Session } from '../types'
 import { runtimeDiagnosticFor } from './runtime'
 
 const REQUIRED_BACKENDS = ['claude', 'codex'] as const
@@ -29,14 +29,22 @@ export function cursorBackendSupported(health: Health | null | undefined): boole
   return capability?.available === true && capability.version === CURSOR_BACKEND_CAPABILITY_VERSION
 }
 
+/** The diagnostic that decides whether Cursor is available, and that explains it when it is not.
+ *
+ * A health status of "unknown" decides nothing: the server reports it for a backend it has not probed yet, in the
+ * first seconds after it starts. The catalog's own entry then decides. Change the desktop copy
+ * (electron/src/shared/runtime-catalog.ts) too.
+ */
+function cursorDiagnostic(health: Health | null | undefined, catalog: RuntimeCatalog | null | undefined): RuntimeDiagnostic | null {
+  return runtimeDiagnosticFor(health?.runtimes?.cursor?.status === 'unknown' ? null : health, catalog, 'cursor')
+}
+
 export function cursorBackendAvailable(health: Health | null | undefined, catalog: RuntimeCatalog | null | undefined): boolean {
   const backend = catalog?.backends?.cursor
   if (!cursorBackendSupported(health) || (catalog && !backend)) return false
-  // A health status of "unknown" decides nothing: the server reports it for a backend it has not probed yet, in the
-  // first seconds after it starts. The catalog's own entry then decides, and Cursor is offered while no catalog has
-  // arrived: the server takes seconds to build one, and the health answer comes first. Change the desktop copy
-  // (electron/src/shared/runtime-catalog.ts) too.
-  const diagnostic = runtimeDiagnosticFor(health?.runtimes?.cursor?.status === 'unknown' ? null : health, catalog, 'cursor')
+  // Cursor is offered while no catalog has arrived: the server takes seconds to build one, and the health answer
+  // comes first. Change the desktop copy (electron/src/shared/runtime-catalog.ts) too.
+  const diagnostic = cursorDiagnostic(health, catalog)
   return diagnostic ? diagnostic.status === 'ready' && diagnostic.available === true : !catalog || backend?.available === true
 }
 
@@ -54,7 +62,7 @@ export function cursorBackendUnavailableReason(health: Health | null | undefined
   if (cursorBackendAvailable(health, catalog)) return null
   if (!health) return 'Cursor status loads once this AgentsServer is connected.'
   if (!cursorBackendSupported(health)) return 'Cursor requires the hardened Cursor backend in a newer AgentsServer. Update the server, then reconnect.'
-  const diagnostic = runtimeDiagnosticFor(health, catalog, 'cursor')
+  const diagnostic = cursorDiagnostic(health, catalog)
   const detail = [diagnostic?.message?.trim(), diagnostic?.action?.trim()].filter(Boolean).join(' ')
   if (detail) return `Cursor is unavailable. ${detail}`
   return catalog?.backends?.cursor
