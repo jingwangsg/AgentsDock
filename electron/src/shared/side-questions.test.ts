@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseSyncedSideChat, sideQuestionsAvailable, validateSideQuestionInput, type SideQuestionInput } from './side-questions'
+import { parseSideQuestionAnswer, parseSyncedSideChat, sideQuestionsAvailable, validateSideQuestionInput, type SideQuestionInput } from './side-questions'
 
 const input = { request_id: 'side-a', question: 'Why?' }
 const history = [{ role: 'user' as const, text: ' First question\n' }, { role: 'assistant' as const, text: 'First answer.' }]
@@ -79,6 +79,12 @@ describe('side chat input validation', () => {
     const chat = (backend: unknown) => ({ session_id: 'chat-a', side_chat_id: 'side-a', revision: 1, last_request_id: 'request-a',
       exchanges: [{ request_id: 'request-a', question: 'Q', status: 'completed', answer: 'A', backend, created_at: 'now', updated_at: 'now' }] })
     expect(parseSyncedSideChat(chat('cursor'), 'chat-a').exchanges[0].backend).toBe('cursor')
-    expect(() => parseSyncedSideChat(chat(3), 'chat-a')).toThrow('side_question_invalid_response')
+    for (const invalid of [3, '']) expect(() => parseSyncedSideChat(chat(invalid), 'chat-a')).toThrow('side_question_invalid_response')
+    // The answer of a server without synced side chats is read by the same rule.
+    const answer = (backend: unknown) => ({ request_id: 'request-a', session_id: 'chat-a', backend, answer: 'A' })
+    expect(parseSideQuestionAnswer(answer('cursor'), 'chat-a', 'request-a').backend).toBe('cursor')
+    for (const invalid of [3, '', undefined]) {
+      expect(() => parseSideQuestionAnswer(answer(invalid), 'chat-a', 'request-a')).toThrow('side_question_invalid_response')
+    }
   })
 })

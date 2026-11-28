@@ -202,6 +202,11 @@ def session_directory(provider_id: str, cwd: str) -> tuple[Path, dict]:
     return source, sidecar
 
 
+def session_paths(directory: Path, sidecar: dict, cwd: str) -> list[Path]:
+    """Every path a session leaves on disk, its directory first; the arguments are ``session_directory``'s."""
+    return [directory, data_root(cwd) / "projects" / project_slug(sidecar["cwd"]) / "agent-transcripts" / directory.name]
+
+
 def copy_session(provider_id: str, copy_id: str, cwd: str, root_blob_id: str | None = None) -> list[Path]:
     """Copy a session's store under another id, for the CLI to resume as a session of its own.
 
@@ -233,7 +238,7 @@ def copy_session(provider_id: str, copy_id: str, cwd: str, root_blob_id: str | N
     except BaseException:
         shutil.rmtree(copy, ignore_errors=True)
         raise
-    return [copy, data_root(cwd) / "projects" / project_slug(sidecar["cwd"]) / "agent-transcripts" / copy_id]
+    return session_paths(copy, sidecar, cwd)
 
 
 def open_store(provider_id: str, cwd: str) -> sqlite3.Connection:

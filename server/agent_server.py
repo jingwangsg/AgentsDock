@@ -50873,6 +50873,8 @@ def cursor_initial_history(provider_id: str, cwd: str, limit: int | None = None)
 
 
 def local_cursor_session_candidates(known_provider_ids: set[str]) -> list[dict[str, Any]]:
+    # The copy a side run works in is a complete session of its own until the run removes it.
+    known_provider_ids = known_provider_ids | SIDE_QUESTIONS.provider_thread_ids()
     candidates: dict[str, dict[str, Any]] = {}
     ambiguous: set[str] = set()
     for session in cursor_history.local_sessions():
@@ -81913,6 +81915,9 @@ async def lifespan(app: FastAPI):
     # their own sessions; reap anything the registry says was left behind.
     with suppress(Exception):
         await asyncio.to_thread(sweep_orphaned_provider_children)
+    # On the loop's thread, which owns the side chat store's connection.
+    with suppress(Exception):
+        remove_leftover_cursor_copies()
     SECURE_PEER_RUNTIME.set_delivery_target_validator(
         secure_peer_delivery_target_available
     )
@@ -85640,7 +85645,7 @@ async def health() -> dict[str, Any]:
             "subagent_limit_v1": {"version": 1, "backends": ["codex", "claude"]},
             "provider_usage": {"available": bool(AGENT_TOKEN), "version": 1, "backends": ["codex", "claude"]},
             "side_questions": side_questions.capability(
-                backend for backend, carrier in SIDE_CHAT_CARRIERS.items() if carrier.composer and carrier.usable()),
+                backend for backend, carrier_type in SIDE_CHAT_CARRIERS.items() if carrier_type.composer and carrier_type.usable()),
             "background_activity_v1": {"available": True},
             "codex_auth_v1": codex_auth.capability(available=bool(AGENT_TOKEN) and CODEX_TRANSPORT != CODEX_TRANSPORT_EXEC),
             "codex_provider_v1": {"available": bool(AGENT_TOKEN) and CODEX_TRANSPORT != CODEX_TRANSPORT_EXEC, "wire_api": "responses", "per_chat": True, "per_chat_models": True, "model_discovery": True, "model_compatibility": True},
@@ -87408,11 +87413,13 @@ async def create_native_side_chat(session_id: str, *, persisted_state=None, pers
 
     class NativeSideChat:
         def __init__(self):
-            async def save_state(value):
+            # load-bearing: a carrier's state is stored under its backend's name. SideChatStore reads "codex" there
+            # for the threads that are not offered as chats to import.
+            async def persist(value):
                 if persist_state is not None:
                     await persist_state({**binding, backend: value})
             self.carrier = carrier_type(session_id, binding, current=self.current, durable=durable,
-                                        saved_state=(persisted_state or {}).get(backend), save_state=save_state)
+                                        persisted_state=(persisted_state or {}).get(backend), persist_state=persist)
 
         def current(self):
             if SERVER_SHUTTING_DOWN:
@@ -87430,15 +87437,20 @@ async def create_native_side_chat(session_id: str, *, persisted_state=None, pers
             if not comment:
                 # What the composer's Side chat writes in front of a question for a provider that needs it. A
                 # comment thread writes its own (create_canvas_comment_side_chat).
-                words = "" if self.carrier.native else SIDE_QUESTION_INSTRUCTION
+                words = "" if self.carrier.side_aware else SIDE_QUESTION_INSTRUCTION
                 if self.carrier.lacks(history, edit=edit):
-                    words += "".join(f"Earlier question in this side chat:\n{item['question']}\n\nYour answer:\n{item['response']}\n\n"
-                                     for item in history)
+                    # An earlier answer is cut where a comment thread cuts one: the question would otherwise grow
+                    # with every answer until the provider refuses it, and only Clear would end that.
+                    words += "".join(f"Earlier question in this side chat:\n{item['question']}\n\nYour answer:\n"
+                                     f"{item['response'][:agentsdock_canvas.MAX_REPLY_CHARS]}\n\n" for item in history)
                     history = []
                 if words:
                     question = f"{words}Question:\n{question}"
             result = await self.carrier.ask(question, history=history, edit=edit, on_step=on_step)
-            self.current()
+            if not edit:
+                # Not after an edit request: the file is changed by now, so its reply is delivered whatever became
+                # of the chat meanwhile.
+                self.current()
             return {"backend": backend, **result}
 
         async def close(self):
@@ -87448,10 +87460,12 @@ async def create_native_side_chat(session_id: str, *, persisted_state=None, pers
 
 
 class CodexSideChat(side_questions.SideChatCarrier):
-    """Codex: an ephemeral native fork of the chat's thread, kept for the side conversation's follow-ups.
+    """Codex: a native fork of the chat's thread, kept for the side conversation's follow-ups.
 
     The fork runs in an app-server process of its own with the chat's workspace and permissions, for a question
     and for an edit request alike. An approval that the chat's settings require belongs to the fork alone.
+    A durable carrier's fork is a saved thread, which the next carrier resumes after this one's process is
+    closed; any other fork is ephemeral and ends with the process.
     """
 
     approvals = True
@@ -87476,8 +87490,9 @@ class CodexSideChat(side_questions.SideChatCarrier):
         CODEX_PROVIDER_STORE.require_thread(self.binding["parent_id"], selected)
 
     def lacks(self, history, *, edit=False):
-        # A durable fork is taken up again from its saved state and holds what it answered. A fork made for one
-        # message, as for a Canvas comment, starts from the chat alone.
+        # A fork made for one message, as for a Canvas comment, starts from the chat alone. A durable carrier
+        # never asks for the exchanges, as before this interface: its fork holds them, except the fork of a
+        # side chat that was carried over from another installation, which answers without them.
         return bool(history) and self.codex is None and not self.durable
 
     async def ask(self, question, *, history, edit=False, on_step=None):
@@ -87546,7 +87561,7 @@ class CodexSideChat(side_questions.SideChatCarrier):
                 server_request_handler=side_server_request,
                 env=isolated_process.isolated_environment(runner_env()),
                 provider_selection=provider_selection, durable=self.durable,
-                resume_state=self.saved_state, persist_state=self.save_state)
+                resume_state=self.persisted_state, persist_state=self.persist_state)
         return {"answer": await self.codex.ask(question, on_step=on_step),
                 "context_note": "Native Codex context from when Side chat started, including tool results. Clear Side chat to use the latest main context."}
 
@@ -87618,7 +87633,7 @@ class CopiedSessionSideChat(side_questions.SideChatCarrier):
     are reported. ``history`` is not used: the callers put it in the question (``lacks``).
     """
 
-    native = False
+    side_aware = False
 
     async def ask(self, question: str, *, history, edit: bool = False, on_step=None) -> dict[str, Any]:
         session = dict(STORE.sessions[self.session_id])
@@ -87628,16 +87643,21 @@ class CopiedSessionSideChat(side_questions.SideChatCarrier):
         copy_id = str(uuid.uuid4())
         env = agent_runner_env(self.session_id)
         answer = None
+        recorded = False
 
         def remove_copy(copying: asyncio.Future) -> None:
             if not copying.done():
                 copying.add_done_callback(remove_copy)
-            elif not copying.cancelled() and copying.exception() is None:
-                for path in copying.result():
+            elif not copying.cancelled():
+                # A copy that failed has removed what it made.
+                for path in copying.result() if copying.exception() is None else ():
                     if path.is_dir():
                         shutil.rmtree(path, ignore_errors=True)
                     else:
                         path.unlink(missing_ok=True)
+                # Only now, with nothing of the copy left: what stays recorded is removed when the server next starts.
+                if recorded:
+                    SIDE_QUESTIONS.synced.store.forget_copy(BACKEND_CURSOR, copy_id)
 
         with ExitStack() as resources:
             try:
@@ -87652,7 +87672,7 @@ class CopiedSessionSideChat(side_questions.SideChatCarrier):
                         raise FileNotFoundError(requested_cwd)
                     secret = None
                     # The flags of a print transport turn, which include --dangerously-skip-permissions: this process
-                    # has nobody to ask. canvas_comment_side_chat_available admits it only for a chat with that access.
+                    # has nobody to ask. ClaudeSideChat.available admits it only for a chat with that access.
                     # --no-session-persistence keeps the fork in memory, so the CLI writes no transcript of it; it is
                     # added here because build_claude_cmd leaves its own parameter for it out when a provider id is set.
                     cmd = [*build_claude_cmd(self.session_id, session, codex_manifest_path(self.session_id), provider_id=provider_id),
@@ -87678,6 +87698,10 @@ class CopiedSessionSideChat(side_questions.SideChatCarrier):
                         lambda: list(gemini_history.local_sessions(cwd=cwd, provider_id=session["gemini_session_id"])))
                     leftovers = functools.partial(gemini_history.copy_session, source, copy_id)
                 else:
+                    if not edit:
+                        # A question can run shell commands, so it gets no chat, helper or terminal coordinates of
+                        # the chat. An edit request keeps them: it needs the Canvas directory.
+                        env = isolated_process.isolated_environment(runner_env())
                     if HUB_PROVIDER_INSTALL:
                         env = await asyncio.to_thread(cursor_hub_env, env)
                     secret = env.get("CURSOR_AUTH_TOKEN") if HUB_PROVIDER_INSTALL else None
@@ -87687,6 +87711,11 @@ class CopiedSessionSideChat(side_questions.SideChatCarrier):
                            *(cursor_permission_flags(effective_cursor_permission_mode(session)) if edit else ["--trust", "--mode", "ask"]),
                            *(["--model", model] if (model := cursor_chat_model(session)) else [])]
                     leftovers = functools.partial(cursor_history.copy_session, str(session["cursor_session_id"]), copy_id, cwd)
+                    # load-bearing: recorded before the copy exists. The CLI makes the copy a complete session, which
+                    # Import Chat would offer during the run, and which nothing would remove after a server that
+                    # ended during it.
+                    SIDE_QUESTIONS.synced.store.record_copy(BACKEND_CURSOR, copy_id, cwd)
+                    recorded = True
                 copying = asyncio.ensure_future(asyncio.to_thread(leftovers))
                 # load-bearing: a worker thread cannot be cancelled, so a cancelled wait removes the copy when the thread is done.
                 resources.callback(remove_copy, copying)
@@ -87722,7 +87751,18 @@ class CopiedSessionSideChat(side_questions.SideChatCarrier):
                 finally:
                     # Not left to exit on its own: the Cursor CLI can stay up after its result.
                     if proc.returncode is None:
-                        await terminate_process_tree(proc, grace=CURSOR_GUARD_TEARDOWN_GRACE_SECONDS)
+                        teardown = asyncio.ensure_future(terminate_process_tree(proc, grace=CURSOR_GUARD_TEARDOWN_GRACE_SECONDS))
+                        cancelled = False
+                        # load-bearing: Clear right after Stop cancels this task a second time. The process has to
+                        # be gone before the stack below removes the copy, or it writes beside the chat's session
+                        # again after that.
+                        while not teardown.done():
+                            try:
+                                await asyncio.shield(teardown)
+                            except asyncio.CancelledError:
+                                cancelled = True
+                        if cancelled:
+                            raise asyncio.CancelledError
             except Exception as exc:
                 # Native errors can contain the prompt or a credential.
                 logger.warning("Side chat in a copy or fork of the %s session failed error_type=%s", backend, type(exc).__name__)
@@ -87738,9 +87778,11 @@ class CursorSideChat(CopiedSessionSideChat):
 
     @staticmethod
     def usable():
-        # The last runtime check found the CLI ready, or none has run since this server started: a client's
-        # connection starts one.
-        return (RUNTIME_DIAGNOSTICS.get(BACKEND_CURSOR) or {}).get("status", "unknown") in ("ready", "unknown")
+        # Left out only where the last runtime check found no CLI. A check that failed or a login that
+        # expired is reported by the question itself: without the capability a client could not read, stop
+        # or clear a side chat it already shows.
+        with RUNTIME_DIAGNOSTICS_LOCK:
+            return (RUNTIME_DIAGNOSTICS.get(BACKEND_CURSOR) or {}).get("status") != "missing"
 
     @staticmethod
     def provider_id(session):
@@ -87755,6 +87797,23 @@ class GeminiSideChat(CopiedSessionSideChat):
     @staticmethod
     def provider_id(session):
         return str(session.get("gemini_session_id") or "").strip()
+
+
+def remove_leftover_cursor_copies() -> None:
+    """Removes the copies of Cursor sessions that a server which ended during a side run left on disk.
+
+    Only the ids that server recorded before it made the copies, each found by its id. A rewind's copy
+    is never recorded: it becomes the chat's session.
+    """
+    copies = SIDE_QUESTIONS.synced.store
+    for copy_id, cwd in copies.recorded_copies(BACKEND_CURSOR):
+        # Not found: the server ended before the copy was complete, or the copy had failed.
+        with suppress(FileNotFoundError):
+            # The transcripts first: they are found through the directory, so a removal that stops in between
+            # is finished at the next start.
+            for path in reversed(cursor_history.session_paths(*cursor_history.session_directory(copy_id, cwd), cwd)):
+                shutil.rmtree(path, ignore_errors=True)
+        copies.forget_copy(BACKEND_CURSOR, copy_id)
 
 
 # The one place that maps a chat's backend to what answers its side conversations. A backend without an entry
@@ -87788,7 +87847,7 @@ async def create_canvas_comment_side_chat(session_id: str, **_persistence):
                     question, ((item["question"], item["response"]) for item in history)), []
             # load-bearing: two Gemini copies that changed one canvas file at the same time both reported their
             # change and the file held only one, so the edit requests of one canvas file run one after another,
-            # on every backend. A carrier keeps the lock while it waits for an approval. A turn of the chat
+            # on every backend. A Codex fork keeps the lock while it waits for an approval. A turn of the chat
             # itself takes no lock: it can write the file while a side chat does.
             async with CANVAS_EDIT_LOCKS.setdefault(edited_file, asyncio.Lock()) if edited_file else nullcontext():
                 # An approval that nobody answers would keep the run, and the file's lock, without end.
@@ -103451,8 +103510,8 @@ def canvas_comment_side_chat_available(session_id: str, prompt: str) -> bool:
     fail on after the comment was accepted, such as a chat without a provider conversation to copy.
     """
     session = STORE.sessions.get(session_id) or {}
-    carrier = SIDE_CHAT_CARRIERS.get(str(session.get("backend") or DEFAULT_BACKEND).lower())
-    return carrier is not None and carrier.available(session, prompt, edit=agentsdock_canvas.edit_request_path(prompt) is not None)
+    carrier_type = SIDE_CHAT_CARRIERS.get(str(session.get("backend") or DEFAULT_BACKEND).lower())
+    return carrier_type is not None and carrier_type.available(session, prompt, edit=agentsdock_canvas.edit_request_path(prompt) is not None)
 
 
 agentsdock_canvas.register_canvas_routes(

@@ -30,7 +30,7 @@ class Carrier(SideChatCarrier):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.asked, self.closed, self.conversation = [], 0, self.saved_state
+        self.asked, self.closed, self.conversation = [], 0, self.persisted_state
         Carrier.made.append(self)
 
     def lacks(self, history, *, edit=False):
@@ -39,11 +39,13 @@ class Carrier(SideChatCarrier):
     async def ask(self, question, *, history, edit=False, on_step=None):
         self.asked.append((question, history, edit))
         self.conversation = self.conversation or {"side": f"conversation of {self.binding['parent_id']}"}
-        await self.save_state(self.conversation)
+        await self.persist_state(self.conversation)
         if on_step is not None:
             await on_step({"id": "step-1", "kind": "tool", "title": "look", "status": "completed"})
         if question.endswith("hold"):
             await asyncio.Event().wait()  # as a run that waits for an approval nobody gives
+        if question.endswith("replace the session"):
+            server.STORE.sessions[self.session_id]["fake_session_id"] += "-replaced"
         return {"answer": f"answer {len(self.asked)}", "context_note": "Fake context"}
 
     async def close(self):
@@ -101,13 +103,13 @@ class SideChatCarrierTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(carrier.closed, 1)
         # The next message gets a new carrier with what the closed one saved: it takes the conversation up again.
         await answered("four", "still there?", "three")
-        self.assertEqual((len(Carrier.made), Carrier.made[1].saved_state), (2, {"side": "conversation of parent-1"}))
+        self.assertEqual((len(Carrier.made), Carrier.made[1].persisted_state), (2, {"side": "conversation of parent-1"}))
         self.assertEqual(Carrier.made[1].asked[0][0], "still there?")
         # Clear ends the conversation: the carrier is closed, and the next one starts with nothing saved.
         side_chat = (await chats.clear(*key, side_chat))["side_chat_id"]
         self.assertEqual(Carrier.made[1].closed, 1)
         await answered("five", "again?", None)
-        self.assertEqual((len(Carrier.made), Carrier.made[2].saved_state), (3, None))
+        self.assertEqual((len(Carrier.made), Carrier.made[2].persisted_state), (3, None))
         # The chat's provider conversation is another one now: the side conversation ends instead of answering.
         self.chat["fake_session_id"] = "parent-2"
         refused = await answered("six", "stale?", "five")
@@ -132,12 +134,19 @@ class SideChatCarrierTests(unittest.IsolatedAsyncioTestCase):
             handle = await server.create_canvas_comment_side_chat("chat", persisted_state={"fake": {"old": 1}}, durable=True)
             self.assertEqual((await handle.ask(prompt, history=history))["answer"], "answer 1")
             await handle.close()
-        self.assertEqual([(carrier.asked, carrier.durable, carrier.saved_state, carrier.closed) for carrier in Carrier.made], [
+        self.assertEqual([(carrier.asked, carrier.durable, carrier.persisted_state, carrier.closed) for carrier in Carrier.made], [
             ([(earlier + question, [], False)], False, None, 1), ([(earlier + edit, [], True)], False, None, 1)])
         # A carrier that can wait for an approval is bounded, so an unanswered one frees the Canvas file.
         with patch.object(server, "CANVAS_COMMENT_SIDE_CHAT_SECONDS", 0.05), self.assertRaises(TimeoutError):
             await (await server.create_canvas_comment_side_chat("chat")).ask(self.comment("edit", "hold"), history=[])
         self.assertEqual(len(server.CANVAS_EDIT_LOCKS), 0)
+        # The chat's provider conversation is replaced while a comment runs. A question's answer is dropped. An
+        # edit request has changed the file by then, so its reply is delivered.
+        with self.assertRaises(SideQuestionError) as dropped:
+            await (await server.create_canvas_comment_side_chat("chat")).ask(self.comment("ask", "replace the session"), history=[])
+        self.assertEqual(dropped.exception.status_code, 410)
+        applied = await (await server.create_canvas_comment_side_chat("chat")).ask(self.comment("edit", "replace the session"), history=[])
+        self.assertEqual(applied["answer"], "answer 1")
         # A carrier for Canvas comments only: the composer's Side chat refuses it, a comment thread does not.
         with patch.object(Carrier, "composer", False):
             with self.assertRaises(SideQuestionError) as refused:

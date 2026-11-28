@@ -18,6 +18,7 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 import side_questions as side
+import agentsdock_canvas
 import codex_provider
 import isolated_process
 
@@ -64,7 +65,6 @@ class HistoryTests(unittest.TestCase):
     def test_capability_is_additive_and_omits_history_limits(self):
         capability = side.capability(["codex", "claude"])
         self.assertEqual(capability["version"], 2)
-        self.assertEqual(capability["backends"], ["codex", "claude"])
         self.assertIs(capability["native_context"], True)
         self.assertNotIn("history", capability)
         self.assertNotIn("max_history_items", capability)
@@ -505,8 +505,6 @@ class FakeCarrier(side.SideChatCarrier):
 
     async def ask(self, question, *, history, edit=False, on_step=None):
         self.asked.append((question, history, edit))
-        if self.save_state is not None:
-            await self.save_state({"asked": len(self.asked)})
         return {"answer": "Fake answer", "context_note": "Fake context"}
 
     async def close(self):
@@ -528,9 +526,6 @@ class ServerGlueTests(unittest.TestCase):
             self.assertNotIn(forbidden, text)
         self.assertIn("manager.ask_side_question", text)
         self.assertIn("NativeCodexSideChat", text)
-        health = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "health")
-        # The capability lists what the carriers say, not a list of its own.
-        self.assertIn("for backend, carrier in SIDE_CHAT_CARRIERS.items() if carrier.composer and carrier.usable()", ast.unparse(health))
 
 
 class SideApprovalBridgeTests(unittest.IsolatedAsyncioTestCase):
@@ -610,6 +605,7 @@ class ServerCallbackTests(unittest.IsolatedAsyncioTestCase):
         self.codex_factory = Mock(return_value=self.codex)
         self.options = SimpleNamespace(resume="claude-parent")
         self.namespace = dict(asyncio=asyncio, side_questions=side, isolated_process=isolated_process, STATE_DIR=root,
+            agentsdock_canvas=agentsdock_canvas,
             SERVER_SHUTTING_DOWN=False, STORE=SimpleNamespace(sessions={"chat": self.session}),
             CODEX_GOALS_RECONFIGURING=False,
             codex_provider=codex_provider,
@@ -759,7 +755,7 @@ class ServerCallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(caught.exception.status_code, 503)
         self.manager.ask_side_question.assert_not_awaited()
 
-    async def test_a_backend_is_a_carrier_and_the_composers_side_chat_needs_nothing_else(self):
+    async def test_the_composer_writes_what_a_carriers_provider_would_answer_without(self):
         create = self.namespace["create_native_side_chat"]
         self.session["backend"] = "fake"
         # Nothing to bind to before the chat's provider conversation exists.
@@ -769,47 +765,36 @@ class ServerCallbackTests(unittest.IsolatedAsyncioTestCase):
         self.session["fake_session_id"] = "fake-parent"
         initial = (json.dumps(self.session, sort_keys=True), json.dumps(self.parent_active, sort_keys=True),
                    json.dumps(self.parent_queue, sort_keys=True), self.path.read_bytes())
-        saved = []
-        async def persist(value):
-            saved.append(value)
-        binding = {"backend": "fake", "parent_id": "fake-parent", "provider_revision": None}
-        chat = await create("chat", persist_state=persist, durable=True)
-        self.assertEqual((chat.carrier.binding, chat.carrier.durable, chat.carrier.saved_state, saved), (binding, True, None, [binding]))
+        chat = await create("chat")
+        self.assertEqual(chat.carrier.binding, {"backend": "fake", "parent_id": "fake-parent", "provider_revision": None})
         self.assertEqual(await chat.ask("Why?", history=[]), {"backend": "fake", "answer": "Fake answer", "context_note": "Fake context"})
         await chat.ask("And then?", history=[{"question": "Why?", "response": "Fake answer"}])
-        # One carrier for the conversation. Its provider would answer without the earlier exchange, so that is in the question.
+        # One carrier for both messages. Its provider would answer without the earlier exchange, so that is in the question.
         self.assertEqual(chat.carrier.asked, [("Why?", [], False), (
             "Earlier question in this side chat:\nWhy?\n\nYour answer:\nFake answer\n\nQuestion:\nAnd then?", [], False)])
-        # What the carrier saves is kept under its backend, beside the binding, and a later carrier gets it back.
-        self.assertEqual(saved[-1], {**binding, "fake": {"asked": 2}})
-        later = await create("chat", persisted_state=saved[-1], persist_state=persist, durable=True)
-        self.assertEqual(later.carrier.saved_state, {"asked": 2})
         await chat.close()
         self.assertEqual(chat.carrier.closed, 1)
         self.assertEqual((json.dumps(self.session, sort_keys=True), json.dumps(self.parent_active, sort_keys=True),
                           json.dumps(self.parent_queue, sort_keys=True), self.path.read_bytes()), initial)
-        # A changed provider conversation ends the side conversation, for a live carrier and for a saved binding.
-        self.session["fake_session_id"] = "replacement-parent"
-        for refused in (chat.ask("Stale?", history=[]), create("chat", persisted_state=saved[-1])):
-            with self.assertRaises(side.SideQuestionError) as caught:
-                await refused
-            self.assertEqual(caught.exception.status_code, 410)
-        self.assertEqual(len(chat.carrier.asked), 2)
         # A provider that does not know it answers beside the chat is told so in the question.
-        self.session["fake_session_id"] = "fake-parent"
-        with patch.object(FakeCarrier, "native", False):
+        with patch.object(FakeCarrier, "side_aware", False):
             plain = await create("chat")
             await plain.ask("Why?", history=[])
             await plain.ask("And then?", history=[{"question": "Why?", "response": "Fake answer"}])
         self.assertEqual([asked[0] for asked in plain.carrier.asked], [
             "Side question. Question:\nWhy?",
             "Side question. Earlier question in this side chat:\nWhy?\n\nYour answer:\nFake answer\n\nQuestion:\nAnd then?"])
-        # A carrier that says it serves Canvas comments only is refused for the composer, by what it says.
-        with patch.object(FakeCarrier, "composer", False):
-            with self.assertRaises(side.SideQuestionError) as caught:
-                await create("chat")
-            self.assertEqual(caught.exception.status_code, 503)
-            self.assertIsInstance((await create("chat", comment=True)).carrier, FakeCarrier)
+
+    async def test_the_composer_writes_the_earlier_exchanges_oldest_first_and_cuts_a_long_answer(self):
+        self.session.update(backend="fake", fake_session_id="fake-parent")
+        chat = await self.namespace["create_native_side_chat"]("chat")
+        limit = agentsdock_canvas.MAX_REPLY_CHARS
+        await chat.ask("Third?", history=[{"question": "First?", "response": "a" * (limit + 5)},
+                                          {"question": "Second?", "response": "Second answer"}])
+        self.assertEqual(chat.carrier.asked, [(
+            "Earlier question in this side chat:\nFirst?\n\nYour answer:\n" + "a" * limit + "\n\n"
+            "Earlier question in this side chat:\nSecond?\n\nYour answer:\nSecond answer\n\n"
+            "Question:\nThird?", [], False)])
 
     async def test_a_carrier_says_when_its_provider_lacks_the_earlier_exchanges(self):
         create = self.namespace["create_native_side_chat"]
@@ -817,7 +802,7 @@ class ServerCallbackTests(unittest.IsolatedAsyncioTestCase):
         # /btw replays the exchanges it is given; the fork of an edit request does not.
         claude = (await create("chat")).carrier
         self.assertEqual([claude.lacks(history), claude.lacks(history, edit=True), claude.lacks([], edit=True)], [False, True, False])
-        # A fork made for one message starts from the chat alone; a durable one holds what it answered.
+        # A fork made for one message starts from the chat alone; a durable carrier never asks for the exchanges.
         self.session["backend"] = "codex"
         self.assertTrue((await create("chat")).carrier.lacks(history))
         self.assertFalse((await create("chat", durable=True)).carrier.lacks(history))
@@ -825,7 +810,6 @@ class ServerCallbackTests(unittest.IsolatedAsyncioTestCase):
             kept = await create("chat")
             await kept.ask("Why?", history=[])
             self.assertFalse(kept.carrier.lacks(history))
-        self.assertEqual([self.namespace[name].approvals for name in ("CodexSideChat", "ClaudeSideChat")], [True, False])
 
     async def test_followup_history_uses_native_claude_pairs_and_retained_codex_handle(self):
         history = [{"question": "Initial side question", "response": "Initial side answer"}]

@@ -43,7 +43,7 @@ export interface SideQuestionHistoryItem {
 export interface SideQuestionAnswer {
   request_id: string
   session_id: string
-  backend: 'codex' | 'claude'
+  backend: Backend
   answer: string
   context_note?: string
 }
@@ -124,7 +124,7 @@ export function validateSideQuestionInput(input: SideQuestionInput, limit = SIDE
 export function parseSideQuestionAnswer(value: unknown, sessionId: string, requestId: string): SideQuestionAnswer {
   const answer = value as Partial<SideQuestionAnswer> | null
   if (!answer || answer.request_id !== requestId || answer.session_id !== sessionId
-    || !['codex', 'claude'].includes(answer.backend ?? '')
+    || typeof answer.backend !== 'string' || !answer.backend
     || typeof answer.answer !== 'string' || !answer.answer.trim()
     || (answer.context_note !== undefined && typeof answer.context_note !== 'string')) {
     throw new Error('side_question_invalid_response')
@@ -179,7 +179,7 @@ export function parseSyncedSideChat(value: unknown, sessionId: string): SyncedSi
       || typeof exchange.question !== 'string' || !exchange.question.trim()
       || !['running', 'completed', 'cancelled', 'failed', 'interrupted'].includes(exchange.status)
       || (exchange.status === 'completed' && (typeof exchange.answer !== 'string' || !exchange.answer.trim()))
-      || (exchange.backend !== undefined && typeof exchange.backend !== 'string')
+      || (exchange.backend !== undefined && (typeof exchange.backend !== 'string' || !exchange.backend))
       || [exchange.answer, exchange.context_note, exchange.error].some(value => value !== undefined && typeof value !== 'string')
       || typeof exchange.created_at !== 'string' || typeof exchange.updated_at !== 'string'
       // A step kind or status added by a newer server still renders (a generic icon) instead of failing the sync.
